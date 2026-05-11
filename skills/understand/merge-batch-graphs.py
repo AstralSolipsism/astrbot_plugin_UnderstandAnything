@@ -9,13 +9,13 @@ Called at the end of Phase 2 of /understand. Phase 3 (ASSEMBLE REVIEW)
 then reviews the output for semantic issues the script cannot catch.
 
 Usage:
-    python merge-batch-graphs.py <project-root>
+    python merge-batch-graphs.py <project-root> [graph-root]
 
 Input:
-    <project-root>/.understand-anything/intermediate/batch-*.json
+    <graph-root>/intermediate/batch-*.json
 
 Output:
-    <project-root>/.understand-anything/intermediate/assembled-graph.json
+    <graph-root>/intermediate/assembled-graph.json
 """
 
 import json
@@ -986,11 +986,19 @@ def recover_imports_from_scan(
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python merge-batch-graphs.py <project-root>", file=sys.stderr)
+        print(
+            "Usage: python merge-batch-graphs.py <project-root> [graph-root]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     project_root = Path(sys.argv[1]).resolve()
-    intermediate_dir = project_root / ".understand-anything" / "intermediate"
+    graph_root = (
+        Path(sys.argv[2]).resolve()
+        if len(sys.argv) > 2
+        else project_root / ".understand-anything"
+    )
+    intermediate_dir = graph_root / "intermediate"
 
     if not intermediate_dir.is_dir():
         print(f"Error: {intermediate_dir} does not exist", file=sys.stderr)

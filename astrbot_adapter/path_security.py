@@ -9,16 +9,33 @@ class PathSecurityError(ValueError):
 
 
 class PathSecurity:
-    def __init__(self, allowed_roots: Iterable[str | Path] | None = None) -> None:
+    def __init__(
+        self,
+        allowed_roots: Iterable[str | Path] | None = None,
+        *,
+        implicit_roots: Iterable[str | Path] | None = None,
+    ) -> None:
         roots = [Path(root).expanduser() for root in allowed_roots or [] if str(root)]
         if not roots:
             roots = [Path.cwd()]
         self.allowed_roots = [root.resolve(strict=False) for root in roots]
+        self.implicit_roots = [
+            Path(root).expanduser().resolve(strict=False)
+            for root in implicit_roots or []
+            if str(root)
+        ]
 
-    def resolve_project_path(self, raw_path: str | Path | None) -> Path:
+    def resolve_project_path(
+        self,
+        raw_path: str | Path | None,
+        *,
+        must_exist: bool = True,
+    ) -> Path:
         project_path = Path(raw_path).expanduser() if raw_path else Path.cwd()
         resolved = project_path.resolve(strict=False)
-        if not resolved.exists() or not resolved.is_dir():
+        if must_exist and (not resolved.exists() or not resolved.is_dir()):
+            raise PathSecurityError(f"Project path is not a directory: {resolved}")
+        if not must_exist and resolved.exists() and not resolved.is_dir():
             raise PathSecurityError(f"Project path is not a directory: {resolved}")
         if not self._is_under_allowed_root(resolved):
             roots = ", ".join(str(root) for root in self.allowed_roots)
@@ -51,7 +68,10 @@ class PathSecurity:
         return value
 
     def _is_under_allowed_root(self, path: Path) -> bool:
-        return any(self._is_relative_to(path, root) for root in self.allowed_roots)
+        return any(
+            self._is_relative_to(path, root)
+            for root in [*self.allowed_roots, *self.implicit_roots]
+        )
 
     @staticmethod
     def _ensure_inside(path: Path, root: Path, label: str) -> None:

@@ -10,6 +10,7 @@ from typing import Sequence
 class ParsedJobArgs:
     path: str | None
     project_ref: str | None
+    git_ref: str | None
     flags: list[str]
 
 
@@ -17,6 +18,7 @@ def parse_job_args(raw_args: str) -> ParsedJobArgs:
     tokens = split_args(raw_args)
     flags: list[str] = []
     project_ref: str | None = None
+    git_ref: str | None = None
     path_token: str | None = None
     index = 0
     while index < len(tokens):
@@ -31,12 +33,27 @@ def parse_job_args(raw_args: str) -> ParsedJobArgs:
             project_ref = token.split("=", 1)[1].strip()
             index += 1
             continue
+        if token == "--ref":
+            if index + 1 >= len(tokens):
+                raise ValueError("Missing value for --ref.")
+            git_ref = tokens[index + 1]
+            index += 2
+            continue
+        if token.startswith("--ref="):
+            git_ref = token.split("=", 1)[1].strip()
+            index += 1
+            continue
         if token.startswith("--"):
             flags.append(token)
         elif path_token is None:
             path_token = token
         index += 1
-    return ParsedJobArgs(path=path_token, project_ref=project_ref, flags=flags)
+    return ParsedJobArgs(
+        path=path_token,
+        project_ref=project_ref,
+        git_ref=git_ref,
+        flags=flags,
+    )
 
 
 def format_job_args(project_root: Path, flags: Sequence[str] | None = None) -> str:

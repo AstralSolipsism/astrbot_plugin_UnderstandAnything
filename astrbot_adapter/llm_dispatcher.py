@@ -43,6 +43,7 @@ class LLMDispatcher:
         prompt: str,
         system_prompt: str,
         max_steps: int = 80,
+        extra_tools: ToolSet | None = None,
     ) -> str:
         provider_id = await self._provider_id(event)
         resp = await self.context.tool_loop_agent(
@@ -50,7 +51,7 @@ class LLMDispatcher:
             chat_provider_id=provider_id,
             prompt=prompt,
             system_prompt=system_prompt,
-            tools=self._local_tool_set(),
+            tools=self._local_tool_set(extra_tools),
             max_steps=max_steps,
             tool_call_timeout=300,
         )
@@ -71,7 +72,7 @@ class LLMDispatcher:
             return provider.meta().id
         raise RuntimeError("No AstrBot chat provider is available.")
 
-    def _local_tool_set(self) -> ToolSet:
+    def _local_tool_set(self, extra_tools: ToolSet | None = None) -> ToolSet:
         tool_set = ToolSet()
         tool_mgr = self.context.get_llm_tool_manager()
         for tool_cls in (
@@ -85,6 +86,8 @@ class LLMDispatcher:
             tool = tool_mgr.get_builtin_tool(tool_cls)
             if tool is not None:
                 tool_set.add_tool(tool)
+        if extra_tools is not None:
+            tool_set.merge(extra_tools)
         return tool_set
 
 

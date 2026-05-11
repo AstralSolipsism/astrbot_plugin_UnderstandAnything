@@ -21,6 +21,14 @@ Detection signals: has `index.md` + multiple `.md` files with wikilinks. May hav
 
 ## Instructions
 
+### AstrBot SubAgent Dispatch
+
+This skill runs as an AstrBot supervisor. Do not perform article-analysis worker tasks directly in the supervisor context.
+
+- Build article batch prompts and call `ua_run_subagent_batches`.
+- Use `role="article-analyzer"`, the `max_concurrency` value from AstrBot host rules (default 3), and `continue_on_error=true`.
+- Each batch object must include `id`, `input`, and `expected_output_path`.
+
 ### Phase 1: DETECT
 
 1. Determine the target directory:
@@ -51,21 +59,21 @@ No additional scanning is needed. Proceed to Phase 3.
 
 ### Phase 3: ANALYZE
 
-Run `article-analyzer` AstrBot agent roles to extract implicit knowledge:
+Use `ua_run_subagent_batches` to run `article-analyzer` SubAgents and extract implicit knowledge:
 
 1. Read the scan-manifest.json to get the article list
 
 2. Prepare batches of 10-15 articles each, grouped by category when possible (articles in the same category are more likely to have implicit cross-references)
 
-3. For each batch, run an `article-analyzer` AstrBot agent role with:
+3. For each batch, build a batch object whose `input` includes:
    - The batch of articles (id, name, summary, wikilinks, category, content from knowledgeMeta)
    - The full list of existing node IDs (so the agent can reference them)
    - The batch number for output file naming
    - The intermediate directory path: `$INTERMEDIATE_DIR = <TARGET_DIR>/.understand-anything/intermediate`
    
-   The agent will write `analysis-batch-{N}.json` to the intermediate directory.
+   Set `expected_output_path` to `$INTERMEDIATE_DIR/analysis-batch-{N}.json`.
 
-4. Run up to 3 batches concurrently. Wait for all batches to complete.
+4. Call `ua_run_subagent_batches` with `role="article-analyzer"`, all batch objects, the `max_concurrency` value from AstrBot host rules, and `continue_on_error=true`. Wait for the tool to complete.
 
 5. If any batch fails, log a warning but continue — the scan-manifest provides a solid base graph even without LLM analysis.
 

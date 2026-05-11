@@ -62,7 +62,7 @@ Remove ALL files matching these patterns:
 
 When `.understandignore` files exist, **replace** Step 2's hardcoded filtering with a unified filter that combines defaults and user patterns in a single pass. This ensures `!` negation patterns can override defaults.
 
-1. Check if `$PROJECT_ROOT/.understand-anything/.understandignore` exists. If so, read it.
+1. Check if `$UA_GRAPH_ROOT/.understandignore` exists. If so, read it.
 2. Check if `$PROJECT_ROOT/.understandignore` exists. If so, read it.
 3. If neither file exists, skip this step entirely — Step 2's hardcoded filtering is sufficient.
 4. If at least one file exists, re-filter the **original file list from Step 1** (not the Step 2 output) using the `createIgnoreFilter` function from `@understand-anything/core`, which merges hardcoded defaults and user patterns into a single `.gitignore`-compatible matcher. This ensures `!` negation in user files can override hardcoded defaults (e.g., `!dist/` force-includes dist/ files).
@@ -287,7 +287,7 @@ The script must write this exact JSON structure to the output file:
 After writing the script, execute it. `$PROJECT_ROOT` is the project root directory provided in your AstrBot execution prompt:
 
 ```bash
-node $PROJECT_ROOT/.understand-anything/tmp/ua-project-scan.js "$PROJECT_ROOT" "$PROJECT_ROOT/.understand-anything/tmp/ua-scan-results.json"
+node $UA_GRAPH_ROOT/tmp/ua-project-scan.js "$PROJECT_ROOT" "$UA_GRAPH_ROOT/tmp/ua-scan-results.json"
 ```
 
 (Or the equivalent for Python, depending on which language you chose.)
@@ -298,7 +298,7 @@ If the script exits with a non-zero code, read stderr, diagnose the issue, fix t
 
 ## Phase 2 -- Description and Final Assembly
 
-After the script completes, read `$PROJECT_ROOT/.understand-anything/tmp/ua-scan-results.json`. Do NOT re-run file discovery commands or re-count lines -- trust the script's results entirely.
+After the script completes, read `$UA_GRAPH_ROOT/tmp/ua-scan-results.json`. Do NOT re-run file discovery commands or re-count lines -- trust the script's results entirely.
 
 **IMPORTANT:** The final output must NOT contain the `scriptCompleted`, `rawDescription`, or `readmeHead` fields. These are intermediate script fields only. Strip them when assembling the final JSON. All other fields — including `importMap` — MUST be preserved exactly as output by the script.
 
@@ -356,8 +356,8 @@ Then assemble the final output JSON:
 
 After producing the final JSON:
 
-1. Create the output directory: `mkdir -p <project-root>/.understand-anything/intermediate`
-2. Write the JSON to: `<project-root>/.understand-anything/intermediate/scan-result.json`
+1. Create the output directory: `mkdir -p $UA_GRAPH_ROOT/intermediate`
+2. Write the JSON to: `$UA_GRAPH_ROOT/intermediate/scan-result.json`
 3. Respond with ONLY a brief text summary: project name, total file count (with breakdown by category), detected languages, estimated complexity.
 
 Do NOT include the full JSON in your text response.

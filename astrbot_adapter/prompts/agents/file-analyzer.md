@@ -35,7 +35,7 @@ Each entry in `batchFiles` MUST be an object with these four fields, copied verb
 - `fileCategory` (string) — `code`, `config`, `docs`, `infra`, `data`, `script`, or `markup`
 
 ```bash
-cat > $PROJECT_ROOT/.understand-anything/tmp/ua-file-analyzer-input-<batchIndex>.json << 'ENDJSON'
+cat > $UA_GRAPH_ROOT/tmp/ua-file-analyzer-input-<batchIndex>.json << 'ENDJSON'
 {
   "projectRoot": "<project-root>",
   "batchFiles": [
@@ -52,15 +52,15 @@ Run the bundled `extract-structure.mjs` script. The `<SKILL_DIR>` path is provid
 
 ```bash
 node <SKILL_DIR>/extract-structure.mjs \
-  $PROJECT_ROOT/.understand-anything/tmp/ua-file-analyzer-input-<batchIndex>.json \
-  $PROJECT_ROOT/.understand-anything/tmp/ua-file-extract-results-<batchIndex>.json
+  $UA_GRAPH_ROOT/tmp/ua-file-analyzer-input-<batchIndex>.json \
+  $UA_GRAPH_ROOT/tmp/ua-file-extract-results-<batchIndex>.json
 ```
 
 If the script exits non-zero, read stderr and report the error. Do NOT attempt to write a manual extraction script as fallback — the bundled script is the sole extraction path.
 
 ### Step 3 — Read the extraction results
 
-Read `$PROJECT_ROOT/.understand-anything/tmp/ua-file-extract-results-<batchIndex>.json`. The output format is:
+Read `$UA_GRAPH_ROOT/tmp/ua-file-extract-results-<batchIndex>.json`. The output format is:
 
 ```json
 {
@@ -123,7 +123,7 @@ Treat these the same as tree-sitter-derived functions for node creation (Step 2 
 
 ## Phase 2 -- Semantic Analysis
 
-After the script completes, read `$PROJECT_ROOT/.understand-anything/tmp/ua-file-extract-results-<batchIndex>.json`. Use these structured results as the foundation for your analysis. Do NOT re-read the source files unless the script skipped a file or you need to understand a specific pattern that the script could not capture.
+After the script completes, read `$UA_GRAPH_ROOT/tmp/ua-file-extract-results-<batchIndex>.json`. Use these structured results as the foundation for your analysis. Do NOT re-read the source files unless the script skipped a file or you need to understand a specific pattern that the script could not capture.
 
 For each file in the script's `results` array, produce `GraphNode` and `GraphEdge` objects by combining the script's structural data with your expert judgment.
 
@@ -460,7 +460,7 @@ Use these hints for common edge patterns:
 
 After producing the JSON:
 
-1. Write the JSON to: `<project-root>/.understand-anything/intermediate/batch-<batchIndex>.json`
+1. Write the JSON to: `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`
 2. The project root and batch index will be provided in your prompt.
 3. Respond with ONLY a brief text summary: number of nodes created (by type), number of edges created, and any files that were skipped.
 

@@ -10,11 +10,19 @@ Extracts business domain knowledge — domains, business flows, and process step
 
 ## How It Works
 
-- If a knowledge graph already exists (`.understand-anything/knowledge-graph.json`), derives domain knowledge from it (cheap, no file scanning)
+- If a knowledge graph already exists in the configured graph output root, derives domain knowledge from it (cheap, no file scanning)
 - If no knowledge graph exists, performs a lightweight scan: file tree + entry point detection + sampled files
 - Use `--full` flag to force a fresh scan even if a knowledge graph exists
 
 ## Instructions
+
+### AstrBot SubAgent Dispatch
+
+This skill runs as an AstrBot supervisor. Do not perform domain-analysis worker tasks directly in the supervisor context.
+
+- Build the domain analyzer prompt input and call `ua_run_subagent_role`.
+- Use `role="domain-analyzer"` and `expected_output_path="$UA_GRAPH_ROOT/intermediate/domain-analysis.json"`.
+- Continue only after the SubAgent tool returns.
 
 ### Phase 0: Resolve `PROJECT_ROOT`
 
@@ -42,9 +50,11 @@ fi
 
 Use `$PROJECT_ROOT` (not the bare CWD) for every reference to "the current project" / `<project-root>` in subsequent phases.
 
+Set `UA_GRAPH_ROOT` to the host-provided graph output root. If the host did not provide one, set `UA_GRAPH_ROOT="$PROJECT_ROOT/.understand-anything"`. Use `$PROJECT_ROOT` only for source files and git state. Use `$UA_GRAPH_ROOT` for every graph artifact, intermediate file, temp file, and domain output.
+
 ### Phase 1: Detect Existing Graph
 
-1. Check if `$PROJECT_ROOT/.understand-anything/knowledge-graph.json` exists
+1. Check if `$UA_GRAPH_ROOT/knowledge-graph.json` exists
 2. If it exists AND `--full` was NOT passed → proceed to Phase 3 (derive from graph)
 3. Otherwise → proceed to Phase 2 (lightweight scan)
 
@@ -54,9 +64,9 @@ The preprocessing script does NOT produce a domain graph — it produces **raw m
 
 1. Run the preprocessing script bundled with this skill, passing `$PROJECT_ROOT` from Phase 0:
    ```
-   python ./extract-domain-context.py "$PROJECT_ROOT"
+   python ./extract-domain-context.py "$PROJECT_ROOT" "$UA_GRAPH_ROOT"
    ```
-   This outputs `$PROJECT_ROOT/.understand-anything/intermediate/domain-context.json` containing:
+   This outputs `$UA_GRAPH_ROOT/intermediate/domain-context.json` containing:
    - File tree (respecting `.gitignore`)
    - Detected entry points (HTTP routes, CLI commands, event handlers, cron jobs, exported handlers)
    - File signatures (exports, imports per file)
@@ -67,7 +77,7 @@ The preprocessing script does NOT produce a domain graph — it produces **raw m
 
 ### Phase 3: Derive from Existing Graph (Path 2)
 
-1. Read `$PROJECT_ROOT/.understand-anything/knowledge-graph.json`
+1. Read `$UA_GRAPH_ROOT/knowledge-graph.json`
 2. Format the graph data as structured context:
    - All nodes with their types, names, summaries, and tags
    - All edges with their types (especially `calls`, `imports`, `contains`)
@@ -79,16 +89,17 @@ The preprocessing script does NOT produce a domain graph — it produces **raw m
 ### Phase 4: Domain Analysis
 
 1. Read the domain-analyzer agent prompt from `astrbot_adapter/prompts/agents/domain-analyzer.md`
-2. Run an AstrBot agent role with the domain-analyzer prompt + the context from Phase 2 or 3
-3. The agent writes its output to `$PROJECT_ROOT/.understand-anything/intermediate/domain-analysis.json`
+2. Build the SubAgent input from the domain-analyzer prompt + the context from Phase 2 or 3
+3. Call `ua_run_subagent_role` with `role="domain-analyzer"` and `expected_output_path="$UA_GRAPH_ROOT/intermediate/domain-analysis.json"`
+4. The SubAgent writes its output to `$UA_GRAPH_ROOT/intermediate/domain-analysis.json`
 
 ### Phase 5: Validate and Save
 
 1. Read the domain analysis output
 2. Validate using the standard graph validation pipeline (the schema now supports domain/flow/step types)
 3. If validation fails, log warnings but save what's valid (error tolerance)
-4. Save to `$PROJECT_ROOT/.understand-anything/domain-graph.json`
-5. Clean up `$PROJECT_ROOT/.understand-anything/intermediate/domain-analysis.json` and `$PROJECT_ROOT/.understand-anything/intermediate/domain-context.json`
+4. Save to `$UA_GRAPH_ROOT/domain-graph.json`
+5. Clean up `$UA_GRAPH_ROOT/intermediate/domain-analysis.json` and `$UA_GRAPH_ROOT/intermediate/domain-context.json`
 
 ### Phase 6: Launch Dashboard
 

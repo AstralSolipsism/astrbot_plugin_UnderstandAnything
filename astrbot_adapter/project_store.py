@@ -13,10 +13,15 @@ class ProjectStore:
         self,
         project_root: Path,
         *,
+        graph_root: Path | None = None,
         max_source_file_bytes: int = MAX_SOURCE_FILE_BYTES,
     ) -> None:
         self.project_root = project_root.resolve(strict=False)
-        self.graph_root = self.project_root / GRAPH_DIR_NAME
+        self.graph_root = (
+            graph_root.resolve(strict=False)
+            if graph_root is not None
+            else self.project_root / GRAPH_DIR_NAME
+        )
         self.max_source_file_bytes = max_source_file_bytes
         self.security = PathSecurity([self.project_root])
 

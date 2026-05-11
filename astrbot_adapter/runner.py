@@ -21,13 +21,16 @@ from .constants import (
     PLUGIN_SKILLS_ROOT,
     SKILL_COMMANDS,
 )
+from .github_repo import GitHubRepoCheckout, GitHubRepoError, GitHubRepoManager
 from .job_request import format_job_args, parse_job_args, split_args
 from .job_store import JobSnapshot, JobStore
 from .llm_dispatcher import LLMDispatcher, read_prompt_file
 from .path_security import PathSecurity
-from .project_registry import ProjectRegistry
+from .project_registry import ProjectRegistry, ProjectRegistryError
 from .project_store import ProjectStore
 from .runtime import UnderstandAnythingRuntime
+from .subagent_dispatcher import UnderstandAnythingSubAgentDispatcher
+from .subagent_registry import UnderstandAnythingSubAgentRegistry
 
 
 class UnderstandAnythingRunner:
@@ -42,7 +45,13 @@ class UnderstandAnythingRunner:
         allowed_roots = self.config.get("allowed_roots") or []
         if isinstance(allowed_roots, str):
             allowed_roots = [allowed_roots]
-        self.security = PathSecurity(allowed_roots)
+        self.github = GitHubRepoManager(
+            git_bin=str(self.config.get("git_bin") or "git"),
+        )
+        self.security = PathSecurity(
+            allowed_roots,
+            implicit_roots=[self.github.cache_root, self.github.artifact_root],
+        )
         self.jobs = JobStore()
         self.runtime = UnderstandAnythingRuntime(
             node_bin=str(self.config.get("node_bin") or "node"),
@@ -52,6 +61,15 @@ class UnderstandAnythingRunner:
         self.dispatcher = LLMDispatcher(
             context,
             str(self.config.get("provider_id") or ""),
+        )
+        self.subagent_provider_id = str(self.config.get("subagent_provider_id") or "")
+        self.max_parallel_file_agents = self._coerce_positive_int(
+            self.config.get("max_parallel_file_agents"),
+            5,
+        )
+        self.max_parallel_article_agents = self._coerce_positive_int(
+            self.config.get("max_parallel_article_agents"),
+            3,
         )
         try:
             max_concurrent_jobs = int(self.config.get("max_concurrent_jobs") or 1)
@@ -91,6 +109,26 @@ class UnderstandAnythingRunner:
         project_name: str | None = None,
         project_ref: str | None = None,
     ) -> ProjectStore:
+        if project_path is None:
+            try:
+                record = self.registry.resolve_record(
+                    project_id=project_id,
+                    project_name=project_name,
+                    project_ref=project_ref,
+                )
+            except ProjectRegistryError:
+                if project_ref and ProjectRegistry._looks_like_path(project_ref):
+                    return ProjectStore(self.security.resolve_project_path(project_ref))
+                raise
+            source = record.source if isinstance(record.source, dict) else {}
+            source_root = self.security.resolve_project_path(
+                record.path,
+                must_exist=source.get("type") != "github",
+            )
+            return ProjectStore(
+                source_root,
+                graph_root=Path(record.graph_root),
+            )
         return ProjectStore(
             self.resolve_project_root(
                 project_path=project_path,
@@ -116,6 +154,32 @@ class UnderstandAnythingRunner:
             project_ref=project_ref,
         )
 
+    async def ensure_project_source_ready(
+        self,
+        *,
+        project_id: str | None = None,
+        project_name: str | None = None,
+        project_ref: str | None = None,
+    ) -> None:
+        record = self.registry.resolve_record(
+            project_id=project_id,
+            project_name=project_name,
+            project_ref=project_ref,
+        )
+        source = record.source if isinstance(record.source, dict) else {}
+        if source.get("type") != "github":
+            return
+        source_root = Path(record.path)
+        if source_root.is_dir():
+            return
+        has_target_url = bool(source.get("target_url"))
+        ref = str(source.get("ref")) if source.get("ref") else None
+        checkout = await self.github.resolve_remote(
+            str(source.get("target_url") or source.get("repo_url") or ""),
+            None if has_target_url else ref,
+        )
+        await self.github.prepare(checkout)
+
     async def start_skill_job(
         self,
         *,
@@ -126,36 +190,84 @@ class UnderstandAnythingRunner:
         project_id: str | None = None,
         project_name: str | None = None,
         project_ref: str | None = None,
+        target: str | Path | None = None,
+        repo_url: str | None = None,
+        ref: str | None = None,
         flags: Sequence[str] | None = None,
         start_task: bool = True,
     ) -> JobSnapshot:
         parsed = parse_job_args(raw_args)
         selected_flags = list(flags) if flags is not None else parsed.flags
-        project_root = self._resolve_job_project_root(
-            raw_args=raw_args,
+        target_text = str(target).strip() if target is not None else ""
+        if target_text:
+            if GitHubRepoManager.is_http_url(target_text):
+                repo_url = target_text
+                project_path = None
+            else:
+                project_path = target_text
+                repo_url = None
+        effective_project_ref = project_ref or parsed.project_ref
+        github_checkout = self._github_checkout_from_request(
+            repo_url=repo_url,
+            ref=ref or parsed.git_ref,
             parsed_path=parsed.path,
-            project_path=project_path,
-            project_id=project_id,
-            project_name=project_name,
-            project_ref=project_ref or parsed.project_ref,
         )
+        if (
+            github_checkout is None
+            and repo_url is None
+            and project_path is None
+            and parsed.path is None
+        ):
+            github_checkout = self._github_checkout_from_registry(
+                project_id=project_id,
+                project_name=project_name,
+                project_ref=effective_project_ref,
+            )
+        if github_checkout:
+            project_root = github_checkout.analysis_root
+            graph_root = github_checkout.graph_root
+        else:
+            project_root = self._resolve_job_project_root(
+                raw_args=raw_args,
+                parsed_path=parsed.path,
+                project_path=project_path,
+                project_id=project_id,
+                project_name=project_name,
+                project_ref=effective_project_ref,
+            )
+            graph_root = project_root / ".understand-anything"
         display_args = raw_args.strip() or format_job_args(project_root, selected_flags)
+        source_payload = (
+            self._github_source_payload(github_checkout)
+            if github_checkout
+            else {"type": "local"}
+        )
+        auto_update = self._auto_update_setting_from_flags(selected_flags)
         job = self.jobs.create(
             skill_name,
             project_root,
             {
                 "raw_args": display_args,
                 "project_path": str(project_root),
-                "project_id": ProjectRegistry.project_id_for(project_root),
+                "project_id": ProjectRegistry.project_id_for(
+                    graph_root.parent if github_checkout else project_root,
+                ),
+                "graph_root": str(graph_root),
                 "flags": selected_flags,
+                "auto_update": auto_update,
+                "source": source_payload,
             },
         )
-        auto_update = self._track_project_from_flags(project_root, selected_flags)
-        self.registry.register(
-            project_root,
-            job_id=job.job_id,
-            auto_update=auto_update,
-        )
+        if not github_checkout:
+            self._track_project_from_flags(project_root, selected_flags)
+        aliases = github_checkout.aliases if github_checkout else None
+        if not github_checkout:
+            self.registry.register(
+                project_root,
+                job_id=job.job_id,
+                auto_update=auto_update,
+                aliases=aliases,
+            )
         if start_task:
             task = asyncio.create_task(self._run_skill_job(job, event))
             self._tasks[job.job_id] = task
@@ -280,9 +392,41 @@ class UnderstandAnythingRunner:
                 self.jobs.mark_running(job.job_id)
                 self.jobs.append_log(
                     job.job_id,
-                    f"Starting {job.kind} for {job.project_root}",
+                    f"Starting {job.kind} job.",
                 )
+                await self._prepare_job_source(job)
+                self.jobs.append_log(job.job_id, f"Target project root: {job.project_root}")
                 prompt = self._build_skill_execution_prompt(job)
+                subagent_dispatcher = UnderstandAnythingSubAgentDispatcher(
+                    self.context,
+                    log_fn=lambda message: self.jobs.append_log(job.job_id, message),
+                )
+                if job.kind in {
+                    "understand",
+                    "understand-domain",
+                    "understand-knowledge",
+                }:
+                    status = UnderstandAnythingSubAgentRegistry(
+                        self.context,
+                        self.config,
+                    ).status_payload()
+                    if not status.get("ready"):
+                        blocked_roles = sorted(
+                            set(status.get("missing_roles", []))
+                            | set(status.get("stale_roles", []))
+                            | set(status.get("unloaded_roles", []))
+                        )
+                        blocked_text = (
+                            ", ".join(blocked_roles)
+                            or str(status.get("error") or "unknown")
+                        )
+                        raise RuntimeError(
+                            "Understand Anything SubAgents are not ready. "
+                            "Open the plugin Dashboard and run UA SubAgents "
+                            "registration. "
+                            f"Blocked roles: {blocked_text}",
+                        )
+                    subagent_dispatcher.ensure_ready()
                 result = await self.dispatcher.run_with_local_tools(
                     event=agent_event,
                     prompt=prompt,
@@ -290,15 +434,36 @@ class UnderstandAnythingRunner:
                         "You are the AstrBot host adapter for Understand Anything. "
                         "Execute the bundled Understand Anything skill faithfully "
                         "with local tools. "
+                        "When a workflow needs a project-scanner, file-analyzer, "
+                        "assemble-reviewer, architecture-analyzer, tour-builder, "
+                        "graph-reviewer, domain-analyzer, or article-analyzer role, "
+                        "you MUST call the internal UA SubAgent tools instead of "
+                        "performing that worker role yourself. "
                         "Do not modify AstrBot source files or plugin runtime source. "
-                        "Only write analysis outputs under the target project's "
-                        ".understand-anything directory."
+                        "Only write analysis outputs under the UA graph output root "
+                        "provided in the execution prompt."
                     ),
                     max_steps=120,
+                    extra_tools=subagent_dispatcher.tool_set(),
                 )
                 self.jobs.append_log(job.job_id, "Agent workflow finished.")
                 self.jobs.mark_finished(job.job_id, {"message": result})
-                self.registry.register(job.project_root, job_id=job.job_id)
+                self.registry.register(
+                    job.project_root,
+                    job_id=job.job_id,
+                    auto_update=(
+                        job.args.get("auto_update")
+                        if isinstance(job.args.get("auto_update"), bool)
+                        else None
+                    ),
+                    aliases=self._job_source_aliases(job),
+                    graph_root=job.args.get("graph_root"),
+                    source=(
+                        job.args.get("source")
+                        if isinstance(job.args.get("source"), dict)
+                        else None
+                    ),
+                )
                 if event is not None:
                     await event.send(
                         MessageChain().message(
@@ -317,6 +482,8 @@ class UnderstandAnythingRunner:
                         f"Understand Anything job failed: {job.kind}\n{exc}",
                     ),
                 )
+        finally:
+            self._cleanup_github_cache_after_job(job)
 
     def _build_skill_execution_prompt(self, job: JobSnapshot) -> str:
         skill_dir = PLUGIN_SKILLS_ROOT / job.kind
@@ -330,7 +497,8 @@ class UnderstandAnythingRunner:
         return (
             f"Execute Understand Anything command `/{command_name}` with arguments:\n"
             f"{job.args.get('raw_args', '')}\n\n"
-            f"Target project root:\n{job.project_root}\n\n"
+            f"Target project root (source files):\n{job.project_root}\n\n"
+            f"UA graph output root:\n{job.args.get('graph_root', job.project_root / '.understand-anything')}\n\n"
             "Bundled Understand Anything skill instructions:\n"
             "```markdown\n"
             f"{read_prompt_file(skill_md)}\n"
@@ -338,20 +506,226 @@ class UnderstandAnythingRunner:
             "Available AstrBot agent prompt files:\n"
             f"{agent_index}\n\n"
             "Important AstrBot host rules:\n"
-            "- Perform the full workflow directly in this agent session.\n"
-            "- When the skill says to dispatch an agent, read the corresponding "
-            "AstrBot agent prompt file and execute that role yourself.\n"
+            "- Perform only the supervisor/orchestration work directly in this agent session.\n"
+            "- When the skill says to run an agent role, call `ua_run_subagent_role` "
+            "or `ua_run_subagent_batches`; do not execute worker roles yourself.\n"
+            "- Use `ua_run_subagent_batches` for file-analyzer batches with "
+            f"`max_concurrency={self.max_parallel_file_agents}`.\n"
+            "- Use `ua_run_subagent_batches` for article-analyzer batches with "
+            f"`max_concurrency={self.max_parallel_article_agents}`.\n"
             "- Use absolute paths shown above. The plugin runtime root is "
             "`understand-anything/`, skills live in root `skills/`, and prompts "
             "live in `astrbot_adapter/prompts/agents/`.\n"
-            "- Write output to the target project `.understand-anything/` exactly "
-            "as Understand Anything expects.\n"
+            "- Set `PROJECT_ROOT` to the target project root above.\n"
+            "- Set `UA_GRAPH_ROOT` to the UA graph output root above.\n"
+            "- Treat every `$PROJECT_ROOT/.understand-anything` path in bundled "
+            "skills, scripts, and agent prompts as `$UA_GRAPH_ROOT` for this run. "
+            "Use `$PROJECT_ROOT` only for reading source files and git state.\n"
+            "- Write graph files, meta, fingerprints, config, intermediate, and "
+            "tmp outputs under `$UA_GRAPH_ROOT`.\n"
             "- Preserve Understand Anything JSON schema and Dashboard compatibility.\n"
         )
+
+    @staticmethod
+    def _coerce_positive_int(value: Any, default: int) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(1, number)
 
     def _project_root_from_args(self, raw_args: str) -> Path:
         token = self._first_path_token(raw_args)
         return self.security.resolve_project_path(token)
+
+    def _github_checkout_from_request(
+        self,
+        *,
+        repo_url: str | None,
+        ref: str | None,
+        parsed_path: str | None,
+    ) -> GitHubRepoCheckout | None:
+        candidate = (repo_url or "").strip()
+        if candidate:
+            return self.github.resolve(candidate, ref)
+        if not parsed_path:
+            return None
+        if GitHubRepoManager.looks_like_github_url(parsed_path):
+            return self.github.resolve(parsed_path, ref)
+        if GitHubRepoManager.is_http_url(parsed_path):
+            raise GitHubRepoError("Only public https://github.com repository URLs are supported.")
+        return None
+
+    def _github_checkout_from_registry(
+        self,
+        *,
+        project_id: str | None,
+        project_name: str | None,
+        project_ref: str | None,
+    ) -> GitHubRepoCheckout | None:
+        if not (project_id or project_name or project_ref):
+            return None
+        try:
+            record = self.registry.resolve_record(
+                project_id=project_id,
+                project_name=project_name,
+                project_ref=project_ref,
+            )
+        except ProjectRegistryError:
+            return None
+        source = record.source if isinstance(record.source, dict) else {}
+        if source.get("type") != "github":
+            return None
+        owner = str(source.get("owner") or "")
+        repo = str(source.get("repo") or "")
+        if owner and repo:
+            return self.github.checkout_from_metadata(
+                owner=owner,
+                repo=repo,
+                ref=str(source.get("ref")) if source.get("ref") else None,
+                subpath=str(source.get("subpath")) if source.get("subpath") else None,
+            )
+        target_url = str(source.get("target_url") or source.get("repo_url") or "")
+        if not target_url:
+            return None
+        return self.github.resolve(target_url)
+
+    @staticmethod
+    def _github_source_payload(checkout: GitHubRepoCheckout | None) -> dict[str, Any]:
+        if not checkout:
+            return {"type": "local"}
+        return {
+            "type": "github",
+            "owner": checkout.owner,
+            "repo": checkout.repo,
+            "repo_url": checkout.repo_url,
+            "target_url": checkout.target_url,
+            "clone_url": checkout.clone_url,
+            "ref": checkout.ref,
+            "subpath": checkout.subpath,
+            "cache_path": str(checkout.worktree_path),
+            "artifact_root": str(checkout.artifact_root),
+            "graph_root": str(checkout.graph_root),
+            "source_key": checkout.source_key,
+            "display_name": checkout.display_name,
+        }
+
+    async def _prepare_job_source(self, job: JobSnapshot) -> None:
+        source = job.args.get("source")
+        if not isinstance(source, dict) or source.get("type") != "github":
+            return
+        has_target_url = bool(source.get("target_url"))
+        repo_url = str(source.get("target_url") or source.get("repo_url") or "")
+        ref = None if has_target_url else source.get("ref")
+        checkout = await self.github.resolve_remote(repo_url, str(ref) if ref else None)
+        self.jobs.append_log(
+            job.job_id,
+            f"Preparing GitHub repository {checkout.display_name}"
+            + (f" at {checkout.ref}" if checkout.ref else "")
+            + (f" subpath {checkout.subpath}" if checkout.subpath else ""),
+        )
+        analysis_root = await self.github.prepare(checkout)
+        job.project_root = analysis_root
+        job.args["project_path"] = str(analysis_root)
+        job.args["graph_root"] = str(checkout.graph_root)
+        job.args["project_id"] = ProjectRegistry.project_id_for(checkout.artifact_root)
+        job.args["raw_args"] = format_job_args(
+            analysis_root,
+            job.args.get("flags") if isinstance(job.args.get("flags"), list) else [],
+        )
+        job.args["source"] = self._github_source_payload(checkout)
+        self.jobs.append_log(job.job_id, f"GitHub repository ready: {checkout.worktree_path}")
+        if checkout.subpath:
+            self.jobs.append_log(job.job_id, f"GitHub analysis subpath ready: {analysis_root}")
+        self.registry.register(
+            analysis_root,
+            job_id=job.job_id,
+            auto_update=(
+                job.args.get("auto_update")
+                if isinstance(job.args.get("auto_update"), bool)
+                else None
+            ),
+            aliases=checkout.aliases,
+            graph_root=checkout.graph_root,
+            source=self._github_source_payload(checkout),
+        )
+
+    def _cleanup_github_cache_after_job(self, job: JobSnapshot) -> None:
+        if not bool(self.config.get("cleanup_github_cache_after_analysis", False)):
+            return
+        source = job.args.get("source")
+        if not isinstance(source, dict) or source.get("type") != "github":
+            return
+        if self._github_cache_in_use_by_other_job(job, source):
+            self.jobs.append_log(
+                job.job_id,
+                "GitHub clone cache cleanup skipped; another job is using it.",
+            )
+            return
+        try:
+            target_url = str(source.get("target_url") or source.get("repo_url") or "")
+            ref = str(source.get("ref")) if source.get("ref") else None
+            checkout = self.github.resolve(
+                target_url,
+                None if source.get("target_url") else ref,
+            )
+            removed = self.github.remove_cache(checkout)
+        except Exception as exc:
+            logger.warning("GitHub cache cleanup failed: %s", exc)
+            try:
+                self.jobs.append_log(job.job_id, f"GitHub cache cleanup failed: {exc}")
+            except Exception:
+                pass
+            return
+        if removed:
+            self.jobs.append_log(job.job_id, "GitHub clone cache cleaned; artifacts retained.")
+
+    def _github_cache_in_use_by_other_job(
+        self,
+        job: JobSnapshot,
+        source: dict[str, Any],
+    ) -> bool:
+        cache_path = source.get("cache_path")
+        if not cache_path:
+            return False
+        current = Path(str(cache_path)).resolve(strict=False)
+        for other in self.jobs.list():
+            if other.job_id == job.job_id:
+                continue
+            if other.status.value not in {"queued", "running"}:
+                continue
+            other_source = other.args.get("source")
+            if not isinstance(other_source, dict):
+                continue
+            other_cache_path = other_source.get("cache_path")
+            if not other_cache_path:
+                continue
+            if Path(str(other_cache_path)).resolve(strict=False) == current:
+                return True
+        return False
+
+    @staticmethod
+    def _job_source_aliases(job: JobSnapshot) -> list[str] | None:
+        source = job.args.get("source")
+        if not isinstance(source, dict) or source.get("type") != "github":
+            return None
+        aliases = [
+            str(value)
+            for value in (
+                source.get("display_name"),
+                source.get("repo_url"),
+                source.get("target_url"),
+            )
+            if value
+        ]
+        ref = source.get("ref")
+        display_name = source.get("display_name")
+        if ref and display_name:
+            aliases.append(f"{display_name}@{ref}")
+            subpath = source.get("subpath")
+            if subpath:
+                aliases.append(f"{display_name}@{ref}:{subpath}")
+        return aliases or None
 
     def _resolve_job_project_root(
         self,
@@ -403,12 +777,19 @@ class UnderstandAnythingRunner:
         project_root: Path,
         flags: Sequence[str],
     ) -> bool | None:
+        setting = self._auto_update_setting_from_flags(flags)
+        if setting is True:
+            self._auto_update_projects.add(project_root)
+        elif setting is False:
+            self._auto_update_projects.discard(project_root)
+        return setting
+
+    @staticmethod
+    def _auto_update_setting_from_flags(flags: Sequence[str]) -> bool | None:
         tokens = set(flags)
         if "--auto-update" in tokens:
-            self._auto_update_projects.add(project_root)
             return True
         if "--no-auto-update" in tokens:
-            self._auto_update_projects.discard(project_root)
             return False
         return None
 

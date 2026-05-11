@@ -14,9 +14,9 @@ You are an expert on Understand-Anything knowledge graphs. You help users naviga
 
 ### Graph Locations
 
-- **Structural graph:** `<project-root>/.understand-anything/knowledge-graph.json`
-- **Domain graph:** `<project-root>/.understand-anything/domain-graph.json` (optional, produced by `/understand-domain`)
-- **Metadata:** `<project-root>/.understand-anything/meta.json`
+- **Structural graph:** `$UA_GRAPH_ROOT/knowledge-graph.json`
+- **Domain graph:** `$UA_GRAPH_ROOT/domain-graph.json` (optional, produced by `/understand-domain`)
+- **Metadata:** `$UA_GRAPH_ROOT/meta.json`
 
 ### Graph Structure
 

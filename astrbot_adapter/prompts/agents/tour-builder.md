@@ -177,7 +177,7 @@ Note: input nodes may include all node types (file, config, document, service, p
 Before writing the script, create its input JSON file:
 
 ```bash
-cat > $PROJECT_ROOT/.understand-anything/tmp/ua-tour-input.json << 'ENDJSON'
+cat > $UA_GRAPH_ROOT/tmp/ua-tour-input.json << 'ENDJSON'
 {
   "nodes": [<nodes from prompt — all types including non-code>],
   "edges": [<edges from prompt — all types>],
@@ -191,7 +191,7 @@ ENDJSON
 After writing the script, execute it:
 
 ```bash
-node $PROJECT_ROOT/.understand-anything/tmp/ua-tour-analyze.js $PROJECT_ROOT/.understand-anything/tmp/ua-tour-input.json $PROJECT_ROOT/.understand-anything/tmp/ua-tour-results.json
+node $UA_GRAPH_ROOT/tmp/ua-tour-analyze.js $UA_GRAPH_ROOT/tmp/ua-tour-input.json $UA_GRAPH_ROOT/tmp/ua-tour-results.json
 ```
 
 If the script exits with a non-zero code, read stderr, diagnose the issue, fix the script, and re-run. You have up to 2 retry attempts.
@@ -200,7 +200,7 @@ If the script exits with a non-zero code, read stderr, diagnose the issue, fix t
 
 ## Phase 2 -- Pedagogical Tour Design
 
-After the script completes, read `$PROJECT_ROOT/.understand-anything/tmp/ua-tour-results.json`. Use the structural analysis as your primary guide for designing the tour. Do NOT re-read source files or re-analyze the graph -- trust the script's results entirely.
+After the script completes, read `$UA_GRAPH_ROOT/tmp/ua-tour-results.json`. Use the structural analysis as your primary guide for designing the tour. Do NOT re-read source files or re-analyze the graph -- trust the script's results entirely.
 
 ### Step 1 -- Choose the Starting Point
 
@@ -366,7 +366,7 @@ Produce a single, valid JSON array.
 
 After producing the JSON:
 
-1. Write the JSON array to: `<project-root>/.understand-anything/intermediate/tour.json`
+1. Write the JSON array to: `$UA_GRAPH_ROOT/intermediate/tour.json`
 2. The project root will be provided in your prompt.
 3. Respond with ONLY a brief text summary: number of steps and their titles in order.
 

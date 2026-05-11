@@ -141,6 +141,28 @@ class UnderstandAnythingPlugin(Star):
         )
         return f"Started Understand Anything analysis job {job.job_id}."
 
+    @filter.llm_tool(name="ua_analyze_github_repo")
+    async def ua_analyze_github_repo(
+        self,
+        event: AstrMessageEvent,
+        repo_url: str,
+        ref: str = "",
+    ):
+        """Analyze a public GitHub repository with Understand Anything.
+
+        Args:
+            repo_url(string): Public https://github.com/owner/repo URL.
+                May include /tree/<ref>/<path>.
+            ref(string): Optional legacy branch, tag, or commit-ish ref override.
+        """
+        job = await self.runner.start_skill_job(
+            skill_name="understand",
+            repo_url=repo_url,
+            ref=ref or None,
+            event=event,
+        )
+        return f"Started Understand Anything GitHub analysis job {job.job_id}."
+
     @filter.llm_tool(name="ua_search_graph")
     async def ua_search_graph(
         self,

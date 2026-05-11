@@ -6,18 +6,27 @@ argument-hint: ["[path] [--full|--auto-update|--no-auto-update|--review]"]
 
 # /understand
 
-Analyze the current codebase and produce a `knowledge-graph.json` file in `.understand-anything/`. This file powers the interactive dashboard for exploring the project's architecture.
+Analyze the current codebase and produce a `knowledge-graph.json` file in the configured Understand Anything graph output root. This file powers the interactive dashboard for exploring the project's architecture.
 
 ## Options
 
 - `$ARGUMENTS` may contain:
   - `--full` — Force a full rebuild, ignoring any existing graph
-  - `--auto-update` — Enable automatic graph updates on commit (writes `autoUpdate: true` to `.understand-anything/config.json`)
-  - `--no-auto-update` — Disable automatic graph updates (writes `autoUpdate: false` to `.understand-anything/config.json`)
+  - `--auto-update` — Enable automatic graph updates on commit (writes `autoUpdate: true` to the graph output config)
+  - `--no-auto-update` — Disable automatic graph updates (writes `autoUpdate: false` to the graph output config)
   - `--review` — Run full LLM graph-reviewer instead of inline deterministic validation
   - A directory path (e.g. `/path/to/repo` or `../other-project`) — Analyze the given directory instead of the current working directory
 
 ---
+
+## AstrBot SubAgent Dispatch
+
+This skill runs inside AstrBot as a supervisor. Do not perform worker roles directly in the supervisor context.
+
+- For one worker role, call `ua_run_subagent_role(role, input, expected_output_path)`.
+- For repeated file batches, call `ua_run_subagent_batches(role="file-analyzer", batches=[...], max_concurrency=<AstrBot host configured file-agent concurrency, default 5>, continue_on_error=true)`.
+- Each batch object must include `id`, `input`, and `expected_output_path`.
+- Continue only after the SubAgent tool returns. Treat `failed` or `missing_output` results as phase warnings unless the phase explicitly requires stopping.
 
 ## Phase 0 — Pre-flight
 
@@ -50,6 +59,12 @@ Determine whether to run a full analysis or incremental update.
      ```
 
      Set `UNDERSTAND_NO_WORKTREE_REDIRECT=1` if you intentionally want a per-worktree graph (rare — most users want the redirect).
+
+1.2. **Resolve `UA_GRAPH_ROOT`:**
+   - If the AstrBot host prompt provides `UA_GRAPH_ROOT`, use it exactly as the graph output root.
+   - If no host value is available, set `UA_GRAPH_ROOT="$PROJECT_ROOT/.understand-anything"`.
+   - Use `$PROJECT_ROOT` only for source files and git state.
+   - Use `$UA_GRAPH_ROOT` for every Understand Anything artifact: `knowledge-graph.json`, `domain-graph.json`, `meta.json`, `fingerprints.json`, `config.json`, `intermediate/`, `tmp/`, reviews, and batch outputs.
 1.5. **Ensure the bundled runtime is built.** Later phases invoke Node scripts that import `@understand-anything/core`. In AstrBot, the plugin root is the `astrbot_plugin_UnderstandAnything` directory and the bundled runtime is always at `<PLUGIN_ROOT>/understand-anything`.
 
    Resolve paths from the AstrBot plugin layout:
@@ -76,23 +91,23 @@ Determine whether to run a full analysis or incremental update.
    ```
 3. Create the intermediate and temp output directories:
    ```bash
-   mkdir -p $PROJECT_ROOT/.understand-anything/intermediate
-   mkdir -p $PROJECT_ROOT/.understand-anything/tmp
+   mkdir -p $UA_GRAPH_ROOT/intermediate
+   mkdir -p $UA_GRAPH_ROOT/tmp
    ```
 3.5. **Auto-update configuration:**
-   - If `--auto-update` is in `$ARGUMENTS`: write `{"autoUpdate": true}` to `$PROJECT_ROOT/.understand-anything/config.json`
-   - If `--no-auto-update` is in `$ARGUMENTS`: write `{"autoUpdate": false}` to `$PROJECT_ROOT/.understand-anything/config.json`
+   - If `--auto-update` is in `$ARGUMENTS`: write `{"autoUpdate": true}` to `$UA_GRAPH_ROOT/config.json`
+   - If `--no-auto-update` is in `$ARGUMENTS`: write `{"autoUpdate": false}` to `$UA_GRAPH_ROOT/config.json`
    - These flags only set the config — analysis proceeds normally regardless.
 
 4. **Check for subdomain knowledge graphs to merge:**
-   List all `*knowledge-graph*.json` files in `$PROJECT_ROOT/.understand-anything/` **excluding** `knowledge-graph.json` itself (e.g. `frontend-knowledge-graph.json`, `backend-knowledge-graph.json`). If any subdomain graphs exist, run the merge script bundled with this skill (located next to this SKILL.md file — use the skill directory path, not the project root):
+   List all `*knowledge-graph*.json` files in `$UA_GRAPH_ROOT/` **excluding** `knowledge-graph.json` itself (e.g. `frontend-knowledge-graph.json`, `backend-knowledge-graph.json`). If any subdomain graphs exist, run the merge script bundled with this skill (located next to this SKILL.md file — use the skill directory path, not the project root):
    ```bash
-   python <SKILL_DIR>/merge-subdomain-graphs.py $PROJECT_ROOT
+   python <SKILL_DIR>/merge-subdomain-graphs.py "$PROJECT_ROOT" --graph-root "$UA_GRAPH_ROOT"
    ```
    The script discovers subdomain graphs, loads the existing `knowledge-graph.json` as a base (if present), and merges everything into `knowledge-graph.json` (deduplicating nodes and edges). Report the merge summary to the user, then continue with the merged graph.
 
-5. Check if `$PROJECT_ROOT/.understand-anything/knowledge-graph.json` exists. If it does, read it.
-6. Check if `$PROJECT_ROOT/.understand-anything/meta.json` exists. If it does, read it to get `gitCommitHash`.
+5. Check if `$UA_GRAPH_ROOT/knowledge-graph.json` exists. If it does, read it.
+6. Check if `$UA_GRAPH_ROOT/meta.json` exists. If it does, read it to get `gitCommitHash`.
 7. **Decision logic:**
 
    | Condition | Action |
@@ -103,7 +118,7 @@ Determine whether to run a full analysis or incremental update.
    | Existing graph + unchanged commit hash | Ask the user: "The graph is up to date at this commit. Would you like to: **(a)** run a full rebuild (`--full`), **(b)** run the LLM graph reviewer (`--review`), or **(c)** do nothing?" Then follow their choice. If they pick (c), STOP. |
    | Existing graph + changed files | Incremental update (re-analyze changed files only) |
 
-   **Review-only path:** Copy the existing `knowledge-graph.json` to `$PROJECT_ROOT/.understand-anything/intermediate/assembled-graph.json`, then jump directly to Phase 6 step 3.
+   **Review-only path:** Copy the existing `knowledge-graph.json` to `$UA_GRAPH_ROOT/intermediate/assembled-graph.json`, then jump directly to Phase 6 step 3.
 
    For incremental updates, get the changed file list:
    ```bash
@@ -127,14 +142,15 @@ Determine whether to run a full analysis or incremental update.
 
 Set up and verify the `.understandignore` file before scanning.
 
-1. Check if `$PROJECT_ROOT/.understand-anything/.understandignore` exists.
+1. Check if `$UA_GRAPH_ROOT/.understandignore` exists.
 2. **If it does NOT exist**, generate a starter file:
    - Run the following Node.js one-liner in `$PROJECT_ROOT` (reads `.gitignore` and deduplicates against built-in defaults):
      ```bash
-     node -e "
+     UA_GRAPH_ROOT="$UA_GRAPH_ROOT" node -e "
      const fs = require('fs');
      const path = require('path');
      const root = process.cwd();
+     const graphRoot = process.env.UA_GRAPH_ROOT || path.join(root, '.understand-anything');
      const defaults = ['node_modules/','node_modules','.git/','vendor/','venv/','.venv/','__pycache__/','dist/','dist','build/','build','out/','coverage/','coverage','.next/','.cache/','.turbo/','target/','obj/','*.lock','package-lock.json','yarn.lock','pnpm-lock.yaml','*.png','*.jpg','*.jpeg','*.gif','*.svg','*.ico','*.woff','*.woff2','*.ttf','*.eot','*.mp3','*.mp4','*.pdf','*.zip','*.tar','*.gz','*.min.js','*.min.css','*.map','*.generated.*','.idea/','.vscode/','LICENSE','.gitignore','.editorconfig','.prettierrc','.eslintrc*','*.log'];
      const norm = p => p.replace(/\/+$/, '');
      const defaultSet = new Set(defaults.map(norm));
@@ -149,7 +165,7 @@ Set up and verify the `.understandignore` file before scanning.
      const found = dirs.filter(d => fs.existsSync(path.join(root, d)));
      if (found.length) { body += '# --- Detected directories (uncomment to exclude) ---\n\n' + found.map(d => '# ' + d + '/').join('\n') + '\n\n'; }
      body += '# --- Test file patterns (uncomment to exclude) ---\n\n# *.test.*\n# *.spec.*\n# *.snap\n';
-     const outDir = path.join(root, '.understand-anything');
+     const outDir = graphRoot;
      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
      fs.writeFileSync(path.join(outDir, '.understandignore'), header + body);
      "
@@ -166,7 +182,7 @@ Set up and verify the `.understandignore` file before scanning.
 
 ## Phase 1 — SCAN (Full analysis only)
 
-Run an AstrBot agent role using the `project-scanner` agent prompt (at `astrbot_adapter/prompts/agents/project-scanner.md`). Append the following additional context:
+Call `ua_run_subagent_role` with `role="project-scanner"`. Build the `input` from the project-scanner prompt context below and set `expected_output_path` to `$UA_GRAPH_ROOT/intermediate/scan-result.json`.
 
 > **Additional context from main session:**
 >
@@ -182,13 +198,13 @@ Run an AstrBot agent role using the `project-scanner` agent prompt (at `astrbot_
 >
 > Use this context to produce more accurate project name, description, and framework detection. The README and manifest are authoritative — prefer their information over heuristics.
 
-Pass these parameters in the AstrBot execution prompt:
+Include these parameters in the SubAgent input:
 
 > Scan this project directory to discover all project files (including non-code files like configs, docs, infrastructure), detect languages and frameworks.
 > Project root: `$PROJECT_ROOT`
-> Write output to: `$PROJECT_ROOT/.understand-anything/intermediate/scan-result.json`
+> Write output to: `$UA_GRAPH_ROOT/intermediate/scan-result.json`
 
-After the AstrBot agent role completes, read `$PROJECT_ROOT/.understand-anything/intermediate/scan-result.json` to get:
+After the SubAgent tool completes, read `$UA_GRAPH_ROOT/intermediate/scan-result.json` to get:
 - Project name, description
 - Languages, frameworks
 - File list with line counts and `fileCategory` per file (`code`, `config`, `docs`, `infra`, `data`, `script`, `markup`)
@@ -221,7 +237,7 @@ Batch the file list from Phase 1 into groups of **20-30 files each** (aim for ~2
 - Non-code files can be mixed with code files in the same batch if batch sizes are small
 - Each file's `fileCategory` from Phase 1 must be included in the batch file list
 
-For each batch, run an AstrBot agent role using the `file-analyzer` agent prompt (at `astrbot_adapter/prompts/agents/file-analyzer.md`). Run up to **5 AstrBot agent role batches concurrently** using parallel AstrBot agent role execution. Append the following additional context:
+For the file-analyzer phase, build one batch object per batch and call `ua_run_subagent_batches` with `role="file-analyzer"`, the `max_concurrency` value from AstrBot host rules, and `continue_on_error=true`. Each batch `input` must include the file-analyzer prompt context below and each `expected_output_path` must be `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`.
 
 > **Additional context from main session:**
 >
@@ -235,7 +251,7 @@ for each file in this batch:
   batchImportData[file.path] = $IMPORT_MAP[file.path] ?? []
 ```
 
-Fill in batch-specific parameters below and run the AstrBot agent role:
+Fill in batch-specific parameters below inside each batch input:
 
 > Analyze these files and produce GraphNode and GraphEdge objects.
 > Project root: `$PROJECT_ROOT`
@@ -243,7 +259,7 @@ Fill in batch-specific parameters below and run the AstrBot agent role:
 > Languages: `<languages>`
 > Batch index: `<batchIndex>`
 > Skill directory (for bundled scripts): `<SKILL_DIR>`
-> Write output to: `$PROJECT_ROOT/.understand-anything/intermediate/batch-<batchIndex>.json`
+> Write output to: `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`
 >
 > Pre-resolved import data for this batch (use this for all import edge creation — do NOT re-resolve imports from source):
 > ```json
@@ -257,10 +273,10 @@ Fill in batch-specific parameters below and run the AstrBot agent role:
 
 After ALL batches complete, run the merge-and-normalize script bundled with this skill (located next to this SKILL.md file — use the skill directory path, not the project root):
 ```bash
-python <SKILL_DIR>/merge-batch-graphs.py $PROJECT_ROOT
+python <SKILL_DIR>/merge-batch-graphs.py "$PROJECT_ROOT" "$UA_GRAPH_ROOT"
 ```
 
-This script reads all `batch-*.json` files from `$PROJECT_ROOT/.understand-anything/intermediate/`, then in one pass:
+This script reads all `batch-*.json` files from `$UA_GRAPH_ROOT/intermediate/`, then in one pass:
 - Combines all nodes and edges across batches
 - Normalizes node IDs (strips double prefixes, project-name prefixes, adds missing prefixes)
 - Normalizes complexity values (`low`→`simple`, `medium`→`moderate`, `high`→`complex`, etc.)
@@ -271,13 +287,13 @@ This script reads all `batch-*.json` files from `$PROJECT_ROOT/.understand-anyth
 
 The merge script also runs a `tested_by` linker that canonicalizes test-coverage edges in two passes. **Pass 1** walks LLM-emitted `tested_by` edges and flips inverted ones in place (the LLM systematically emits `test → production` because it sees the import only when analyzing the test file); semantically broken edges (test↔test, prod↔prod, orphan endpoints) are dropped. **Pass 2** supplements with path-convention pairings (`X.ts` ↔ `X.test.ts`, JS/TS `__tests__/` and `<dir>/test/` walk-out, Python in-package `tests/`, Go `_test.go` sibling, Maven/Gradle `src/test/...` ↔ `src/main/...`, .NET `<svc>/tests/` ↔ `<svc>/src/...` and `<App>.Tests/` ↔ `<App>/`). Production nodes that end up sourcing any `tested_by` edge get a `"tested"` tag. All resulting edges run `production → test`.
 
-Output: `$PROJECT_ROOT/.understand-anything/intermediate/assembled-graph.json`
+Output: `$UA_GRAPH_ROOT/intermediate/assembled-graph.json`
 
 Include the script's warnings in `$PHASE_WARNINGS` for the reviewer.
 
 ### Incremental update path
 
-Use the changed files list from Phase 0. Batch and run file-analyzer AstrBot agent roles using the same process as above (20-30 files per batch, up to 5 concurrent, with batchImportData constructed from $IMPORT_MAP), but only for changed files.
+Use the changed files list from Phase 0. Batch and call `ua_run_subagent_batches` using the same process as above (20-30 files per batch, host-configured file-agent concurrency, with batchImportData constructed from $IMPORT_MAP), but only for changed files.
 
 After batches complete:
 1. Remove old nodes whose `filePath` matches any changed file from the existing graph
@@ -285,21 +301,21 @@ After batches complete:
 3. Write the pruned existing nodes/edges as `batch-existing.json` in the intermediate directory
 4. Run the same merge script — it will combine `batch-existing.json` with the fresh `batch-*.json` files:
    ```bash
-   python <SKILL_DIR>/merge-batch-graphs.py $PROJECT_ROOT
+   python <SKILL_DIR>/merge-batch-graphs.py "$PROJECT_ROOT" "$UA_GRAPH_ROOT"
    ```
 
 ---
 
 ## Phase 3 — ASSEMBLE REVIEW
 
-Run an AstrBot agent role using the `assemble-reviewer` agent prompt (at `astrbot_adapter/prompts/agents/assemble-reviewer.md`).
+Call `ua_run_subagent_role` with `role="assemble-reviewer"` and `expected_output_path="$UA_GRAPH_ROOT/intermediate/assemble-review.json"`.
 
-Pass these parameters in the AstrBot execution prompt:
+Include these parameters in the SubAgent input:
 
-> Review the assembled graph at `$PROJECT_ROOT/.understand-anything/intermediate/assembled-graph.json`.
+> Review the assembled graph at `$UA_GRAPH_ROOT/intermediate/assembled-graph.json`.
 > Project root: `$PROJECT_ROOT`
-> Batch files are at: `$PROJECT_ROOT/.understand-anything/intermediate/batch-*.json`
-> Write review output to: `$PROJECT_ROOT/.understand-anything/intermediate/assemble-review.json`
+> Batch files are at: `$UA_GRAPH_ROOT/intermediate/batch-*.json`
+> Write review output to: `$UA_GRAPH_ROOT/intermediate/assemble-review.json`
 >
 > **Merge script report:**
 > ```
@@ -311,14 +327,14 @@ Pass these parameters in the AstrBot execution prompt:
 > $IMPORT_MAP
 > ```
 
-After the AstrBot agent role completes, read `$PROJECT_ROOT/.understand-anything/intermediate/assemble-review.json` and add any notes to `$PHASE_WARNINGS`.
+After the SubAgent tool completes, read `$UA_GRAPH_ROOT/intermediate/assemble-review.json` and add any notes to `$PHASE_WARNINGS`.
 
 ---
 
 ## Phase 4 — ARCHITECTURE
 
 **Build the combined prompt template:**
-1. Use the `architecture-analyzer` agent prompt (at `astrbot_adapter/prompts/agents/architecture-analyzer.md`).
+1. Build a `ua_run_subagent_role` input for `role="architecture-analyzer"` from the architecture-analyzer prompt at `astrbot_adapter/prompts/agents/architecture-analyzer.md`.
 2. **Language context injection:** For each language detected in Phase 1 (e.g., `python`, `markdown`, `dockerfile`, `yaml`, `sql`, `terraform`, `graphql`, `protobuf`, `shell`, `html`, `css`), read the file at `./languages/<language-id>.md` (e.g., `./languages/python.md`, `./languages/dockerfile.md`) and append its content after the base template under a `## Language Context` header. If the file does not exist for a detected language, skip it silently and continue. These files are in the `languages/` subdirectory next to this SKILL.md file. **Include non-code language snippets** — they provide edge patterns and summary styles for non-code files.
 3. **Framework addendum injection:** For each framework detected in Phase 1 (e.g., `Django`), read the file at `./frameworks/<framework-id-lowercase>.md` (e.g., `./frameworks/django.md`) and append its full content after the language context. If the file does not exist for a detected framework, skip it silently and continue. These files are in the `frameworks/` subdirectory next to this SKILL.md file.
 
@@ -335,11 +351,11 @@ Append the language/framework context and the following additional context to th
 >
 > Use the directory tree, language context, and framework addendums (appended above) to inform layer assignments. Directory structure is strong evidence for layer boundaries. Non-code files (config, docs, infrastructure, data) should be assigned to appropriate layers — see the prompt template for guidance.
 
-Pass these parameters in the AstrBot execution prompt:
+Include these parameters in the SubAgent input:
 
 > Analyze this codebase's structure to identify architectural layers.
 > Project root: `$PROJECT_ROOT`
-> Write output to: `$PROJECT_ROOT/.understand-anything/intermediate/layers.json`
+> Write output to: `$UA_GRAPH_ROOT/intermediate/layers.json`
 > Project: `<projectName>` — `<projectDescription>`
 >
 > File nodes (all node types — includes code files, config, document, service, pipeline, table, schema, resource, endpoint):
@@ -357,7 +373,7 @@ Pass these parameters in the AstrBot execution prompt:
 > [list of ALL edges — include all edge types]
 > ```
 
-After the AstrBot agent role completes, read `$PROJECT_ROOT/.understand-anything/intermediate/layers.json` and normalize it into a final `layers` array. Apply these steps **in order**:
+After the SubAgent tool completes, read `$UA_GRAPH_ROOT/intermediate/layers.json` and normalize it into a final `layers` array. Apply these steps **in order**:
 
 1. **Unwrap envelope:** If the file contains `{ "layers": [...] }` instead of a plain array, extract the inner array. (The prompt requests a plain array, but LLMs may still produce an envelope.)
 2. **Rename legacy fields:** If any layer object has a `nodes` field instead of `nodeIds`, rename `nodes` → `nodeIds`. If `nodes` entries are objects with an `id` field rather than plain strings, extract just the `id` values into `nodeIds`.
@@ -395,7 +411,7 @@ All four fields (`id`, `name`, `description`, `nodeIds`) are required.
 
 ## Phase 5 — TOUR
 
-Run an AstrBot agent role using the `tour-builder` agent prompt (at `astrbot_adapter/prompts/agents/tour-builder.md`). Append the following additional context:
+Call `ua_run_subagent_role` with `role="tour-builder"`. Build the input from the tour-builder prompt context below and set `expected_output_path` to `$UA_GRAPH_ROOT/intermediate/tour.json`.
 
 > **Additional context from main session:**
 >
@@ -408,11 +424,11 @@ Run an AstrBot agent role using the `tour-builder` agent prompt (at `astrbot_ada
 >
 > Use the README to align the tour narrative with the project's own documentation. Start the tour from the entry point if one was detected. The tour should tell the same story the README tells, but through the lens of actual code structure.
 
-Pass these parameters in the AstrBot execution prompt:
+Include these parameters in the SubAgent input:
 
 > Create a guided learning tour for this codebase.
 > Project root: `$PROJECT_ROOT`
-> Write output to: `$PROJECT_ROOT/.understand-anything/intermediate/tour.json`
+> Write output to: `$UA_GRAPH_ROOT/intermediate/tour.json`
 > Project: `<projectName>` — `<projectDescription>`
 > Languages: `<languages>`
 >
@@ -431,7 +447,7 @@ Pass these parameters in the AstrBot execution prompt:
 > [list of ALL edges — include all edge types for complete graph topology analysis]
 > ```
 
-After the AstrBot agent role completes, read `$PROJECT_ROOT/.understand-anything/intermediate/tour.json` and normalize it into a final `tour` array. Apply these steps **in order**:
+After the SubAgent tool completes, read `$UA_GRAPH_ROOT/intermediate/tour.json` and normalize it into a final `tour` array. Apply these steps **in order**:
 
 1. **Unwrap envelope:** If the file contains `{ "steps": [...] }` instead of a plain array, extract the inner array. (The prompt requests a plain array, but LLMs may still produce an envelope.)
 2. **Rename legacy fields:** If any step has `nodesToInspect` instead of `nodeIds`, rename it → `nodeIds`. If any step has `whyItMatters` instead of `description`, rename it → `description`.
@@ -493,7 +509,7 @@ Assemble the full KnowledgeGraph JSON object:
 
    If validation fails, automatically normalize and rewrite the graph into this shape before saving. If the graph still fails final validation after the normalization pass, save it with warnings but mark dashboard auto-launch as skipped.
 
-2. Write the assembled graph to `$PROJECT_ROOT/.understand-anything/intermediate/assembled-graph.json`.
+2. Write the assembled graph to `$UA_GRAPH_ROOT/intermediate/assembled-graph.json`.
 
 3. **Check `$ARGUMENTS` for `--review` flag.** Then run the appropriate validation path:
 
@@ -501,7 +517,7 @@ Assemble the full KnowledgeGraph JSON object:
 
 #### Default path (no `--review`): inline deterministic validation
 
-Write the following Node.js script to `$PROJECT_ROOT/.understand-anything/tmp/ua-inline-validate.cjs`:
+Write the following Node.js script to `$UA_GRAPH_ROOT/tmp/ua-inline-validate.cjs`:
 
 ```javascript
 #!/usr/bin/env node
@@ -571,9 +587,9 @@ try {
 
 Execute it:
 ```bash
-node $PROJECT_ROOT/.understand-anything/tmp/ua-inline-validate.cjs \
-  "$PROJECT_ROOT/.understand-anything/intermediate/assembled-graph.json" \
-  "$PROJECT_ROOT/.understand-anything/intermediate/review.json"
+node $UA_GRAPH_ROOT/tmp/ua-inline-validate.cjs \
+  "$UA_GRAPH_ROOT/intermediate/assembled-graph.json" \
+  "$UA_GRAPH_ROOT/intermediate/review.json"
 ```
 
 If the script exits non-zero, read stderr, fix the script, and retry once.
@@ -582,9 +598,9 @@ If the script exits non-zero, read stderr, fix the script, and retry once.
 
 #### `--review` path: full LLM reviewer
 
-If `--review` IS in `$ARGUMENTS`, run the LLM graph-reviewer AstrBot agent role as follows:
+If `--review` IS in `$ARGUMENTS`, run the LLM graph-reviewer SubAgent as follows:
 
-Run an AstrBot agent role using the `graph-reviewer` agent prompt (at `astrbot_adapter/prompts/agents/graph-reviewer.md`). Append the following additional context:
+Call `ua_run_subagent_role` with `role="graph-reviewer"`. Build the input from the graph-reviewer prompt context below and set `expected_output_path` to `$UA_GRAPH_ROOT/intermediate/review.json`.
 
 > **Additional context from main session:**
 >
@@ -598,16 +614,16 @@ Run an AstrBot agent role using the `graph-reviewer` agent prompt (at `astrbot_a
 >
 > Cross-validate: every file in the scan inventory should have a corresponding node in the graph (node types may vary: `file:`, `config:`, `document:`, `service:`, `pipeline:`, `table:`, `schema:`, `resource:`, `endpoint:`). Flag any missing files. Also flag any graph nodes whose `filePath` doesn't appear in the scan inventory.
 
-Pass these parameters in the AstrBot execution prompt:
+Include these parameters in the SubAgent input:
 
-> Validate the knowledge graph at `$PROJECT_ROOT/.understand-anything/intermediate/assembled-graph.json`.
+> Validate the knowledge graph at `$UA_GRAPH_ROOT/intermediate/assembled-graph.json`.
 > Project root: `$PROJECT_ROOT`
 > Read the file and validate it for completeness and correctness.
-> Write output to: `$PROJECT_ROOT/.understand-anything/intermediate/review.json`
+> Write output to: `$UA_GRAPH_ROOT/intermediate/review.json`
 
 ---
 
-4. Read `$PROJECT_ROOT/.understand-anything/intermediate/review.json`.
+4. Read `$UA_GRAPH_ROOT/intermediate/review.json`.
 
 5. **If `issues` array is non-empty:**
    - Review the `issues` list
@@ -624,9 +640,9 @@ Pass these parameters in the AstrBot execution prompt:
 
 ## Phase 7 — SAVE
 
-1. Write the final knowledge graph to `$PROJECT_ROOT/.understand-anything/knowledge-graph.json`.
+1. Write the final knowledge graph to `$UA_GRAPH_ROOT/knowledge-graph.json`.
 
-2. Write metadata to `$PROJECT_ROOT/.understand-anything/meta.json`:
+2. Write metadata to `$UA_GRAPH_ROOT/meta.json`:
    ```json
    {
      "lastAnalyzedAt": "<ISO 8601 timestamp>",
@@ -636,22 +652,25 @@ Pass these parameters in the AstrBot execution prompt:
    }
    ```
 
-2.5. **Generate structural fingerprints** for all analyzed files and save to `$PROJECT_ROOT/.understand-anything/fingerprints.json`. This creates the baseline for future automatic incremental updates.
+2.5. **Generate structural fingerprints** for all analyzed files and save to `$UA_GRAPH_ROOT/fingerprints.json`. This creates the baseline for future automatic incremental updates.
 
    Write and execute a Node.js script that uses the core fingerprint module (tree-sitter-based, not regex):
    ```javascript
    import { buildFingerprintStore } from '@understand-anything/core';
-   import { saveFingerprints } from '@understand-anything/core';
 
    const store = await buildFingerprintStore('<PROJECT_ROOT>', sourceFilePaths);
-   saveFingerprints('<PROJECT_ROOT>', store);
+   const fs = await import('node:fs');
+   const path = await import('node:path');
+   const graphRoot = '<UA_GRAPH_ROOT>';
+   fs.mkdirSync(graphRoot, { recursive: true });
+   fs.writeFileSync(path.join(graphRoot, 'fingerprints.json'), JSON.stringify(store, null, 2), 'utf-8');
    ```
    Where `sourceFilePaths` is the list of all analyzed source file paths from Phase 1. This uses the same tree-sitter analysis pipeline as the main fingerprint engine, ensuring the baseline matches the comparison logic used during auto-updates.
 
 3. Clean up intermediate files:
    ```bash
-   rm -rf $PROJECT_ROOT/.understand-anything/intermediate
-   rm -rf $PROJECT_ROOT/.understand-anything/tmp
+   rm -rf $UA_GRAPH_ROOT/intermediate
+   rm -rf $UA_GRAPH_ROOT/tmp
    ```
 
 4. Report a summary to the user containing:
@@ -662,7 +681,7 @@ Pass these parameters in the AstrBot execution prompt:
    - Layers identified (with names)
    - Tour steps generated (count)
    - Any warnings from the reviewer
-   - Path to the output file: `$PROJECT_ROOT/.understand-anything/knowledge-graph.json`
+   - Path to the output file: `$UA_GRAPH_ROOT/knowledge-graph.json`
 
 5. Only automatically launch the dashboard by invoking the `/understand-dashboard` skill if final graph validation passed after normalization/review fixes.
    If final validation did not pass, report that the graph was saved with warnings and dashboard launch was skipped.
@@ -671,7 +690,7 @@ Pass these parameters in the AstrBot execution prompt:
 
 ## Error Handling
 
-- If any AstrBot agent role run fails, retry **once** with the same prompt plus additional context about the failure.
+- If any SubAgent tool run fails, retry **once** with the same prompt plus additional context about the failure.
 - Track all warnings and errors from each phase in a `$PHASE_WARNINGS` list. When using `--review`, pass this list to the graph-reviewer in Phase 6. On the default path, include accumulated warnings in the Phase 7 final report.
 - If it fails a second time, skip that phase and continue with partial results.
 - ALWAYS save partial results — a partial graph is better than no graph.

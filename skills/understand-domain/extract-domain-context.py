@@ -6,10 +6,10 @@ Scans a project directory and produces a structured JSON context file that the
 domain-analyzer agent uses to identify business domains, flows, and steps.
 
 Usage:
-    python extract-domain-context.py <project-root>
+    python extract-domain-context.py <project-root> [graph-root]
 
 Output:
-    <project-root>/.understand-anything/intermediate/domain-context.json
+    <graph-root>/intermediate/domain-context.json
 """
 
 import json
@@ -375,17 +375,22 @@ def _truncate_to_fit(context: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python extract-domain-context.py <project-root>", file=sys.stderr)
+        print("Usage: python extract-domain-context.py <project-root> [graph-root]", file=sys.stderr)
         sys.exit(1)
 
     project_root = Path(sys.argv[1]).resolve()
+    graph_root = (
+        Path(sys.argv[2]).resolve()
+        if len(sys.argv) > 2
+        else project_root / ".understand-anything"
+    )
     if not project_root.is_dir():
         print(f"Error: {project_root} is not a directory", file=sys.stderr)
         sys.exit(1)
 
     try:
         # Ensure output directory exists
-        output_dir = project_root / ".understand-anything" / "intermediate"
+        output_dir = graph_root / "intermediate"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "domain-context.json"
 

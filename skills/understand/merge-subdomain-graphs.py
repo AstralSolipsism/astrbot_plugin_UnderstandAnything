@@ -8,14 +8,14 @@ knowledge-graph.json as a base if present, and merges everything
 into a single knowledge-graph.json.
 
 Usage:
-    python merge-subdomain-graphs.py <project-root> [file1.json file2.json ...]
+    python merge-subdomain-graphs.py <project-root> [--graph-root <graph-root>] [file1.json file2.json ...]
 
 If no files are specified, auto-discovers subdomain graphs. The main
 knowledge-graph.json is loaded as a base but never as a discovery input
 (prevents self-merging on repeated runs).
 
 Output:
-    <project-root>/.understand-anything/knowledge-graph.json
+    <graph-root>/knowledge-graph.json
 """
 
 import json
@@ -234,11 +234,24 @@ def merge_graphs(graphs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python merge-subdomain-graphs.py <project-root> [file1.json file2.json ...]", file=sys.stderr)
+        print(
+            "Usage: python merge-subdomain-graphs.py <project-root> "
+            "[--graph-root <graph-root>] [file1.json file2.json ...]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     project_root = Path(sys.argv[1]).resolve()
-    ua_dir = project_root / ".understand-anything"
+    args = list(sys.argv[2:])
+    graph_root_arg: str | None = None
+    if "--graph-root" in args:
+        index = args.index("--graph-root")
+        if index + 1 >= len(args):
+            print("Error: --graph-root requires a path", file=sys.stderr)
+            sys.exit(1)
+        graph_root_arg = args[index + 1]
+        del args[index : index + 2]
+    ua_dir = Path(graph_root_arg).resolve() if graph_root_arg else project_root / ".understand-anything"
 
     if not ua_dir.is_dir():
         print(f"Error: {ua_dir} does not exist", file=sys.stderr)
@@ -247,9 +260,9 @@ def main() -> None:
     output_path = ua_dir / "knowledge-graph.json"
 
     # Determine which files to merge
-    if len(sys.argv) > 2:
+    if args:
         # Explicit file list
-        graph_files = [Path(f).resolve() for f in sys.argv[2:]]
+        graph_files = [Path(f).resolve() for f in args]
     else:
         # Auto-discover subdomain graphs — exclude the main output file
         # to avoid self-merging on repeated runs

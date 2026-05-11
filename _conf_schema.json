@@ -18,11 +18,42 @@
     "default": "pnpm",
     "hint": "pnpm 10 or newer is recommended."
   },
+  "git_bin": {
+    "description": "Git executable",
+    "type": "string",
+    "default": "git",
+    "hint": "Used to clone and update public GitHub repositories for analysis."
+  },
+  "cleanup_github_cache_after_analysis": {
+    "description": "Clean GitHub clone cache after analysis",
+    "type": "bool",
+    "default": false,
+    "hint": "When enabled, only the cloned source cache is removed after a GitHub analysis job. Graph artifacts are kept in plugin data."
+  },
   "max_concurrent_jobs": {
     "description": "Maximum concurrent analysis jobs",
     "type": "int",
     "default": 1,
     "hint": "Large analyses can consume model tokens and CPU. Keep this low unless the host has enough resources."
+  },
+  "max_parallel_file_agents": {
+    "description": "Maximum parallel file-analyzer SubAgents per analysis job",
+    "type": "int",
+    "default": 5,
+    "hint": "Controls batch-level SubAgent concurrency inside one /understand job."
+  },
+  "max_parallel_article_agents": {
+    "description": "Maximum parallel article-analyzer SubAgents per knowledge job",
+    "type": "int",
+    "default": 3,
+    "hint": "Controls batch-level SubAgent concurrency inside one /understand-knowledge job."
+  },
+  "subagent_provider_id": {
+    "description": "AstrBot chat provider ID for Understand Anything SubAgents",
+    "type": "string",
+    "default": "",
+    "hint": "Leave empty to reuse provider_id, then the current session provider.",
+    "_special": "select_provider"
   },
   "auto_build": {
     "description": "Automatically install and build bundled Understand Anything Node packages",
