@@ -22,7 +22,7 @@ Python 依赖来自 AstrBot 运行时；Node 依赖由 `understand-anything/pnpm
 
 ## 命令
 
-- `/understand [path] [--full|--auto-update|--no-auto-update|--review]`
+- `/understand [path|https://github.com/owner/repo[/tree/<branch-or-tag>[/sub/path]]] [--full|--auto-update|--no-auto-update|--review]`
 - `/understand-dashboard [path]`
 - `/understand-chat [--project <name|id|alias>] <query>`
 - `/understand-diff [--project <name|id|alias>|path]`
@@ -56,7 +56,13 @@ Dashboard API 同样支持 `project_id`、`project_name`、`project_path`，并�
 
 ## 输出
 
-分析结果写入目标项目的 `.understand-anything/`，并保持 Understand Anything 文件名和 schema：
+本地服务端路径分析会继续写入目标项目的 `.understand-anything/`。
+GitHub URL 分析会把 clone 工作副本当作源码缓存，分析产物写入插件数据目录的 artifact 区域：
+
+- 源码缓存：`data/plugin_data/astrbot_plugin_UnderstandAnything/repos/github/<owner>/<repo...>/`
+- 图谱产物：`data/plugin_data/astrbot_plugin_UnderstandAnything/artifacts/github/<owner>/<repo>/<target_hash>/.understand-anything/`
+
+产物目录保持 Understand Anything 文件名和 schema：
 
 - `knowledge-graph.json`
 - `domain-graph.json`
@@ -69,6 +75,7 @@ Dashboard API 同样支持 `project_id`、`project_name`、`project_path`，并�
 Dashboard 保留参考项目 React 体验，只调整数据访问层：
 
 - 在 AstrBot Plugin Page 中通过 `window.AstrBotPluginPage` 调用插件 Web API。
+- 首次使用分析功能前，Dashboard 会引导用户一键注册 UA SubAgents 到 AstrBot 持久 `subagent_orchestrator.agents` 配置。
 - 本地文件预览走后端 `file-content`，且只允许读取图谱中出现并位于目标项目内的文件。
 - 构建产物使用相对资源路径，可直接由 AstrBot 插件页面加载。
 
@@ -80,12 +87,24 @@ Dashboard 保留参考项目 React 体验，只调整数据访问层：
 - `node_bin`
 - `pnpm_bin`
 - `max_concurrent_jobs`
+- `max_parallel_file_agents`
+- `max_parallel_article_agents`
+- `subagent_provider_id`
 - `auto_build`
 - `auto_update_poll_interval`
 - `allowed_roots`
 - `default_write_mode`
+- `cleanup_github_cache_after_analysis`
 
-`allowed_roots` 为空时仅允许当前 AstrBot 工作目录。分析其他项目时应配置绝对路径白名单。
+`allowed_roots` 为空时仅允许当前 AstrBot 工作目录。分析其他本地项目时应配置绝对路径白名单。
+公开 GitHub 仓库 URL 会自动克隆到插件数据目录
+`data/plugin_data/astrbot_plugin_UnderstandAnything/repos/github/`，不需要加入
+`allowed_roots`。粘贴 GitHub `/tree/<branch-or-tag>/<sub/path>` 地址时，插件会自动解析
+分支或标签，并只分析该子目录。
+
+`cleanup_github_cache_after_analysis` 默认为 `false`。启用后 GitHub job 完成会删除 clone
+缓存，只保留 artifacts；图谱读取不依赖 clone cache，源码预览或后续分析会按 registry 中的
+GitHub source metadata 重新 clone/fetch。
 
 ## 同步原则
 
