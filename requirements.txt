@@ -1,0 +1,1 @@
+# Python adapter uses AstrBot bundled runtime dependencies.

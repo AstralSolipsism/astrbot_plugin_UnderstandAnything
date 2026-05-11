@@ -1,0 +1,1 @@
+{"version":3,"file":"ignore-filter.d.ts","sourceRoot":"","sources":["../src/ignore-filter.ts"],"names":[],"mappings":"AAIA;;;GAGG;AACH,eAAO,MAAM,uBAAuB,EAAE,MAAM,EA6D3C,CAAC;AAEF,MAAM,WAAW,YAAY;IAC3B,gFAAgF;IAChF,SAAS,CAAC,YAAY,EAAE,MAAM,GAAG,OAAO,CAAC;CAC1C;AAED;;;;;;;;GAQG;AACH,wBAAgB,kBAAkB,CAAC,WAAW,EAAE,MAAM,GAAG,YAAY,CAyBpE"}

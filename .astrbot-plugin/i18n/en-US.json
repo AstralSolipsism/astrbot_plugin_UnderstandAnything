@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "display_name": "Understand Anything",
+    "short_desc": "Turn projects, docs, and wikis into interactive knowledge graphs in AstrBot.",
+    "desc": "Full AstrBot host adapter for Understand Anything."
+  },
+  "pages": {
+    "dashboard": {
+      "title": "Understand Anything",
+      "description": "Explore generated knowledge graphs, domain graphs, knowledge graphs, and diff overlays."
+    }
+  }
+}

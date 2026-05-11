@@ -1,0 +1,23 @@
+name: astrbot_plugin_UnderstandAnything
+display_name: Understand Anything
+short_desc: Turn projects, docs, and wikis into interactive knowledge graphs in AstrBot.
+desc: Independent AstrBot plugin for Understand Anything, bundling the reusable runtime, root skills, AstrBot agent prompts, commands, tools, APIs, and Dashboard Pages.
+version: v0.1.0
+author: AstrBot Understand Anything Adapter
+repo: https://github.com/AstralSolipsism/astrbot_plugin_UnderstandAnything
+astrbot_version: ">=4.24.2"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - wecom
+  - lark
+  - dingtalk
+  - discord
+  - slack
+  - kook
+  - vocechat
+  - weixin_official_account
+  - satori
+  - misskey
+  - line

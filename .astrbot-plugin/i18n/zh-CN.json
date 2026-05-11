@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "display_name": "Understand Anything",
+    "short_desc": "在 AstrBot 中把项目、文档和知识库转为可交互知识图谱。",
+    "desc": "Understand Anything 的 AstrBot 完整宿主适配插件。"
+  },
+  "pages": {
+    "dashboard": {
+      "title": "Understand Anything",
+      "description": "浏览生成的结构图谱、业务域图谱、知识图谱和 diff 影响范围。"
+    }
+  }
+}

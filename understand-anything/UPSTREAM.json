@@ -1,0 +1,7 @@
+{
+  "source_path": "../参考来源-Understand-Anything runtime subdirectory",
+  "source_repo_commit": "40519ee5ff693799ef3416cec13d205ec4d1b864",
+  "integrated_at": "2026-05-11",
+  "layout": "Integrated AstrBot runtime dependency at plugin root understand-anything/",
+  "policy": "Keep reusable runtime code here, root skills in ../skills, and AstrBot agent prompts in ../astrbot_adapter/prompts/agents. Do not reintroduce other host plugin directories, hooks, installers, or duplicate skills."
+}

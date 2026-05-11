@@ -1,0 +1,1 @@
+{"version":3,"file":"makefile-parser.d.ts","sourceRoot":"","sources":["../../../src/plugins/parsers/makefile-parser.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,kBAAkB,EAAY,MAAM,gBAAgB,CAAC;AAEnF;;;;GAIG;AACH,qBAAa,cAAe,YAAW,cAAc;IACnD,IAAI,SAAqB;IACzB,SAAS,WAAgB;IAEzB,WAAW,CAAC,SAAS,EAAE,MAAM,EAAE,OAAO,EAAE,MAAM,GAAG,kBAAkB;IAWnE,OAAO,CAAC,cAAc;CA4BvB"}

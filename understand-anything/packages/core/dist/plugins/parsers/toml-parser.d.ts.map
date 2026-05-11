@@ -1,0 +1,1 @@
+{"version":3,"file":"toml-parser.d.ts","sourceRoot":"","sources":["../../../src/plugins/parsers/toml-parser.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,kBAAkB,EAAe,MAAM,gBAAgB,CAAC;AAEtF;;;;GAIG;AACH,qBAAa,UAAW,YAAW,cAAc;IAC/C,IAAI,SAAiB;IACrB,SAAS,WAAY;IAErB,WAAW,CAAC,SAAS,EAAE,MAAM,EAAE,OAAO,EAAE,MAAM,GAAG,kBAAkB;IAWnE,OAAO,CAAC,eAAe;CAuBxB"}
