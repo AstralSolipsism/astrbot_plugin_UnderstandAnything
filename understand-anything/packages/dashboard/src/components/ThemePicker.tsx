@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import { useTheme, PRESETS } from "../themes/index.ts";
 import type { HeadingFont } from "../themes/index.ts";
 
 export function ThemePicker() {
+  const { t } = useI18n();
   const { config, preset, setPreset, setAccent, setHeadingFont } = useTheme();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -41,7 +43,7 @@ export function ThemePicker() {
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 px-2 py-1 rounded text-xs text-text-secondary hover:text-text-primary transition-colors"
-        title="Change theme"
+        title={t("theme.changeTheme", "Change theme")}
       >
         <svg
           width="14"
@@ -59,7 +61,7 @@ export function ThemePicker() {
           <circle cx="12" cy="7" r="1.5" fill="currentColor" />
           <circle cx="16" cy="10" r="1.5" fill="currentColor" />
         </svg>
-        <span className="hidden sm:inline">Theme</span>
+        <span className="hidden sm:inline">{t("common.theme", "Theme")}</span>
       </button>
 
       {open && (
@@ -67,7 +69,7 @@ export function ThemePicker() {
           {/* Presets */}
           <div>
             <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-2">
-              Theme
+              {t("common.theme", "Theme")}
             </div>
             <div className="space-y-1">
               {PRESETS.map((p) => (
@@ -99,7 +101,7 @@ export function ThemePicker() {
                       }}
                     />
                   </div>
-                  <span>{p.name}</span>
+                  <span>{t(`themePresets.${p.id}`, p.name)}</span>
                   {p.id === config.presetId && (
                     <svg
                       className="ml-auto w-3.5 h-3.5 text-accent"
@@ -119,7 +121,7 @@ export function ThemePicker() {
           {/* Accent swatches */}
           <div>
             <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-2">
-              Accent Color
+              {t("theme.accentColor", "Accent Color")}
             </div>
             <div className="flex gap-2 flex-wrap">
               {preset.accentSwatches.map((swatch) => (
@@ -132,7 +134,7 @@ export function ThemePicker() {
                       : ""
                   }`}
                   style={{ backgroundColor: swatch.accent }}
-                  title={swatch.name}
+                  title={t(`accentSwatches.${swatch.id}`, swatch.name)}
                 />
               ))}
             </div>
@@ -141,13 +143,13 @@ export function ThemePicker() {
           {/* Heading font */}
           <div>
             <div className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-2">
-              Heading Font
+              {t("theme.headingFont", "Heading Font")}
             </div>
             <div className="flex gap-1">
               {([
-                { id: "serif" as HeadingFont, label: "Serif", sample: "Aa" },
-                { id: "sans" as HeadingFont, label: "Sans", sample: "Aa" },
-                { id: "mono" as HeadingFont, label: "Mono", sample: "Aa" },
+                { id: "serif" as HeadingFont, label: t("theme.serif", "Serif"), sample: "Aa" },
+                { id: "sans" as HeadingFont, label: t("theme.sans", "Sans"), sample: "Aa" },
+                { id: "mono" as HeadingFont, label: t("theme.mono", "Mono"), sample: "Aa" },
               ]).map((opt) => (
                 <button
                   key={opt.id}

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 import PersonaSelector from "./PersonaSelector";
 import DiffToggle from "./DiffToggle";
@@ -16,22 +17,23 @@ interface Props {
 
 interface NodeTypeFilterDef {
   key: "code" | "config" | "docs" | "infra" | "data" | "domain" | "knowledge";
-  label: string;
+  labelKey: string;
+  fallback: string;
   color: string;
 }
 
 const STRUCTURAL_FILTERS: NodeTypeFilterDef[] = [
-  { key: "code", label: "Code", color: "var(--color-node-file)" },
-  { key: "config", label: "Config", color: "var(--color-node-config)" },
-  { key: "docs", label: "Docs", color: "var(--color-node-document)" },
-  { key: "infra", label: "Infra", color: "var(--color-node-service)" },
-  { key: "data", label: "Data", color: "var(--color-node-table)" },
-  { key: "domain", label: "Domain", color: "var(--color-node-concept)" },
-  { key: "knowledge", label: "Knowledge", color: "var(--color-node-article)" },
+  { key: "code", labelKey: "common.code", fallback: "Code", color: "var(--color-node-file)" },
+  { key: "config", labelKey: "common.config", fallback: "Config", color: "var(--color-node-config)" },
+  { key: "docs", labelKey: "common.docs", fallback: "Docs", color: "var(--color-node-document)" },
+  { key: "infra", labelKey: "common.infra", fallback: "Infra", color: "var(--color-node-service)" },
+  { key: "data", labelKey: "common.data", fallback: "Data", color: "var(--color-node-table)" },
+  { key: "domain", labelKey: "common.domain", fallback: "Domain", color: "var(--color-node-concept)" },
+  { key: "knowledge", labelKey: "common.knowledge", fallback: "Knowledge", color: "var(--color-node-article)" },
 ];
 
 const KNOWLEDGE_FILTERS: NodeTypeFilterDef[] = [
-  { key: "knowledge", label: "All", color: "var(--color-node-article)" },
+  { key: "knowledge", labelKey: "common.all", fallback: "All", color: "var(--color-node-article)" },
 ];
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -48,6 +50,7 @@ export default function MobileDrawer({
   onTogglePathFinder,
   onShowKeyboardHelp,
 }: Props) {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const isKnowledgeGraph = useDashboardStore((s) => s.isKnowledgeGraph);
   const domainGraph = useDashboardStore((s) => s.domainGraph);
@@ -86,7 +89,7 @@ export default function MobileDrawer({
       {/* Backdrop */}
       <button
         type="button"
-        aria-label="Close menu"
+        aria-label={t("mobile.closeMenu", "Close menu")}
         onClick={onClose}
         className={`absolute inset-0 bg-black/65 backdrop-blur-sm transition-opacity duration-300 ${
           open ? "opacity-100" : "opacity-0"
@@ -99,13 +102,13 @@ export default function MobileDrawer({
           open ? "translate-x-0" : "-translate-x-full"
         }`}
         role="dialog"
-        aria-label="Settings"
+        aria-label={t("mobile.settings", "Settings")}
       >
         {/* Drawer header */}
         <header className="flex items-center justify-between px-5 py-4 border-b border-border-subtle shrink-0">
           <div>
             <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-accent">
-              Controls
+              {t("common.controls", "Controls")}
             </span>
             <h2 className="font-heading text-lg text-text-primary mt-0.5 leading-none">
               {graph?.project.name ?? "Dashboard"}
@@ -114,7 +117,7 @@ export default function MobileDrawer({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close menu"
+            aria-label={t("mobile.closeMenu", "Close menu")}
             className="w-9 h-9 flex items-center justify-center rounded-lg text-text-muted hover:text-text-primary hover:bg-elevated transition-colors"
           >
             <svg
@@ -132,13 +135,13 @@ export default function MobileDrawer({
         {/* Body */}
         <div className="flex-1 overflow-auto px-5 py-5 space-y-7">
           <section>
-            <SectionLabel>Role</SectionLabel>
+            <SectionLabel>{t("common.role", "Role")}</SectionLabel>
             <PersonaSelector />
           </section>
 
           {showViewToggle && (
             <section>
-              <SectionLabel>View</SectionLabel>
+              <SectionLabel>{t("common.view", "View")}</SectionLabel>
               <div className="inline-flex items-center bg-elevated rounded-lg p-0.5">
                 <button
                   type="button"
@@ -149,7 +152,7 @@ export default function MobileDrawer({
                       : "text-text-muted hover:text-text-secondary"
                   }`}
                 >
-                  Domain
+                  {t("common.domain", "Domain")}
                 </button>
                 <button
                   type="button"
@@ -160,19 +163,19 @@ export default function MobileDrawer({
                       : "text-text-muted hover:text-text-secondary"
                   }`}
                 >
-                  Structural
+                  {t("common.structural", "Structural")}
                 </button>
               </div>
             </section>
           )}
 
           <section>
-            <SectionLabel>Diff overlay</SectionLabel>
+            <SectionLabel>{t("common.diffOverlay", "Diff overlay")}</SectionLabel>
             <DiffToggle />
           </section>
 
           <section>
-            <SectionLabel>Node types</SectionLabel>
+            <SectionLabel>{t("common.nodeTypes", "Node types")}</SectionLabel>
             <div className="flex flex-wrap gap-1.5">
               {filterDefs.map((cat) => {
                 const active = nodeTypeFilters[cat.key] !== false;
@@ -194,7 +197,7 @@ export default function MobileDrawer({
                         opacity: active ? 1 : 0.3,
                       }}
                     />
-                    {cat.label}
+                    {t(cat.labelKey, cat.fallback)}
                   </button>
                 );
               })}
@@ -203,7 +206,7 @@ export default function MobileDrawer({
 
           {graph && (graph.layers?.length ?? 0) > 0 && (
             <section>
-              <SectionLabel>Layers</SectionLabel>
+              <SectionLabel>{t("common.layers", "Layers")}</SectionLabel>
               <div className="-mx-1">
                 <LayerLegend />
               </div>
@@ -211,7 +214,7 @@ export default function MobileDrawer({
           )}
 
           <section>
-            <SectionLabel>Tools</SectionLabel>
+            <SectionLabel>{t("common.tools", "Tools")}</SectionLabel>
             <div className="flex flex-wrap items-center gap-2">
               <FilterPanel />
               <ExportMenu />
@@ -231,7 +234,7 @@ export default function MobileDrawer({
                     d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
                   />
                 </svg>
-                Path
+                {t("common.path", "Path")}
               </button>
               <ThemePicker />
               <button
@@ -241,7 +244,7 @@ export default function MobileDrawer({
                   onClose();
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-elevated text-text-secondary hover:text-text-primary transition-colors"
-                aria-label="Keyboard shortcuts"
+                aria-label={t("mobile.keyboardShortcuts", "Keyboard shortcuts")}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
@@ -251,7 +254,7 @@ export default function MobileDrawer({
                     d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
                 </svg>
-                Help
+                {t("common.help", "Help")}
               </button>
             </div>
           </section>

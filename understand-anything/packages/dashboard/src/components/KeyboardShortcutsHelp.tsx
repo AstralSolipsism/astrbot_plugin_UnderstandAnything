@@ -1,5 +1,6 @@
 import type { KeyboardShortcut } from "../hooks/useKeyboardShortcuts";
 import { formatShortcutKey } from "../hooks/useKeyboardShortcuts";
+import { useI18n } from "../i18n";
 
 interface KeyboardShortcutsHelpProps {
   shortcuts: KeyboardShortcut[];
@@ -10,6 +11,7 @@ export default function KeyboardShortcutsHelp({
   shortcuts,
   onClose,
 }: KeyboardShortcutsHelpProps) {
+  const { t } = useI18n();
   // Group shortcuts by category
   const groupedShortcuts = shortcuts.reduce((acc, shortcut) => {
     if (!acc[shortcut.category]) {
@@ -32,10 +34,10 @@ export default function KeyboardShortcutsHelp({
         <div className="sticky top-0 glass-heavy border-b border-border-subtle px-6 py-4 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-heading text-text-primary">
-              Keyboard Shortcuts
+              {t("keyboardHelp.title", "Keyboard Shortcuts")}
             </h2>
             <p className="text-xs text-text-muted mt-1">
-              Press <kbd className="kbd">?</kbd> anytime to toggle this help
+              {t("keyboardHelp.subtitle", "Press ? anytime to toggle this help")}
             </p>
           </div>
           <button
@@ -85,7 +87,7 @@ export default function KeyboardShortcutsHelp({
         {/* Footer */}
         <div className="sticky bottom-0 glass-heavy border-t border-border-subtle px-6 py-3 text-center">
           <p className="text-xs text-text-muted">
-            Press <kbd className="kbd">ESC</kbd> to close
+            {t("keyboardHelp.closeHint", "Press ESC to close")}
           </p>
         </div>
       </div>

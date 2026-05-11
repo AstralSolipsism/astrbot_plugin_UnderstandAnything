@@ -1,13 +1,610 @@
 {
   "metadata": {
     "display_name": "Understand Anything",
-    "short_desc": "在 AstrBot 中把项目、文档和知识库转为可交互知识图谱。",
-    "desc": "Understand Anything 的 AstrBot 完整宿主适配插件。"
+    "short_desc": "? AstrBot ?????????????????????",
+    "desc": "Understand Anything ? AstrBot ?????????"
+  },
+  "config": {
+    "provider_id": {
+      "description": "AstrBot ?? Provider ID",
+      "hint": "????????? Provider?"
+    },
+    "node_bin": {
+      "description": "Node.js ?????",
+      "hint": "???? Node.js 22 ??????"
+    },
+    "pnpm_bin": {
+      "description": "pnpm ?????",
+      "hint": "???? pnpm 10 ??????"
+    },
+    "git_bin": {
+      "description": "Git 可执行文件",
+      "hint": "用于克隆和更新公开 GitHub 仓库以供分析。"
+    },
+    "cleanup_github_cache_after_analysis": {
+      "description": "分析后清理 GitHub clone 缓存",
+      "hint": "启用后，GitHub 分析任务结束只删除克隆的源码缓存，图谱产物会保留在插件数据目录。"
+    },
+    "max_concurrent_jobs": {
+      "description": "?????????",
+      "hint": "????????? token ? CPU????????????????"
+    },
+    "max_parallel_file_agents": {
+      "description": "??????????? file-analyzer SubAgent ?",
+      "hint": "???? /understand job ?????? SubAgent ???"
+    },
+    "max_parallel_article_agents": {
+      "description": "??????????? article-analyzer SubAgent ?",
+      "hint": "???? /understand-knowledge job ?????? SubAgent ???"
+    },
+    "subagent_provider_id": {
+      "description": "Understand Anything SubAgents ??? AstrBot ?? Provider ID",
+      "hint": "????? provider_id????????? Provider?"
+    },
+    "auto_build": {
+      "description": "????????? Understand Anything Node ?",
+      "hint": "?????????? pnpm install?????????? dist ???"
+    },
+    "auto_update_poll_interval": {
+      "description": "???????????",
+      "hint": "0 ?????????????????????"
+    },
+    "allowed_roots": {
+      "description": "????????",
+      "hint": "?????? AstrBot ????????????????????????"
+    },
+    "default_write_mode": {
+      "description": "????????",
+      "hint": "Understand Anything ?????????????",
+      "labels": [
+        "?? .understand-anything"
+      ]
+    }
   },
   "pages": {
     "dashboard": {
       "title": "Understand Anything",
-      "description": "浏览生成的结构图谱、业务域图谱、知识图谱和 diff 影响范围。"
+      "description": "????????????????????? diff ?????",
+      "ui": {
+        "common": {
+          "ready": "就绪",
+          "missing": "缺失",
+          "stale": "需更新",
+          "loading": "加载中",
+          "error": "错误",
+          "configured": "已配置",
+          "currentSessionProvider": "当前会话 Provider",
+          "refresh": "刷新",
+          "pluginSettings": "插件设置",
+          "register": "注册",
+          "registering": "注册中",
+          "dismiss": "收起",
+          "open": "打开",
+          "close": "关闭",
+          "cancel": "取消",
+          "selected": "已选择",
+          "back": "返回",
+          "focus": "聚焦",
+          "unfocus": "取消聚焦",
+          "show": "显示",
+          "hide": "隐藏",
+          "projects": "项目",
+          "project": "项目",
+          "runtime": "运行时",
+          "graph": "图谱",
+          "info": "信息",
+          "files": "文件",
+          "path": "路径",
+          "help": "帮助",
+          "theme": "主题",
+          "filter": "过滤",
+          "export": "导出",
+          "all": "全部",
+          "code": "代码",
+          "config": "配置",
+          "docs": "文档",
+          "infra": "基础设施",
+          "data": "数据",
+          "domain": "领域",
+          "knowledge": "知识",
+          "structural": "结构",
+          "view": "视图",
+          "role": "角色",
+          "tools": "工具",
+          "layers": "层级",
+          "nodeTypes": "节点类型",
+          "diffOverlay": "Diff 叠加",
+          "dashboard": "工作台",
+          "controls": "控制",
+          "settings": "设置",
+          "changed": "已变更",
+          "affected": "受影响",
+          "on": "开",
+          "off": "关",
+          "file": "文件",
+          "tags": "标签",
+          "connections": "连接",
+          "category": "类别",
+          "preview": "预览",
+          "entities": "实体",
+          "businessRules": "业务规则",
+          "crossDomain": "跨领域",
+          "flows": "流程",
+          "entryPoint": "入口点",
+          "steps": "步骤",
+          "implementation": "实现",
+          "wikilinks": "维基链接",
+          "backlinks": "反向链接",
+          "languageConcepts": "语言概念",
+          "languageLesson": "语言讲解",
+          "referencedComponents": "引用组件",
+          "sourceUnavailable": "源码不可用",
+          "noGraphLoaded": "未加载图谱",
+          "unnamed": "未命名"
+        },
+        "app": {
+          "bridgeUnavailable": "AstrBotPluginPage 桥接不可用。",
+          "selectProjectBeforeGraph": "请先选择项目再加载图谱。",
+          "invalidGraph": "图谱文件缺少 nodes/edges 数组。",
+          "invalidGraphUnknown": "图谱文件缺少必要数据。",
+          "failedLoadGraph": "图谱加载失败：{error}",
+          "loadProjectFailed": "加载项目 {project} 失败：{error}",
+          "graphMissing": "该项目尚未生成图谱。请启动 Understand Anything 分析，或在此工作区重新运行项目。",
+          "noProjectsRegistered": "还没有注册 Understand Anything 项目。请在下方添加项目路径并启动分析。",
+          "multipleProjectsRegistered": "打开图谱前请先从工作区选择项目。",
+          "pressShortcut": "按 ? 查看快捷键",
+          "projectsButton": "项目",
+          "domainViewTitle": "领域视图",
+          "structuralViewTitle": "结构视图",
+          "filesOnlyTitle": "仅文件",
+          "classesTitle": "{count} 个类",
+          "functionsTitle": "{count} 个函数",
+          "pathTitle": "路径",
+          "keyboardTitle": "快捷键",
+          "hideTitle": "隐藏 {name}",
+          "showTitle": "显示 {name}"
+        },
+        "workspace": {
+          "subtitle": "插件工作区",
+          "notAnalyzed": "尚未分析",
+          "jobEventInterrupted": "Job 事件流已中断。",
+          "projectPathRequired": "项目路径不能为空。",
+          "subagentsRequired": "启动分析前请先注册 UA SubAgents。",
+          "subagentsBlocked": "请先在此面板注册 UA SubAgents，再启动分析任务。",
+          "initialConfiguration": "初始配置",
+          "configManaged": "配置由 AstrBot 插件设置统一管理。",
+          "llmProvider": "LLM Provider",
+          "nodeRuntime": "Node 运行时",
+          "allowedRoots": "允许根目录",
+          "registeredProjects": "已注册 {count} 个",
+          "noProjects": "还没有注册项目。",
+          "analyzeProject": "分析项目",
+          "projectPath": "项目路径",
+          "fullAnalysis": "完整分析",
+          "autoUpdate": "自动更新",
+          "starting": "启动中",
+          "startAnalysis": "开始分析"
+        },
+        "subagents": {
+          "title": "UA SubAgents",
+          "registrationRequired": "需要注册",
+          "description": "Understand Anything 使用持久化 AstrBot SubAgents 执行 worker 批处理。注册 UA 角色后，分析任务即可派发真实并行 agent。",
+          "allRegistered": "所有角色已注册",
+          "fileAgents": "文件 agents",
+          "articleAgents": "文章 agents",
+          "personaFolder": "人格文件夹",
+          "registerButton": "注册 UA SubAgents",
+          "registeringButton": "正在注册 UA SubAgents",
+          "registerWithProvider": "使用该 Provider 注册",
+          "providerDialogTitle": "选择 LLM Provider",
+          "providerDialogDescription": "注册时会把选中的聊天 Provider 写入全部 UA SubAgents。",
+          "providerSearch": "搜索 Provider",
+          "providerLoading": "正在加载 Provider",
+          "providerNoProviders": "当前没有可用的聊天 Provider。",
+          "providerRouteUnavailable": "Provider 选择接口不可用。请在 AstrBot 中重载该插件，然后重新打开 Dashboard。",
+          "providerDefaultTitle": "AstrBot 默认 Provider",
+          "providerDefaultDescription": "沿用当前/默认聊天 Provider，不写入固定 provider id。",
+          "providerCapabilityImage": "图像",
+          "providerCapabilityAudio": "音频",
+          "providerCapabilityTools": "工具调用",
+          "providerCapabilityReasoning": "推理",
+          "missingRoles": "缺失角色",
+          "staleRoles": "需更新角色",
+          "readyHint": "可以开始项目分析。"
+        },
+        "runtimeItems": {
+          "runtimeDist": "Runtime dist",
+          "coreDist": "Core dist",
+          "dashboardDist": "Dashboard dist",
+          "dashboardPage": "Dashboard 页面",
+          "nodeModules": "Node modules"
+        },
+        "shortcut": {
+          "showHelp": "显示快捷键帮助",
+          "closePanels": "关闭面板或弹窗",
+          "focusSearch": "聚焦搜索输入框",
+          "nextTour": "下一步导览",
+          "previousTour": "上一步导览",
+          "toggleDiff": "切换 Diff 叠加",
+          "toggleFilter": "切换过滤面板",
+          "toggleExport": "打开导出菜单",
+          "openPath": "打开依赖路径查找",
+          "general": "通用",
+          "navigation": "导航",
+          "tour": "导览",
+          "view": "视图"
+        },
+        "filter": {
+          "title": "过滤图谱",
+          "button": "过滤",
+          "nodeTypes": "节点类型",
+          "complexity": "复杂度",
+          "layers": "层级",
+          "edgeCategories": "边类别",
+          "resetAll": "全部重置"
+        },
+        "export": {
+          "graphNotReady": "图谱尚未准备好，无法导出。",
+          "noNodes": "没有可导出的节点。",
+          "failedPng": "PNG 导出失败：{error}",
+          "failedSvg": "SVG 导出失败：{error}",
+          "failedJson": "JSON 导出失败：{error}",
+          "noGraphLoaded": "未加载图谱",
+          "buttonTitle": "导出图谱 (E)",
+          "button": "导出",
+          "png": "导出为 PNG",
+          "svg": "导出为 SVG",
+          "json": "导出为 JSON"
+        },
+        "nodeInfo": {
+          "selectNode": "选择节点查看详情",
+          "openCode": "打开代码",
+          "definedInFile": "在此文件中定义",
+          "connectionCount": "{count} 个连接",
+          "truncated": "已截断",
+          "noDetails": "暂无详情"
+        },
+        "projectOverview": {
+          "loadingProject": "正在加载项目...",
+          "nodes": "节点",
+          "edges": "边",
+          "layers": "层级",
+          "types": "类型",
+          "fileTypes": "文件类型",
+          "languages": "语言",
+          "frameworks": "框架",
+          "nodeTypeDistribution": "节点类型分布",
+          "complexityDistribution": "复杂度分布",
+          "mostConnectedNodes": "连接最多的节点",
+          "avgConnections": "平均连接数",
+          "analyzed": "分析时间",
+          "startGuidedTour": "开始导览"
+        },
+        "search": {
+          "placeholder": "搜索文件、函数、类...",
+          "fuzzy": "模糊",
+          "semantic": "语义",
+          "resultSingular": "{count} 个结果",
+          "resultPlural": "{count} 个结果"
+        },
+        "warning": {
+          "title": "Dashboard 警告",
+          "fatal": "致命",
+          "autoCorrected": "已自动修正",
+          "dropped": "已丢弃",
+          "collapsedSummary": "{count} 个 Dashboard 问题",
+          "dashboardBugIntro": "其中一些问题看起来像 Dashboard 渲染 bug。",
+          "bugReportLine": "请把下方文本提交到 github.com/AstralSolipsism/astrbot_plugin_UnderstandAnything/issues。",
+          "graphIssueIntro": "在 knowledge-graph.json 中发现以下问题。",
+          "graphIssueCause": "这些是 LLM 生成错误，不是系统 bug。",
+          "graphIssueAction": "你可以要求 agent 修复 knowledge-graph.json 中这些具体问题：",
+          "footerFatal": "复制这些问题并在 GitHub 提交 bug 报告",
+          "footerNormal": "复制这些问题并让 agent 修复 knowledge-graph.json",
+          "copied": "已复制",
+          "copyIssues": "复制问题",
+          "copyFailed": "复制失败",
+          "clickToCollapse": "点击收起",
+          "clickToExpand": "点击展开",
+          "footer": "这些警告仅用于 Dashboard 诊断，不会修改图谱数据。"
+        },
+        "codeViewer": {
+          "noPath": "该节点没有文件路径。",
+          "sourcePreview": "该节点的源码预览不可用。",
+          "noFileSelected": "未选择文件",
+          "lines": "行",
+          "fullFile": "完整文件",
+          "openTitle": "打开源码预览",
+          "closeTitle": "关闭源码预览",
+          "loadingSource": "正在加载源码...",
+          "lineCount": "{count} 行"
+        },
+        "fileExplorer": {
+          "noGraphLoaded": "未加载图谱",
+          "title": "已分析文件",
+          "fileCount": "{count} 个文件，来自 {root}",
+          "noFiles": "未找到文件路径",
+          "openHint": "双击打开"
+        },
+        "learn": {
+          "noTour": "暂无导览",
+          "noTourDescription": "使用 /understand 生成导览后，可逐步探索该图谱。",
+          "projectTour": "项目导览",
+          "stepSummary": "{count} 步 · 该代码库的引导式 walkthrough",
+          "startTour": "开始导览",
+          "steps": "步骤",
+          "tour": "导览",
+          "exitTour": "退出导览",
+          "goToStep": "跳到第 {index} 步",
+          "previous": "上一步",
+          "finish": "完成",
+          "next": "下一步"
+        },
+        "pathFinder": {
+          "title": "依赖路径查找",
+          "description": "查找图谱中两个节点之间的最短路径。",
+          "fromNode": "起始节点",
+          "toNode": "目标节点",
+          "selectNode": "选择节点...",
+          "searching": "搜索中...",
+          "findPath": "查找路径",
+          "noPath": "这两个节点之间没有路径。",
+          "pathFound": "找到路径（{count} 个节点）"
+        },
+        "mobile": {
+          "openProjects": "打开项目",
+          "openMenu": "打开菜单",
+          "hideSearch": "隐藏搜索",
+          "showSearch": "显示搜索",
+          "closeMenu": "关闭菜单",
+          "settings": "设置",
+          "keyboardShortcuts": "快捷键"
+        },
+        "keyboardHelp": {
+          "title": "快捷键",
+          "subtitle": "随时按 ? 切换帮助",
+          "closeHint": "按 ESC 关闭"
+        },
+        "theme": {
+          "changeTheme": "更换主题",
+          "accentColor": "强调色",
+          "headingFont": "标题字体",
+          "serif": "衬线",
+          "sans": "无衬线",
+          "mono": "等宽"
+        },
+        "persona": {
+          "overview": "概览",
+          "overviewDescription": "平衡的系统视图",
+          "learn": "学习",
+          "learnDescription": "引导式说明",
+          "deepDive": "深挖",
+          "deepDiveDescription": "高密度技术细节"
+        },
+        "diff": {
+          "hideTitle": "隐藏 Diff 叠加",
+          "showTitle": "显示 Diff 叠加",
+          "noData": "未加载 Diff 数据",
+          "label": "Diff {state}"
+        },
+        "layer": {
+          "count": "{count} 个层级",
+          "label": "层级"
+        },
+        "graph": {
+          "noKnowledge": "暂无知识图谱。请运行 /understand-knowledge 生成。",
+          "noKnowledgeLoaded": "未加载知识图谱",
+          "showingNeighborhood": "正在显示邻域",
+          "locatingTour": "正在定位导览高亮...",
+          "computingLayout": "正在计算布局..."
+        },
+        "node": {
+          "tested": "有测试",
+          "root": "(根)",
+          "expand": "展开",
+          "collapse": "折叠",
+          "container": "容器",
+          "itemSingular": "{count} 项",
+          "itemPlural": "{count} 项",
+          "hitSingular": "{count} 个命中",
+          "hitPlural": "{count} 个命中",
+          "matchSingular": "{count} 个匹配",
+          "matchPlural": "{count} 个匹配",
+          "fileSingular": "{count} 个文件",
+          "filePlural": "{count} 个文件",
+          "flowSingular": "{count} 个流程",
+          "flowPlural": "{count} 个流程",
+          "clickToExplore": "点击探索",
+          "connectionSingular": "{count} 个连接",
+          "connectionPlural": "{count} 个连接",
+          "inbound": "{count} 入",
+          "outbound": "{count} 出"
+        },
+        "breadcrumb": {
+          "projectOverview": "项目概览",
+          "escToGoBack": "按 Esc 返回"
+        },
+        "tokenGate": {
+          "loadError": "加载访问状态失败。",
+          "requiredTitle": "需要访问令牌",
+          "requiredDescription": "输入共享 Dashboard 令牌后继续。",
+          "tokenPlaceholder": "访问令牌",
+          "unlock": "解锁",
+          "unlocking": "解锁中",
+          "continue": "继续",
+          "validating": "验证中...",
+          "invalid": "访问令牌无效。"
+        },
+        "nodeTypes": {
+          "all": "全部",
+          "file": "文件",
+          "function": "函数",
+          "class": "类",
+          "module": "模块",
+          "concept": "概念",
+          "config": "配置",
+          "document": "文档",
+          "service": "服务",
+          "table": "表",
+          "endpoint": "端点",
+          "pipeline": "流水线",
+          "schema": "模式",
+          "resource": "资源",
+          "domain": "领域",
+          "flow": "流程",
+          "step": "步骤",
+          "article": "文章",
+          "entity": "实体",
+          "topic": "主题",
+          "claim": "主张",
+          "source": "来源",
+          "code": "代码",
+          "docs": "文档",
+          "infra": "基础设施",
+          "data": "数据",
+          "knowledge": "知识"
+        },
+        "complexity": {
+          "simple": "简单",
+          "moderate": "中等",
+          "complex": "复杂"
+        },
+        "edgeCategories": {
+          "structural": "结构",
+          "runtime": "运行时",
+          "data": "数据",
+          "config": "配置",
+          "test": "测试",
+          "deploy": "部署",
+          "doc": "文档",
+          "domain": "领域",
+          "knowledge": "知识",
+          "dependency": "依赖",
+          "ownership": "归属"
+        },
+        "edgeLabels": {
+          "imports": {
+            "forward": "导入",
+            "backward": "被导入"
+          },
+          "calls": {
+            "forward": "调用",
+            "backward": "被调用"
+          },
+          "contains": {
+            "forward": "包含",
+            "backward": "属于"
+          },
+          "defines": {
+            "forward": "定义",
+            "backward": "定义于"
+          },
+          "configures": {
+            "forward": "配置",
+            "backward": "被配置"
+          },
+          "tests": {
+            "forward": "测试",
+            "backward": "被测试"
+          },
+          "deploys": {
+            "forward": "部署",
+            "backward": "被部署"
+          },
+          "documents": {
+            "forward": "记录",
+            "backward": "被记录"
+          },
+          "depends_on": {
+            "forward": "依赖",
+            "backward": "被依赖"
+          },
+          "owns": {
+            "forward": "拥有",
+            "backward": "归属"
+          },
+          "related": {
+            "forward": "相关",
+            "backward": "相关"
+          },
+          "links_to": {
+            "forward": "链接到",
+            "backward": "链接来源"
+          },
+          "mentions": {
+            "forward": "提及",
+            "backward": "被提及"
+          },
+          "supports": {
+            "forward": "支持",
+            "backward": "被支持"
+          },
+          "conflicts_with": {
+            "forward": "冲突",
+            "backward": "冲突"
+          },
+          "implements": {
+            "forward": "实现",
+            "backward": "被实现"
+          },
+          "triggers": {
+            "forward": "触发",
+            "backward": "由其触发"
+          },
+          "reads": {
+            "forward": "读取",
+            "backward": "被读取"
+          },
+          "writes": {
+            "forward": "写入",
+            "backward": "被写入"
+          },
+          "owns_rule": {
+            "forward": "拥有规则",
+            "backward": "规则归属"
+          },
+          "crosses_domain": {
+            "forward": "跨入",
+            "backward": "来自跨域"
+          },
+          "next_step": {
+            "forward": "下一步",
+            "backward": "上一步"
+          },
+          "uses": {
+            "forward": "使用",
+            "backward": "被使用"
+          },
+          "validates": {
+            "forward": "校验",
+            "backward": "被校验"
+          },
+          "transforms": {
+            "forward": "转换",
+            "backward": "被转换"
+          },
+          "summarizes": {
+            "forward": "总结",
+            "backward": "被总结"
+          },
+          "cites": {
+            "forward": "引用",
+            "backward": "被引用"
+          }
+        },
+        "themePresets": {
+          "aurora": "极光",
+          "graphite": "石墨",
+          "paper": "纸面",
+          "obsidian": "黑曜石"
+        },
+        "accentSwatches": {
+          "cyan": "青色",
+          "violet": "紫色",
+          "emerald": "翠绿",
+          "amber": "琥珀",
+          "rose": "玫瑰"
+        }
+      }
     }
   }
 }

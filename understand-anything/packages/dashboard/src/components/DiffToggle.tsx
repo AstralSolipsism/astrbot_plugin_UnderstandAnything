@@ -1,6 +1,8 @@
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 
 export default function DiffToggle() {
+  const { t } = useI18n();
   const diffMode = useDashboardStore((s) => s.diffMode);
   const toggleDiffMode = useDashboardStore((s) => s.toggleDiffMode);
   const changedNodeIds = useDashboardStore((s) => s.changedNodeIds);
@@ -23,12 +25,14 @@ export default function DiffToggle() {
         title={
           hasDiff
             ? diffMode
-              ? "Hide diff overlay"
-              : "Show diff overlay"
-            : "No diff data loaded"
+              ? t("diff.hideTitle", "Hide diff overlay")
+              : t("diff.showTitle", "Show diff overlay")
+            : t("diff.noData", "No diff data loaded")
         }
       >
-        Diff {diffMode && hasDiff ? "ON" : "OFF"}
+        {t("diff.label", "Diff {state}", {
+          state: diffMode && hasDiff ? t("common.on", "ON") : t("common.off", "OFF"),
+        })}
       </button>
 
       {diffMode && hasDiff && (
@@ -39,7 +43,7 @@ export default function DiffToggle() {
               style={{ backgroundColor: "var(--color-diff-changed)" }}
             />
             <span className="text-text-secondary text-[11px]">
-              Changed
+              {t("common.changed", "Changed")}
               <span className="text-text-muted ml-0.5">
                 ({changedNodeIds.size})
               </span>
@@ -51,7 +55,7 @@ export default function DiffToggle() {
               style={{ backgroundColor: "var(--color-diff-affected)" }}
             />
             <span className="text-text-secondary text-[11px]">
-              Affected
+              {t("common.affected", "Affected")}
               <span className="text-text-muted ml-0.5">
                 ({affectedNodeIds.size})
               </span>

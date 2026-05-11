@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { GraphNode } from "@understand-anything/core/types";
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 
 interface FileEntry {
@@ -86,12 +87,14 @@ function FileTreeRow({
   expanded,
   toggleFolder,
   openFile,
+  openHint,
 }: {
   entry: FileEntry;
   depth: number;
   expanded: Set<string>;
   toggleFolder: (path: string) => void;
   openFile: (nodeId: string) => void;
+  openHint: string;
 }) {
   const isExpanded = expanded.has(entry.path);
   const paddingLeft = 12 + depth * 14;
@@ -118,6 +121,7 @@ function FileTreeRow({
               expanded={expanded}
               toggleFolder={toggleFolder}
               openFile={openFile}
+              openHint={openHint}
             />
           ))}
       </>
@@ -130,7 +134,7 @@ function FileTreeRow({
       onDoubleClick={() => entry.nodeId && openFile(entry.nodeId)}
       className="w-full flex items-center gap-1.5 py-1.5 pr-3 text-left text-xs text-text-secondary hover:text-accent hover:bg-accent/5 transition-colors"
       style={{ paddingLeft }}
-      title={`${entry.path} - double-click to open`}
+      title={`${entry.path} - ${openHint}`}
     >
       <span className="w-3 text-text-muted">-</span>
       <span className="truncate font-mono">{entry.name}</span>
@@ -139,6 +143,7 @@ function FileTreeRow({
 }
 
 export default function FileExplorer() {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const openCodeViewer = useDashboardStore((s) => s.openCodeViewer);
   const navigateToNode = useDashboardStore((s) => s.navigateToNode);
@@ -176,7 +181,7 @@ export default function FileExplorer() {
   if (!graph) {
     return (
       <div className="h-full flex items-center justify-center p-5 text-sm text-text-muted">
-        No graph loaded
+        {t("fileExplorer.noGraphLoaded", "No graph loaded")}
       </div>
     );
   }
@@ -185,15 +190,18 @@ export default function FileExplorer() {
     <div className="h-full flex flex-col min-h-0">
       <div className="px-4 py-3 border-b border-border-subtle shrink-0">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-accent">
-          Analyzed Files
+          {t("fileExplorer.title", "Analyzed Files")}
         </div>
         <div className="text-xs text-text-muted mt-1">
-          {totalFiles} files from the current knowledge graph
+          {t("fileExplorer.fileCount", "{count} files from {root}", {
+            count: totalFiles,
+            root: graph.project.name,
+          })}
         </div>
       </div>
       <div className="flex-1 overflow-auto py-2">
         {entries.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-text-muted">No file paths found.</div>
+          <div className="px-4 py-6 text-sm text-text-muted">{t("fileExplorer.noFiles", "No file paths found")}</div>
         ) : (
           entries.map((entry) => (
             <FileTreeRow
@@ -203,6 +211,7 @@ export default function FileExplorer() {
               expanded={expanded}
               toggleFolder={toggleFolder}
               openFile={handleOpenFile}
+              openHint={t("fileExplorer.openHint", "Double-click to open")}
             />
           ))
         )}

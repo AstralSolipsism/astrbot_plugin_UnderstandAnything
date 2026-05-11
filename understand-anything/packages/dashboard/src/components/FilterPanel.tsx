@@ -1,8 +1,10 @@
 import { useEffect, useRef } from "react";
+import { formatDisplayKey, useI18n } from "../i18n";
 import { useDashboardStore, ALL_NODE_TYPES, ALL_COMPLEXITIES, ALL_EDGE_CATEGORIES } from "../store";
 import type { NodeType, Complexity, EdgeCategory } from "../store";
 
 export default function FilterPanel() {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const filters = useDashboardStore((s) => s.filters);
   const setFilters = useDashboardStore((s) => s.setFilters);
@@ -82,7 +84,7 @@ export default function FilterPanel() {
             ? "bg-gold/20 text-gold hover:bg-gold/30"
             : "bg-elevated text-text-secondary hover:text-text-primary"
         }`}
-        title="Filter graph (F)"
+        title={t("filter.title", "Filter graph")}
       >
         <svg
           className="w-4 h-4"
@@ -97,7 +99,7 @@ export default function FilterPanel() {
             d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
           />
         </svg>
-        Filter
+        {t("filter.button", "Filter")}
       </button>
 
       {filterPanelOpen && (
@@ -106,7 +108,7 @@ export default function FilterPanel() {
             {/* Node Types */}
             <div>
               <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                Node Types
+                {t("filter.nodeTypes", "Node Types")}
               </h3>
               <div className="space-y-1.5">
                 {allNodeTypes.map((type) => (
@@ -120,7 +122,7 @@ export default function FilterPanel() {
                       onChange={() => toggleNodeType(type)}
                       className="w-3.5 h-3.5 rounded border-border-subtle bg-elevated checked:bg-gold checked:border-gold focus:ring-0 focus:ring-offset-0 cursor-pointer"
                     />
-                    <span className="text-sm text-text-primary capitalize">{type}</span>
+                    <span className="text-sm text-text-primary">{t(`nodeTypes.${type}`, formatDisplayKey(type))}</span>
                   </label>
                 ))}
               </div>
@@ -129,7 +131,7 @@ export default function FilterPanel() {
             {/* Complexity */}
             <div>
               <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                Complexity
+                {t("filter.complexity", "Complexity")}
               </h3>
               <div className="space-y-1.5">
                 {allComplexities.map((complexity) => (
@@ -143,7 +145,7 @@ export default function FilterPanel() {
                       onChange={() => toggleComplexity(complexity)}
                       className="w-3.5 h-3.5 rounded border-border-subtle bg-elevated checked:bg-gold checked:border-gold focus:ring-0 focus:ring-offset-0 cursor-pointer"
                     />
-                    <span className="text-sm text-text-primary capitalize">{complexity}</span>
+                    <span className="text-sm text-text-primary">{t(`complexity.${complexity}`, formatDisplayKey(complexity))}</span>
                   </label>
                 ))}
               </div>
@@ -153,7 +155,7 @@ export default function FilterPanel() {
             {layers.length > 0 && (
               <div>
                 <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                  Layers
+                  {t("filter.layers", "Layers")}
                 </h3>
                 <div className="space-y-1.5">
                   {layers.map((layer) => (
@@ -178,7 +180,7 @@ export default function FilterPanel() {
             {/* Edge Categories */}
             <div>
               <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                Edge Categories
+                {t("filter.edgeCategories", "Edge Categories")}
               </h3>
               <div className="space-y-1.5">
                 {allEdgeCategories.map((category) => (
@@ -193,7 +195,7 @@ export default function FilterPanel() {
                       className="w-3.5 h-3.5 rounded border-border-subtle bg-elevated checked:bg-gold checked:border-gold focus:ring-0 focus:ring-offset-0 cursor-pointer"
                     />
                     <span className="text-sm text-text-primary capitalize">
-                      {category.replace(/-/g, " ")}
+                      {t(`edgeCategories.${category}`, formatDisplayKey(category))}
                     </span>
                   </label>
                 ))}
@@ -206,7 +208,7 @@ export default function FilterPanel() {
                 onClick={resetFilters}
                 className="w-full px-3 py-1.5 text-sm bg-elevated hover:bg-gold/20 text-text-secondary hover:text-gold rounded-lg transition-colors"
               >
-                Reset All
+                {t("filter.resetAll", "Reset All")}
               </button>
             )}
           </div>

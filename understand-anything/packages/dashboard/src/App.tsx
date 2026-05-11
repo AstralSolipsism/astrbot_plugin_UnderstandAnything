@@ -21,6 +21,7 @@ import AstrBotWorkspace from "./components/AstrBotWorkspace";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import type { KeyboardShortcut } from "./hooks/useKeyboardShortcuts";
+import { useI18n } from "./i18n";
 import { ThemeProvider } from "./themes/index.ts";
 import { ThemePicker } from "./components/ThemePicker.tsx";
 import type { ThemeConfig } from "./themes/index.ts";
@@ -32,6 +33,12 @@ import {
   pluginGet,
   projectParamsFromSearch,
 } from "./utils/astrbotBridge";
+import { getStorageItem, safeReplaceState, setStorageItem } from "./utils/safeBrowser";
+import {
+  currentBridge,
+  ensureAstrBotPluginPageBridge,
+  isAstrBotPluginPageContext,
+} from "./utils/pluginPageContext";
 
 // Lazy-load heavy / optional components so they ship in separate chunks.
 const CodeViewer = lazy(() => import("./components/CodeViewer"));
@@ -45,8 +52,6 @@ const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 const SESSION_TOKEN_KEY = "understand-anything-token";
 type SidebarTab = "info" | "files";
 type JsonResponseLike = { ok: boolean; json: () => Promise<unknown> };
-
-const ASTRBOT_PLUGIN_PAGE = Boolean((window as AstrBotWindow).AstrBotPluginPage);
 
 function endpointForDataFile(fileName: string): string {
   const endpoints: Record<string, string> = {
@@ -64,7 +69,7 @@ async function loadDataFile(
   projectParams?: ProjectRefParams,
 ): Promise<JsonResponseLike> {
   const bridge = (window as AstrBotWindow).AstrBotPluginPage;
-  if (ASTRBOT_PLUGIN_PAGE && bridge) {
+  if (isAstrBotPluginPageContext() && bridge) {
     try {
       const data = await pluginGet<unknown>(
         bridge,
@@ -98,7 +103,7 @@ function replaceProjectSearch(projectParams: ProjectRefParams | undefined): void
   const search = params.toString();
   const nextUrl =
     window.location.pathname + (search ? `?${search}` : "") + window.location.hash;
-  window.history.replaceState(null, "", nextUrl);
+  safeReplaceState(nextUrl);
 }
 
 /** Resolve data file URL — in demo mode, use env var URLs; otherwise use local paths with token. */
@@ -122,31 +127,55 @@ function dataUrl(fileName: string, token: string | null): string {
  * If found in the URL, persist to sessionStorage and strip the param from the address bar.
  */
 function resolveInitialToken(): string | null {
-  if (ASTRBOT_PLUGIN_PAGE) return "__astrbot__";
+  if (isAstrBotPluginPageContext()) return "__astrbot__";
   if (DEMO_MODE) return "__demo__";
   const params = new URLSearchParams(window.location.search);
   const urlToken = params.get("token");
   if (urlToken) {
-    sessionStorage.setItem(SESSION_TOKEN_KEY, urlToken);
+    setStorageItem("session", SESSION_TOKEN_KEY, urlToken);
     // Clean the URL
     params.delete("token");
     const cleanSearch = params.toString();
     const newUrl =
       window.location.pathname + (cleanSearch ? `?${cleanSearch}` : "") + window.location.hash;
-    window.history.replaceState(null, "", newUrl);
+    safeReplaceState(newUrl);
     return urlToken;
   }
-  return sessionStorage.getItem(SESSION_TOKEN_KEY);
+  return getStorageItem("session", SESSION_TOKEN_KEY);
 }
 
 function App() {
+  const { t } = useI18n();
+  const [pluginBridge, setPluginBridge] = useState(() => currentBridge());
+  const [bridgeLoading, setBridgeLoading] = useState(
+    () => isAstrBotPluginPageContext() && !currentBridge(),
+  );
   const [accessToken, setAccessToken] = useState<string | null>(resolveInitialToken);
   const [astrBotProjectParams, setAstrBotProjectParams] = useState<
     ProjectRefParams | undefined
   >(() => projectParamsFromSearch(window.location.search));
 
+  useEffect(() => {
+    if (!isAstrBotPluginPageContext() || pluginBridge) {
+      setBridgeLoading(false);
+      return;
+    }
+    let disposed = false;
+    setBridgeLoading(true);
+    ensureAstrBotPluginPageBridge().then((loadedBridge) => {
+      if (disposed) {
+        return;
+      }
+      setPluginBridge(loadedBridge ?? currentBridge());
+      setBridgeLoading(false);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [pluginBridge]);
+
   const handleTokenValid = useCallback((token: string) => {
-    sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    setStorageItem("session", SESSION_TOKEN_KEY, token);
     setAccessToken(token);
   }, []);
 
@@ -160,8 +189,8 @@ function App() {
     setAstrBotProjectParams(undefined);
   }, []);
 
-  if (ASTRBOT_PLUGIN_PAGE) {
-    const bridge = (window as AstrBotWindow).AstrBotPluginPage;
+  if (isAstrBotPluginPageContext()) {
+    const bridge = pluginBridge ?? (window as AstrBotWindow).AstrBotPluginPage;
     if (!bridge || !hasProjectRef(astrBotProjectParams)) {
       return (
         <ThemeProvider metaTheme={null}>
@@ -170,7 +199,12 @@ function App() {
           ) : (
             <div className="h-screen w-screen flex items-center justify-center bg-root text-text-primary">
               <p className="text-sm text-text-muted">
-                AstrBot Plugin Page bridge is unavailable.
+                {bridgeLoading
+                  ? t("app.bridgeConnecting", "Connecting to AstrBot Plugin Page...")
+                  : t(
+                      "app.bridgeUnavailable",
+                      "AstrBot Plugin Page bridge is unavailable.",
+                    )}
               </p>
             </div>
           )}
@@ -210,6 +244,7 @@ function Dashboard({
   projectParams,
   onBackToWorkspace,
 }: DashboardProps) {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const setGraph = useDashboardStore((s) => s.setGraph);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
@@ -269,14 +304,14 @@ function Dashboard({
       {
         key: "?",
         shiftKey: true,
-        description: "Show keyboard shortcuts",
+        description: t("shortcut.showHelp", "Show keyboard shortcuts help"),
         action: () => setShowKeyboardHelp((prev) => !prev),
-        category: "General",
+        category: t("shortcut.general", "General"),
       },
       // Navigation
       {
         key: "Escape",
-        description: "Close panels and modals / go back to overview",
+        description: t("shortcut.closePanels", "Close panels or dialogs"),
         action: () => {
           // Read from store at invocation time to avoid stale closures
           const state = useDashboardStore.getState();
@@ -300,81 +335,81 @@ function Dashboard({
             setShowKeyboardHelp(false);
           }
         },
-        category: "Navigation",
+        category: t("shortcut.navigation", "Navigation"),
       },
       {
         key: "/",
-        description: "Focus search bar",
+        description: t("shortcut.focusSearch", "Focus search input"),
         action: () => {
           const searchInput = document.querySelector<HTMLInputElement>(
-            'input[placeholder*="Search"]'
+            '[data-search-input="true"]'
           );
           searchInput?.focus();
         },
-        category: "Navigation",
+        category: t("shortcut.navigation", "Navigation"),
       },
       // Tour controls
       {
         key: "ArrowRight",
-        description: "Next tour step",
+        description: t("shortcut.nextTour", "Next tour step"),
         action: () => {
           const state = useDashboardStore.getState();
           if (state.tourActive) {
             state.nextTourStep();
           }
         },
-        category: "Tour",
+        category: t("shortcut.tour", "Tour"),
       },
       {
         key: "ArrowLeft",
-        description: "Previous tour step",
+        description: t("shortcut.previousTour", "Previous tour step"),
         action: () => {
           const state = useDashboardStore.getState();
           if (state.tourActive) {
             state.prevTourStep();
           }
         },
-        category: "Tour",
+        category: t("shortcut.tour", "Tour"),
       },
       // View toggles
       {
         key: "d",
-        description: "Toggle diff mode",
+        description: t("shortcut.toggleDiff", "Toggle diff overlay"),
         action: () => {
           const state = useDashboardStore.getState();
           state.toggleDiffMode();
         },
-        category: "View",
+        category: t("shortcut.view", "View"),
       },
       {
         key: "f",
-        description: "Toggle filter panel",
+        description: t("shortcut.toggleFilter", "Toggle filter panel"),
         action: () => {
           const state = useDashboardStore.getState();
           state.toggleFilterPanel();
         },
-        category: "View",
+        category: t("shortcut.view", "View"),
       },
       {
         key: "e",
-        description: "Toggle export menu",
+        description: t("shortcut.toggleExport", "Open export menu"),
         action: () => {
           const state = useDashboardStore.getState();
           state.toggleExportMenu();
         },
-        category: "View",
+        category: t("shortcut.view", "View"),
       },
       {
         key: "p",
-        description: "Open path finder",
+        description: t("shortcut.openPath", "Open dependency path finder"),
         action: () => {
           const state = useDashboardStore.getState();
           state.togglePathFinder();
         },
-        category: "View",
+        category: t("shortcut.view", "View"),
       },
     ],
-    []
+    [t]
   );
 
   // Register keyboard shortcuts
@@ -382,14 +417,14 @@ function Dashboard({
 
   useEffect(() => {
     if (accessToken === "__astrbot__" && !hasProjectRef(projectParams)) {
-      setLoadError("Select a project before opening the graph.");
+      setLoadError(t("app.selectProjectBeforeGraph", "Select a project before loading a graph."));
       return;
     }
     setLoadError(null);
     loadDataFile("knowledge-graph.json", accessToken, projectParams)
       .then(async (res) => {
         if (!res.ok) {
-          throw new Error(describeGraphLoadError(await res.json()));
+          throw new Error(describeGraphLoadError(await res.json(), t));
         }
         return res.json();
       })
@@ -412,17 +447,24 @@ function Dashboard({
           }
         } else if (result.fatal) {
           console.error("Knowledge graph validation failed:", result.fatal);
-          setLoadError(`Invalid knowledge graph: ${result.fatal}`);
+          setLoadError(
+            t("app.invalidGraph", "Graph file is missing nodes/edges arrays.") +
+              ` ${result.fatal}`,
+          );
         } else {
           console.error("Knowledge graph validation failed: unknown error");
-          setLoadError("Invalid knowledge graph: unknown validation error");
+          setLoadError(t("app.invalidGraphUnknown", "Graph file is missing required data."));
         }
       })
       .catch((err) => {
         console.error("Failed to load knowledge graph:", err);
-        setLoadError(`Failed to load knowledge graph: ${describeGraphLoadError(err)}`);
+        setLoadError(
+          t("app.failedLoadGraph", "Failed to load graph: {error}", {
+            error: describeGraphLoadError(err, t),
+          }),
+        );
       });
-  }, [accessToken, projectParams, setGraph, setViewMode]);
+  }, [accessToken, projectParams, setGraph, setViewMode, t]);
 
   useEffect(() => {
     if (accessToken === "__astrbot__" && !hasProjectRef(projectParams)) return;
@@ -502,7 +544,7 @@ function Dashboard({
                 : "text-text-muted hover:text-text-primary hover:bg-elevated"
             }`}
           >
-            {tab === "info" ? "Info" : "Files"}
+            {tab === "info" ? t("common.info", "Info") : t("common.files", "Files")}
           </button>
         ))}
       </div>
@@ -541,7 +583,7 @@ function Dashboard({
               onClick={onBackToWorkspace}
               className="rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:text-text-primary"
             >
-              Projects
+              {t("app.projectsButton", "Projects")}
             </button>
           )}
           <h1 className="font-heading text-base sm:text-lg text-text-primary tracking-wide truncate max-w-[160px] sm:max-w-[220px] lg:max-w-none">
@@ -556,26 +598,26 @@ function Dashboard({
                 <button
                   type="button"
                   onClick={() => setViewMode("domain")}
-                  title="Switch to domain view"
+                  title={t("app.domainViewTitle", "Domain view")}
                   className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                     viewMode === "domain"
                       ? "bg-accent/20 text-accent"
                       : "text-text-muted hover:text-text-secondary"
                   }`}
                 >
-                  Domain
+                  {t("common.domain", "Domain")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setViewMode("structural")}
-                  title="Switch to structural view"
+                  title={t("app.structuralViewTitle", "Structural view")}
                   className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                     viewMode === "structural"
                       ? "bg-accent/20 text-accent"
                       : "text-text-muted hover:text-text-secondary"
                   }`}
                 >
-                  Structural
+                  {t("common.structural", "Structural")}
                 </button>
               </div>
             </>
@@ -594,33 +636,33 @@ function Dashboard({
                   <button
                     type="button"
                     onClick={() => setDetailLevel("file")}
-                    title="Files only — architecture-level dependencies (fast)"
+                    title={t("app.filesOnlyTitle", "Files only")}
                     className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                       detailLevel === "file"
                         ? "bg-accent/20 text-accent"
                         : "text-text-muted hover:text-text-secondary"
                     }`}
                   >
-                    Files
+                    {t("common.files", "Files")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setDetailLevel("class")}
-                    title="Files + Classes — code structure with inheritance"
+                    title={`${t("common.files", "Files")} + ${t("nodeTypes.class", "Class")}`}
                     className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                       detailLevel === "class"
                         ? "bg-accent/20 text-accent"
                         : "text-text-muted hover:text-text-secondary"
                     }`}
                   >
-                    +Classes
+                    +{t("nodeTypes.class", "Class")}
                   </button>
                 </div>
                 {detailLevel === "class" && (
                   <button
                     type="button"
                     onClick={toggleShowFunctionsInClassView}
-                    title="Toggle function nodes (may slow down rendering)"
+                    title={t("nodeTypes.function", "Function")}
                     className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded border transition-colors ${
                       showFunctionsInClassView
                         ? "border-amber-500/50 bg-amber-500/10 text-amber-400"
@@ -634,15 +676,15 @@ function Dashboard({
             )}
             <div className="flex items-center gap-1">
               {(isKnowledgeGraph ? [
-                { key: "knowledge" as const, label: "All", color: "var(--color-node-article)" },
+                { key: "knowledge" as const, label: t("common.all", "All"), color: "var(--color-node-article)" },
               ] : [
-                { key: "code" as const, label: "Code", color: "var(--color-node-file)" },
-                { key: "config" as const, label: "Config", color: "var(--color-node-config)" },
-                { key: "docs" as const, label: "Docs", color: "var(--color-node-document)" },
-                { key: "infra" as const, label: "Infra", color: "var(--color-node-service)" },
-                { key: "data" as const, label: "Data", color: "var(--color-node-table)" },
-                { key: "domain" as const, label: "Domain", color: "var(--color-node-concept)" },
-                { key: "knowledge" as const, label: "Knowledge", color: "var(--color-node-article)" },
+                { key: "code" as const, label: t("common.code", "Code"), color: "var(--color-node-file)" },
+                { key: "config" as const, label: t("common.config", "Config"), color: "var(--color-node-config)" },
+                { key: "docs" as const, label: t("common.docs", "Docs"), color: "var(--color-node-document)" },
+                { key: "infra" as const, label: t("common.infra", "Infra"), color: "var(--color-node-service)" },
+                { key: "data" as const, label: t("common.data", "Data"), color: "var(--color-node-table)" },
+                { key: "domain" as const, label: t("common.domain", "Domain"), color: "var(--color-node-concept)" },
+                { key: "knowledge" as const, label: t("common.knowledge", "Knowledge"), color: "var(--color-node-article)" },
               ]).map((cat) => (
                 <button
                   key={cat.key}
@@ -652,7 +694,11 @@ function Dashboard({
                       ? "border-border-medium bg-elevated text-text-secondary hover:text-text-primary"
                       : "border-transparent bg-transparent text-text-muted/40 line-through hover:text-text-muted"
                   }`}
-                  title={`${nodeTypeFilters[cat.key] !== false ? "Hide" : "Show"} ${cat.label} nodes`}
+                  title={t(
+                    nodeTypeFilters[cat.key] !== false ? "app.hideTitle" : "app.showTitle",
+                    nodeTypeFilters[cat.key] !== false ? "Hide {name}" : "Show {name}",
+                    { name: cat.label },
+                  )}
                 >
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
@@ -676,7 +722,8 @@ function Dashboard({
           <button
             onClick={togglePathFinder}
             className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-sm bg-elevated text-text-secondary hover:text-text-primary transition-colors"
-            title="Find path between nodes (P)"
+            title={t("shortcut.openPath", "Open dependency path finder")}
+            aria-label={t("app.pathTitle", "Path")}
           >
             <svg
               className="w-4 h-4"
@@ -691,13 +738,13 @@ function Dashboard({
                 d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
               />
             </svg>
-            <span className="hidden md:inline">Path</span>
+            <span className="hidden md:inline">{t("common.path", "Path")}</span>
           </button>
           <ThemePicker />
           <button
             onClick={() => setShowKeyboardHelp(true)}
             className="text-text-muted hover:text-accent transition-colors"
-            title="Keyboard shortcuts (Shift + ?)"
+            title={t("app.keyboardTitle", "Keyboard shortcuts")}
           >
             <svg
               className="w-5 h-5"
@@ -743,7 +790,7 @@ function Dashboard({
             <GraphView />
           )}
           <div className="absolute top-3 right-3 text-sm text-text-muted/60 pointer-events-none select-none">
-            Press <kbd className="kbd">?</kbd> for keyboard shortcuts
+            {t("app.pressShortcut", "Press ? for keyboard shortcuts")}
           </div>
         </div>
 

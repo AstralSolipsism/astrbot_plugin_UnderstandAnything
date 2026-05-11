@@ -11,7 +11,23 @@
       href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <script src="/api/plugin/page/bridge-sdk.js"></script>
+    <script>
+      (function loadAstrBotPluginPageBridge() {
+        var isPluginPage =
+          window.location.pathname.indexOf("/api/plugin/page/content/") !== -1 ||
+          new URLSearchParams(window.location.search).has("asset_token");
+        if (!isPluginPage) return;
+        var params = new URLSearchParams();
+        params.set("i18n_scope", "page");
+        var assetToken = new URLSearchParams(window.location.search).get("asset_token");
+        if (assetToken) params.set("asset_token", assetToken);
+        document.write(
+          '<script src="/api/plugin/page/bridge-sdk.js?' +
+            params.toString() +
+            '"><\/script>'
+        );
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -12,6 +12,7 @@ import "@xyflow/react/dist/style.css";
 
 import CustomNode from "./CustomNode";
 import type { CustomNodeData } from "./CustomNode";
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 import { applyForceLayout, NODE_WIDTH, NODE_HEIGHT } from "../utils/layout";
 import type { KnowledgeGraph } from "@understand-anything/core/types";
@@ -94,6 +95,7 @@ function computeLayout(
 }
 
 function KnowledgeGraphViewInner() {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const focusNodeId = useDashboardStore((s) => s.focusNodeId);
@@ -238,7 +240,7 @@ function KnowledgeGraphViewInner() {
   if (!graph) {
     return (
       <div className="h-full flex items-center justify-center text-text-muted text-sm">
-        No knowledge graph available. Run /understand-knowledge to generate one.
+        {t("graph.noKnowledge", "No knowledge graph available. Run /understand-knowledge to generate one.")}
       </div>
     );
   }

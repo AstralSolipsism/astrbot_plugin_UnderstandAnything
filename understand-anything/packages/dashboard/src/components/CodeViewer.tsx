@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Highlight, themes } from "prism-react-renderer";
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 import type { AstrBotWindow } from "../utils/astrbotBridge";
 
@@ -94,6 +95,7 @@ export default function CodeViewer({
   onClose,
   onExpand,
 }: CodeViewerProps) {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const domainGraph = useDashboardStore((s) => s.domainGraph);
   const viewMode = useDashboardStore((s) => s.viewMode);
@@ -114,7 +116,7 @@ export default function CodeViewer({
 
   useEffect(() => {
     if (!node?.filePath) {
-      setState({ status: "error", source: null, error: "This node does not have a file path." });
+      setState({ status: "error", source: null, error: t("codeViewer.noPath", "This node does not have a file path.") });
       return;
     }
 
@@ -122,7 +124,7 @@ export default function CodeViewer({
       setState({
         status: "error",
         source: null,
-        error: "Source preview is available only when the local dashboard server is running.",
+        error: t("codeViewer.sourcePreview", "Source preview for this node is unavailable."),
       });
       return;
     }
@@ -144,7 +146,7 @@ export default function CodeViewer({
       });
 
     return () => controller.abort();
-  }, [accessToken, node?.filePath]);
+  }, [accessToken, node?.filePath, t]);
 
   const highlightedRange = useMemo(() => {
     if (!node?.lineRange) return null;
@@ -154,7 +156,7 @@ export default function CodeViewer({
   if (!node) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-surface">
-        <p className="text-text-muted text-sm">No file selected</p>
+        <p className="text-text-muted text-sm">{t("codeViewer.noFileSelected", "No file selected")}</p>
       </div>
     );
   }
@@ -162,8 +164,8 @@ export default function CodeViewer({
   const source = state.source;
   const language = source?.language ?? fallbackLanguage(node.filePath);
   const lineInfo = highlightedRange
-    ? `Lines ${highlightedRange.start}-${highlightedRange.end}`
-    : "Full file";
+    ? `${t("codeViewer.lines", "Lines")} ${highlightedRange.start}-${highlightedRange.end}`
+    : t("codeViewer.fullFile", "Full file");
   const isModal = presentation === "modal";
   const handleClose = onClose ?? closeCodeViewer;
 
@@ -199,8 +201,8 @@ export default function CodeViewer({
               type="button"
               onClick={onExpand}
               className="text-text-muted hover:text-text-primary transition-colors"
-              title="Open larger code viewer"
-              aria-label="Open larger code viewer"
+              title={t("codeViewer.openTitle", "Open source preview")}
+              aria-label={t("codeViewer.openTitle", "Open source preview")}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6" />
@@ -211,8 +213,8 @@ export default function CodeViewer({
             type="button"
             onClick={handleClose}
             className="text-text-muted hover:text-text-primary transition-colors"
-            title={isModal ? "Close expanded code viewer" : "Close code viewer"}
-            aria-label={isModal ? "Close expanded code viewer" : "Close code viewer"}
+            title={t("codeViewer.closeTitle", "Close source preview")}
+            aria-label={t("codeViewer.closeTitle", "Close source preview")}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -223,13 +225,13 @@ export default function CodeViewer({
 
       <div className="flex-1 min-h-0 overflow-auto bg-root">
         {state.status === "loading" && (
-          <div className="p-5 text-sm text-text-muted">Loading source...</div>
+          <div className="p-5 text-sm text-text-muted">{t("codeViewer.loadingSource", "Loading source...")}</div>
         )}
 
         {state.status === "error" && (
           <div className="p-5">
             <div className="rounded-lg border border-border-subtle bg-elevated p-4">
-              <div className="text-sm font-medium text-text-primary mb-2">Source unavailable</div>
+              <div className="text-sm font-medium text-text-primary mb-2">{t("common.sourceUnavailable", "Source unavailable")}</div>
               <p className="text-sm text-text-secondary leading-relaxed">{state.error}</p>
             </div>
           </div>
@@ -238,7 +240,7 @@ export default function CodeViewer({
         {source && (
           <>
             <div className="px-4 py-2 border-b border-border-subtle bg-surface text-[11px] text-text-muted flex items-center justify-between">
-              <span>{source.lineCount} lines</span>
+              <span>{t("codeViewer.lineCount", "{count} lines", { count: source.lineCount })}</span>
               <span>{formatBytes(source.sizeBytes)}</span>
             </div>
             <Highlight code={source.content} language={language} theme={themes.vsDark}>

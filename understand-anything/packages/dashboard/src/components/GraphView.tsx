@@ -23,6 +23,7 @@ import type { PortalFlowNode } from "./PortalNode";
 import ContainerNode from "./ContainerNode";
 import type { ContainerFlowNode, ContainerNodeData } from "./ContainerNode";
 import Breadcrumb from "./Breadcrumb";
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 import type {
   GraphEdge,
@@ -1297,6 +1298,7 @@ function useLayerDetailGraph() {
 // ── Main inner component (must be inside ReactFlowProvider) ────────────
 
 function GraphViewInner() {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const navigationLevel = useDashboardStore((s) => s.navigationLevel);
   const activeLayerId = useDashboardStore((s) => s.activeLayerId);
@@ -1500,7 +1502,7 @@ function GraphViewInner() {
   if (!graph) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-root rounded-lg">
-        <p className="text-text-muted text-sm">No knowledge graph loaded</p>
+        <p className="text-text-muted text-sm">{t("graph.noKnowledgeLoaded", "No knowledge graph loaded")}</p>
       </div>
     );
   }
@@ -1514,7 +1516,7 @@ function GraphViewInner() {
             onClick={() => setFocusNode(null)}
             className="px-4 py-2 rounded-full bg-elevated border border-gold/30 text-gold text-xs font-semibold tracking-wider uppercase hover:bg-gold/10 transition-colors flex items-center gap-2 shadow-lg"
           >
-            <span>Showing neighborhood</span>
+            <span>{t("graph.showingNeighborhood", "Showing neighborhood")}</span>
             <span className="text-text-muted">&times;</span>
           </button>
         </div>
@@ -1564,7 +1566,9 @@ function GraphViewInner() {
           }}
         >
           <span style={{ color: "#d4a574", fontSize: 14 }}>
-            {tourFitPending ? "Locating tour highlight…" : "Computing layout…"}
+            {tourFitPending
+              ? t("graph.locatingTour", "Locating tour highlight...")
+              : t("graph.computingLayout", "Computing layout...")}
           </span>
         </div>
       )}

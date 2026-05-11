@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps, Node } from "@xyflow/react";
+import { formatDisplayKey, pluralKey, useI18n } from "../i18n";
 import { getLayerColor } from "./LayerLegend";
 
 const complexityColors: Record<string, string> = {
@@ -25,6 +26,7 @@ export type LayerClusterFlowNode = Node<LayerClusterData, "layer-cluster">;
 function LayerClusterNode({
   data,
 }: NodeProps<LayerClusterFlowNode>) {
+  const { t } = useI18n();
   const color = getLayerColor(data.layerColorIndex);
   const complexityColor =
     complexityColors[data.aggregateComplexity] ?? complexityColors.simple;
@@ -57,16 +59,20 @@ function LayerClusterNode({
             className="text-[10px] font-semibold uppercase tracking-wider"
             style={{ color: color.label }}
           >
-            Layer
+            {t("layer.label", "Layer")}
           </span>
           <div className="flex items-center gap-2">
             {data.searchMatchCount != null && data.searchMatchCount > 0 && (
               <span className="text-[10px] font-mono bg-gold/20 text-gold px-1.5 py-0.5 rounded">
-                {data.searchMatchCount} match{data.searchMatchCount !== 1 ? "es" : ""}
+                {t(
+                  pluralKey("node.matchSingular", "node.matchPlural", data.searchMatchCount),
+                  data.searchMatchCount === 1 ? "{count} match" : "{count} matches",
+                  { count: data.searchMatchCount },
+                )}
               </span>
             )}
             <span className={`text-[10px] font-mono ${complexityColor}`}>
-              {data.aggregateComplexity}
+              {t(`complexity.${data.aggregateComplexity}`, formatDisplayKey(data.aggregateComplexity))}
             </span>
           </div>
         </div>
@@ -84,10 +90,14 @@ function LayerClusterNode({
         {/* Footer */}
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-text-muted">
-            {data.fileCount} file{data.fileCount !== 1 ? "s" : ""}
+            {t(
+              pluralKey("node.fileSingular", "node.filePlural", data.fileCount),
+              data.fileCount === 1 ? "{count} file" : "{count} files",
+              { count: data.fileCount },
+            )}
           </span>
           <span className="text-[10px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity">
-            Click to explore →
+            {t("node.clickToExplore", "Click to explore")} →
           </span>
         </div>
       </div>

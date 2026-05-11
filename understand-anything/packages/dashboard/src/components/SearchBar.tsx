@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatDisplayKey, pluralKey, useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 
 const typeBadgeColors: Record<string, string> = {
@@ -21,6 +22,7 @@ const typeBadgeColors: Record<string, string> = {
 };
 
 export default function SearchBar() {
+  const { t } = useI18n();
   const searchQuery = useDashboardStore((s) => s.searchQuery);
   const searchResults = useDashboardStore((s) => s.searchResults);
   const graph = useDashboardStore((s) => s.graph);
@@ -100,11 +102,12 @@ export default function SearchBar() {
         </svg>
         <input
           ref={inputRef}
+          data-search-input="true"
           type="text"
           value={searchQuery}
           onChange={handleInputChange}
           onFocus={() => setDropdownOpen(true)}
-          placeholder="Search nodes by name, summary, or tags..."
+          placeholder={t("search.placeholder", "Search files, functions, classes...")}
           className="flex-1 min-w-0 bg-elevated text-text-primary text-sm rounded-lg px-3 py-1.5 border border-border-subtle focus:outline-none focus:border-accent/50 placeholder-text-muted"
         />
         <div className="flex items-center gap-1 bg-elevated rounded-lg p-0.5 shrink-0">
@@ -116,7 +119,7 @@ export default function SearchBar() {
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
-            Fuzzy
+            {t("search.fuzzy", "Fuzzy")}
           </button>
           <button
             onClick={() => setSearchMode("semantic")}
@@ -126,12 +129,16 @@ export default function SearchBar() {
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
-            Semantic
+            {t("search.semantic", "Semantic")}
           </button>
         </div>
         {searchQuery.trim() && (
           <span className="hidden sm:inline text-xs text-text-muted shrink-0">
-            {searchResults.length} result{searchResults.length !== 1 ? "s" : ""}{" "}
+            {t(
+              pluralKey("search.resultSingular", "search.resultPlural", searchResults.length),
+              searchResults.length === 1 ? "{count} result" : "{count} results",
+              { count: searchResults.length },
+            )}{" "}
             <span className="text-text-muted">({searchMode})</span>
           </span>
         )}
@@ -158,7 +165,7 @@ export default function SearchBar() {
                 <span
                   className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeColor} shrink-0`}
                 >
-                  {node.type}
+                  {t(`nodeTypes.${node.type}`, formatDisplayKey(node.type))}
                 </span>
 
                 {/* Node name */}

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useI18n } from "../i18n";
 
 export type MobileTab = "graph" | "info" | "files";
 
@@ -7,10 +8,11 @@ interface Props {
   onTabChange: (tab: MobileTab) => void;
 }
 
-const tabs: { id: MobileTab; label: string; icon: ReactNode }[] = [
+const tabs: { id: MobileTab; labelKey: string; fallback: string; icon: ReactNode }[] = [
   {
     id: "graph",
-    label: "Graph",
+    labelKey: "common.graph",
+    fallback: "Graph",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
         <circle cx="6" cy="7" r="2" />
@@ -22,7 +24,8 @@ const tabs: { id: MobileTab; label: string; icon: ReactNode }[] = [
   },
   {
     id: "info",
-    label: "Info",
+    labelKey: "common.info",
+    fallback: "Info",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
         <circle cx="12" cy="12" r="9" />
@@ -32,7 +35,8 @@ const tabs: { id: MobileTab; label: string; icon: ReactNode }[] = [
   },
   {
     id: "files",
-    label: "Files",
+    labelKey: "common.files",
+    fallback: "Files",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
         <path
@@ -46,6 +50,7 @@ const tabs: { id: MobileTab; label: string; icon: ReactNode }[] = [
 ];
 
 export default function MobileBottomNav({ activeTab, onTabChange }: Props) {
+  const { t } = useI18n();
   return (
     <nav className="flex shrink-0 bg-surface border-t border-border-subtle">
       {tabs.map((tab) => {
@@ -61,7 +66,7 @@ export default function MobileBottomNav({ activeTab, onTabChange }: Props) {
             aria-current={active ? "page" : undefined}
           >
             <span className="w-5 h-5">{tab.icon}</span>
-            {tab.label}
+            {t(tab.labelKey, tab.fallback)}
             {active && (
               <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-px bg-accent" />
             )}

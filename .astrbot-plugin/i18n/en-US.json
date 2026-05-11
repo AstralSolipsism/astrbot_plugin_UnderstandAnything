@@ -1,13 +1,610 @@
 {
   "metadata": {
     "display_name": "Understand Anything",
-    "short_desc": "Turn projects, docs, and wikis into interactive knowledge graphs in AstrBot.",
-    "desc": "Full AstrBot host adapter for Understand Anything."
+    "short_desc": "Turn projects, documents, and knowledge bases into interactive knowledge graphs in AstrBot.",
+    "desc": "Full AstrBot host adapter plugin for Understand Anything."
+  },
+  "config": {
+    "provider_id": {
+      "description": "AstrBot chat provider ID",
+      "hint": "Leave empty to use the current session provider."
+    },
+    "node_bin": {
+      "description": "Node.js executable",
+      "hint": "Node.js 22 or newer is recommended."
+    },
+    "pnpm_bin": {
+      "description": "pnpm executable",
+      "hint": "pnpm 10 or newer is recommended."
+    },
+    "git_bin": {
+      "description": "Git executable",
+      "hint": "Used to clone and update public GitHub repositories for analysis."
+    },
+    "cleanup_github_cache_after_analysis": {
+      "description": "Clean GitHub clone cache after analysis",
+      "hint": "When enabled, only the cloned source cache is removed after a GitHub analysis job. Graph artifacts are kept in plugin data."
+    },
+    "max_concurrent_jobs": {
+      "description": "Maximum concurrent analysis jobs",
+      "hint": "Large analyses can consume model tokens and CPU. Keep this low unless the host has enough resources."
+    },
+    "max_parallel_file_agents": {
+      "description": "Maximum parallel file-analyzer SubAgents per analysis job",
+      "hint": "Controls batch-level SubAgent concurrency inside one /understand job."
+    },
+    "max_parallel_article_agents": {
+      "description": "Maximum parallel article-analyzer SubAgents per knowledge job",
+      "hint": "Controls batch-level SubAgent concurrency inside one /understand-knowledge job."
+    },
+    "subagent_provider_id": {
+      "description": "AstrBot chat provider ID for Understand Anything SubAgents",
+      "hint": "Leave empty to reuse provider_id, then the current session provider."
+    },
+    "auto_build": {
+      "description": "Automatically install and build bundled Understand Anything Node packages",
+      "hint": "When enabled, the first use runs pnpm install and rebuilds missing runtime dist files."
+    },
+    "auto_update_poll_interval": {
+      "description": "Auto-update polling interval in seconds",
+      "hint": "0 disables background polling. Use chat commands for explicit updates."
+    },
+    "allowed_roots": {
+      "description": "Allowed project roots",
+      "hint": "Empty means the current AstrBot working directory. Add absolute directories to allow analyzing projects elsewhere."
+    },
+    "default_write_mode": {
+      "description": "Default graph output mode",
+      "hint": "Understand Anything writes graph files into the target project.",
+      "labels": [
+        "Project .understand-anything"
+      ]
+    }
   },
   "pages": {
     "dashboard": {
       "title": "Understand Anything",
-      "description": "Explore generated knowledge graphs, domain graphs, knowledge graphs, and diff overlays."
+      "description": "Browse generated structure graphs, domain graphs, knowledge graphs, and diff impact maps.",
+      "ui": {
+        "common": {
+          "ready": "Ready",
+          "missing": "Missing",
+          "stale": "Stale",
+          "loading": "Loading",
+          "error": "Error",
+          "configured": "Configured",
+          "currentSessionProvider": "Current session provider",
+          "refresh": "Refresh",
+          "pluginSettings": "Plugin Settings",
+          "register": "Register",
+          "registering": "Registering",
+          "dismiss": "Dismiss",
+          "open": "Open",
+          "close": "Close",
+          "cancel": "Cancel",
+          "selected": "Selected",
+          "back": "Back",
+          "focus": "Focus",
+          "unfocus": "Unfocus",
+          "show": "Show",
+          "hide": "Hide",
+          "projects": "Projects",
+          "project": "Project",
+          "runtime": "Runtime",
+          "graph": "Graph",
+          "info": "Info",
+          "files": "Files",
+          "path": "Path",
+          "help": "Help",
+          "theme": "Theme",
+          "filter": "Filter",
+          "export": "Export",
+          "all": "All",
+          "code": "Code",
+          "config": "Config",
+          "docs": "Docs",
+          "infra": "Infra",
+          "data": "Data",
+          "domain": "Domain",
+          "knowledge": "Knowledge",
+          "structural": "Structural",
+          "view": "View",
+          "role": "Role",
+          "tools": "Tools",
+          "layers": "Layers",
+          "nodeTypes": "Node types",
+          "diffOverlay": "Diff overlay",
+          "dashboard": "Dashboard",
+          "controls": "Controls",
+          "settings": "Settings",
+          "changed": "Changed",
+          "affected": "Affected",
+          "on": "ON",
+          "off": "OFF",
+          "file": "File",
+          "tags": "Tags",
+          "connections": "Connections",
+          "category": "Category",
+          "preview": "Preview",
+          "entities": "Entities",
+          "businessRules": "Business Rules",
+          "crossDomain": "Cross-Domain",
+          "flows": "Flows",
+          "entryPoint": "Entry Point",
+          "steps": "Steps",
+          "implementation": "Implementation",
+          "wikilinks": "Wikilinks",
+          "backlinks": "Backlinks",
+          "languageConcepts": "Language Concepts",
+          "languageLesson": "Language Lesson",
+          "referencedComponents": "Referenced Components",
+          "sourceUnavailable": "Source unavailable",
+          "noGraphLoaded": "No graph loaded",
+          "unnamed": "unnamed"
+        },
+        "app": {
+          "bridgeUnavailable": "AstrBotPluginPage bridge is unavailable.",
+          "selectProjectBeforeGraph": "Select a project before loading a graph.",
+          "invalidGraph": "Graph file is missing nodes/edges arrays.",
+          "invalidGraphUnknown": "Graph file is missing required data.",
+          "failedLoadGraph": "Failed to load graph: {error}",
+          "loadProjectFailed": "Failed to load project {project}: {error}",
+          "graphMissing": "This project has not generated a graph yet. Start an Understand Anything analysis or rerun the project from this workspace.",
+          "noProjectsRegistered": "No Understand Anything projects are registered. Add a project path below and start an analysis.",
+          "multipleProjectsRegistered": "Select a project from the workspace before opening the graph.",
+          "pressShortcut": "Press ? for keyboard shortcuts",
+          "projectsButton": "Projects",
+          "domainViewTitle": "Domain view",
+          "structuralViewTitle": "Structural view",
+          "filesOnlyTitle": "Files only",
+          "classesTitle": "{count} classes",
+          "functionsTitle": "{count} functions",
+          "pathTitle": "Path",
+          "keyboardTitle": "Keyboard shortcuts",
+          "hideTitle": "Hide {name}",
+          "showTitle": "Show {name}"
+        },
+        "workspace": {
+          "subtitle": "Plugin workspace",
+          "notAnalyzed": "Not analyzed",
+          "jobEventInterrupted": "Job event stream interrupted.",
+          "projectPathRequired": "Project path is required.",
+          "subagentsRequired": "Register UA SubAgents before starting analysis.",
+          "subagentsBlocked": "Register UA SubAgents from this panel before starting analysis jobs.",
+          "initialConfiguration": "Initial Configuration",
+          "configManaged": "Configuration is managed from AstrBot plugin settings.",
+          "llmProvider": "LLM Provider",
+          "nodeRuntime": "Node Runtime",
+          "allowedRoots": "Allowed Roots",
+          "registeredProjects": "{count} registered",
+          "noProjects": "No registered projects yet.",
+          "analyzeProject": "Analyze Project",
+          "projectPath": "Project Path",
+          "fullAnalysis": "Full analysis",
+          "autoUpdate": "Auto update",
+          "starting": "Starting",
+          "startAnalysis": "Start Analysis"
+        },
+        "subagents": {
+          "title": "UA SubAgents",
+          "registrationRequired": "Registration required",
+          "description": "Understand Anything uses persistent AstrBot SubAgents for worker batches. Register the UA roles once, then analysis jobs can dispatch real parallel agents.",
+          "allRegistered": "All roles registered",
+          "fileAgents": "File agents",
+          "articleAgents": "Article agents",
+          "personaFolder": "Persona folder",
+          "registerButton": "Register UA SubAgents",
+          "registeringButton": "Registering UA SubAgents",
+          "registerWithProvider": "Register with provider",
+          "providerDialogTitle": "Choose LLM Provider",
+          "providerDialogDescription": "The selected chat provider will be written to all UA SubAgents during registration.",
+          "providerSearch": "Search providers",
+          "providerLoading": "Loading providers",
+          "providerNoProviders": "No chat providers are available.",
+          "providerRouteUnavailable": "Provider selector API is unavailable. Reload this plugin in AstrBot, then reopen the dashboard.",
+          "providerDefaultTitle": "AstrBot default provider",
+          "providerDefaultDescription": "Use the current/default chat provider without storing a fixed provider id.",
+          "providerCapabilityImage": "Image",
+          "providerCapabilityAudio": "Audio",
+          "providerCapabilityTools": "Tools",
+          "providerCapabilityReasoning": "Reasoning",
+          "missingRoles": "Missing roles",
+          "staleRoles": "Stale roles",
+          "readyHint": "Ready for project analysis."
+        },
+        "runtimeItems": {
+          "runtimeDist": "Runtime dist",
+          "coreDist": "Core dist",
+          "dashboardDist": "Dashboard dist",
+          "dashboardPage": "Dashboard page",
+          "nodeModules": "Node modules"
+        },
+        "shortcut": {
+          "showHelp": "Show keyboard shortcuts help",
+          "closePanels": "Close panels or dialogs",
+          "focusSearch": "Focus search input",
+          "nextTour": "Next tour step",
+          "previousTour": "Previous tour step",
+          "toggleDiff": "Toggle diff overlay",
+          "toggleFilter": "Toggle filter panel",
+          "toggleExport": "Open export menu",
+          "openPath": "Open dependency path finder",
+          "general": "General",
+          "navigation": "Navigation",
+          "tour": "Tour",
+          "view": "View"
+        },
+        "filter": {
+          "title": "Filter graph",
+          "button": "Filter",
+          "nodeTypes": "Node Types",
+          "complexity": "Complexity",
+          "layers": "Layers",
+          "edgeCategories": "Edge Categories",
+          "resetAll": "Reset All"
+        },
+        "export": {
+          "graphNotReady": "Graph not ready for export.",
+          "noNodes": "No nodes to export.",
+          "failedPng": "Failed to export PNG: {error}",
+          "failedSvg": "Failed to export SVG: {error}",
+          "failedJson": "Failed to export JSON: {error}",
+          "noGraphLoaded": "No graph loaded",
+          "buttonTitle": "Export graph (E)",
+          "button": "Export",
+          "png": "Export as PNG",
+          "svg": "Export as SVG",
+          "json": "Export as JSON"
+        },
+        "nodeInfo": {
+          "selectNode": "Select a node to see details",
+          "openCode": "Open code",
+          "definedInFile": "Defined in this file",
+          "connectionCount": "{count} connections",
+          "truncated": "truncated",
+          "noDetails": "No details available"
+        },
+        "projectOverview": {
+          "loadingProject": "Loading project...",
+          "nodes": "Nodes",
+          "edges": "Edges",
+          "layers": "Layers",
+          "types": "Types",
+          "fileTypes": "File Types",
+          "languages": "Languages",
+          "frameworks": "Frameworks",
+          "nodeTypeDistribution": "Node Type Distribution",
+          "complexityDistribution": "Complexity Distribution",
+          "mostConnectedNodes": "Most Connected Nodes",
+          "avgConnections": "Avg Connections per Node",
+          "analyzed": "Analyzed",
+          "startGuidedTour": "Start Guided Tour"
+        },
+        "search": {
+          "placeholder": "Search files, functions, classes...",
+          "fuzzy": "Fuzzy",
+          "semantic": "Semantic",
+          "resultSingular": "{count} result",
+          "resultPlural": "{count} results"
+        },
+        "warning": {
+          "title": "Dashboard warnings",
+          "fatal": "Fatal",
+          "autoCorrected": "Auto-corrected",
+          "dropped": "Dropped",
+          "collapsedSummary": "{count} dashboard issue(s)",
+          "dashboardBugIntro": "Some of these issues look like dashboard rendering bugs.",
+          "bugReportLine": "Please file an issue at github.com/AstralSolipsism/astrbot_plugin_UnderstandAnything/issues with the text below.",
+          "graphIssueIntro": "The following issues were found in your knowledge-graph.json.",
+          "graphIssueCause": "These are LLM generation errors, not a system bug.",
+          "graphIssueAction": "You can ask your agent to fix these specific issues in the knowledge-graph.json file:",
+          "footerFatal": "Copy these issues and file a bug report on GitHub",
+          "footerNormal": "Copy these issues and ask your agent to fix them in knowledge-graph.json",
+          "copied": "Copied",
+          "copyIssues": "Copy issues",
+          "copyFailed": "Copy failed",
+          "clickToCollapse": "Click to collapse",
+          "clickToExpand": "Click to expand",
+          "footer": "These warnings are for dashboard diagnostics only. They do not change graph data."
+        },
+        "codeViewer": {
+          "noPath": "This node does not have a file path.",
+          "sourcePreview": "Source preview for this node is unavailable.",
+          "noFileSelected": "No file selected",
+          "lines": "Lines",
+          "fullFile": "Full file",
+          "openTitle": "Open source preview",
+          "closeTitle": "Close source preview",
+          "loadingSource": "Loading source...",
+          "lineCount": "{count} lines"
+        },
+        "fileExplorer": {
+          "noGraphLoaded": "No graph loaded",
+          "title": "Analyzed Files",
+          "fileCount": "{count} files from {root}",
+          "noFiles": "No file paths found",
+          "openHint": "Double-click to open"
+        },
+        "learn": {
+          "noTour": "No tour available",
+          "noTourDescription": "Generate a tour with /understand to explore this graph step by step.",
+          "projectTour": "Project Tour",
+          "stepSummary": "{count} steps · Guided walkthrough of this codebase",
+          "startTour": "Start Tour",
+          "steps": "Steps",
+          "tour": "Tour",
+          "exitTour": "Exit Tour",
+          "goToStep": "Go to step {index}",
+          "previous": "Prev",
+          "finish": "Finish",
+          "next": "Next"
+        },
+        "pathFinder": {
+          "title": "Dependency Path Finder",
+          "description": "Find the shortest path between two nodes in the graph.",
+          "fromNode": "From Node",
+          "toNode": "To Node",
+          "selectNode": "Select a node...",
+          "searching": "Searching...",
+          "findPath": "Find Path",
+          "noPath": "No path found between these nodes.",
+          "pathFound": "Path Found ({count} nodes)"
+        },
+        "mobile": {
+          "openProjects": "Open projects",
+          "openMenu": "Open menu",
+          "hideSearch": "Hide search",
+          "showSearch": "Show search",
+          "closeMenu": "Close menu",
+          "settings": "Settings",
+          "keyboardShortcuts": "Keyboard shortcuts"
+        },
+        "keyboardHelp": {
+          "title": "Keyboard Shortcuts",
+          "subtitle": "Press ? anytime to toggle this help",
+          "closeHint": "Press ESC to close"
+        },
+        "theme": {
+          "changeTheme": "Change theme",
+          "accentColor": "Accent Color",
+          "headingFont": "Heading Font",
+          "serif": "Serif",
+          "sans": "Sans",
+          "mono": "Mono"
+        },
+        "persona": {
+          "overview": "Overview",
+          "overviewDescription": "Balanced system view",
+          "learn": "Learn",
+          "learnDescription": "Guided explanations",
+          "deepDive": "Deep Dive",
+          "deepDiveDescription": "Dense technical detail"
+        },
+        "diff": {
+          "hideTitle": "Hide diff overlay",
+          "showTitle": "Show diff overlay",
+          "noData": "No diff data loaded",
+          "label": "Diff {state}"
+        },
+        "layer": {
+          "count": "{count} layers",
+          "label": "Layer"
+        },
+        "graph": {
+          "noKnowledge": "No knowledge graph available. Run /understand-knowledge to generate one.",
+          "noKnowledgeLoaded": "No knowledge graph loaded",
+          "showingNeighborhood": "Showing neighborhood",
+          "locatingTour": "Locating tour highlight...",
+          "computingLayout": "Computing layout..."
+        },
+        "node": {
+          "tested": "Has tests",
+          "root": "(root)",
+          "expand": "expand",
+          "collapse": "collapse",
+          "container": "container",
+          "itemSingular": "{count} item",
+          "itemPlural": "{count} items",
+          "hitSingular": "{count} hit",
+          "hitPlural": "{count} hits",
+          "matchSingular": "{count} match",
+          "matchPlural": "{count} matches",
+          "fileSingular": "{count} file",
+          "filePlural": "{count} files",
+          "flowSingular": "{count} flow",
+          "flowPlural": "{count} flows",
+          "clickToExplore": "Click to explore",
+          "connectionSingular": "{count} connection",
+          "connectionPlural": "{count} connections",
+          "inbound": "{count} in",
+          "outbound": "{count} out"
+        },
+        "breadcrumb": {
+          "projectOverview": "Project Overview",
+          "escToGoBack": "Esc to go back"
+        },
+        "tokenGate": {
+          "loadError": "Failed to load access status.",
+          "requiredTitle": "Access token required",
+          "requiredDescription": "Enter the shared dashboard token to continue.",
+          "tokenPlaceholder": "Access token",
+          "unlock": "Unlock",
+          "unlocking": "Unlocking",
+          "continue": "Continue",
+          "validating": "Validating...",
+          "invalid": "Invalid access token."
+        },
+        "nodeTypes": {
+          "all": "All",
+          "file": "File",
+          "function": "Function",
+          "class": "Class",
+          "module": "Module",
+          "concept": "Concept",
+          "config": "Config",
+          "document": "Document",
+          "service": "Service",
+          "table": "Table",
+          "endpoint": "Endpoint",
+          "pipeline": "Pipeline",
+          "schema": "Schema",
+          "resource": "Resource",
+          "domain": "Domain",
+          "flow": "Flow",
+          "step": "Step",
+          "article": "Article",
+          "entity": "Entity",
+          "topic": "Topic",
+          "claim": "Claim",
+          "source": "Source",
+          "code": "Code",
+          "docs": "Docs",
+          "infra": "Infra",
+          "data": "Data",
+          "knowledge": "Knowledge"
+        },
+        "complexity": {
+          "simple": "Simple",
+          "moderate": "Moderate",
+          "complex": "Complex"
+        },
+        "edgeCategories": {
+          "structural": "Structural",
+          "runtime": "Runtime",
+          "data": "Data",
+          "config": "Config",
+          "test": "Test",
+          "deploy": "Deploy",
+          "doc": "Docs",
+          "domain": "Domain",
+          "knowledge": "Knowledge",
+          "dependency": "Dependency",
+          "ownership": "Ownership"
+        },
+        "edgeLabels": {
+          "imports": {
+            "forward": "imports",
+            "backward": "imported by"
+          },
+          "calls": {
+            "forward": "calls",
+            "backward": "called by"
+          },
+          "contains": {
+            "forward": "contains",
+            "backward": "contained in"
+          },
+          "defines": {
+            "forward": "defines",
+            "backward": "defined in"
+          },
+          "configures": {
+            "forward": "configures",
+            "backward": "configured by"
+          },
+          "tests": {
+            "forward": "tests",
+            "backward": "tested by"
+          },
+          "deploys": {
+            "forward": "deploys",
+            "backward": "deployed by"
+          },
+          "documents": {
+            "forward": "documents",
+            "backward": "documented by"
+          },
+          "depends_on": {
+            "forward": "depends on",
+            "backward": "required by"
+          },
+          "owns": {
+            "forward": "owns",
+            "backward": "owned by"
+          },
+          "related": {
+            "forward": "related to",
+            "backward": "related to"
+          },
+          "links_to": {
+            "forward": "links to",
+            "backward": "linked from"
+          },
+          "mentions": {
+            "forward": "mentions",
+            "backward": "mentioned by"
+          },
+          "supports": {
+            "forward": "supports",
+            "backward": "supported by"
+          },
+          "conflicts_with": {
+            "forward": "conflicts with",
+            "backward": "conflicts with"
+          },
+          "implements": {
+            "forward": "implements",
+            "backward": "implemented by"
+          },
+          "triggers": {
+            "forward": "triggers",
+            "backward": "triggered by"
+          },
+          "reads": {
+            "forward": "reads",
+            "backward": "read by"
+          },
+          "writes": {
+            "forward": "writes",
+            "backward": "written by"
+          },
+          "owns_rule": {
+            "forward": "owns rule",
+            "backward": "rule owned by"
+          },
+          "crosses_domain": {
+            "forward": "crosses into",
+            "backward": "crossed from"
+          },
+          "next_step": {
+            "forward": "next step",
+            "backward": "previous step"
+          },
+          "uses": {
+            "forward": "uses",
+            "backward": "used by"
+          },
+          "validates": {
+            "forward": "validates",
+            "backward": "validated by"
+          },
+          "transforms": {
+            "forward": "transforms",
+            "backward": "transformed by"
+          },
+          "summarizes": {
+            "forward": "summarizes",
+            "backward": "summarized by"
+          },
+          "cites": {
+            "forward": "cites",
+            "backward": "cited by"
+          }
+        },
+        "themePresets": {
+          "aurora": "Aurora",
+          "graphite": "Graphite",
+          "paper": "Paper",
+          "obsidian": "Obsidian"
+        },
+        "accentSwatches": {
+          "cyan": "Cyan",
+          "violet": "Violet",
+          "emerald": "Emerald",
+          "amber": "Amber",
+          "rose": "Rose"
+        }
+      }
     }
   }
 }

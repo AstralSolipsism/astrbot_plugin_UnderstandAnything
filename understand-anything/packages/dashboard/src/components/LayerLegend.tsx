@@ -1,3 +1,4 @@
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 
 // Shared layer color palette — used by LayerLegend, LayerClusterNode, PortalNode, and GraphView
@@ -16,6 +17,7 @@ export function getLayerColor(index: number) {
 }
 
 export default function LayerLegend() {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const navigationLevel = useDashboardStore((s) => s.navigationLevel);
   const activeLayerId = useDashboardStore((s) => s.activeLayerId);
@@ -31,8 +33,8 @@ export default function LayerLegend() {
     <div className="flex items-center gap-2">
       <span className="text-[11px] font-medium text-text-secondary whitespace-nowrap">
         {navigationLevel === "overview"
-          ? `${layers.length} layers`
-          : activeLayer?.name ?? "Layer"}
+          ? t("layer.count", "{count} layers", { count: layers.length })
+          : activeLayer?.name ?? t("layer.label", "Layer")}
       </span>
 
       <div className="flex items-center gap-3">

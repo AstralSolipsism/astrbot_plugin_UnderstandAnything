@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { useI18n } from "../i18n";
 
 interface TokenGateProps {
   onTokenValid: (token: string) => void;
 }
 
 export default function TokenGate({ onTokenValid }: TokenGateProps) {
+  const { t } = useI18n();
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -22,13 +24,13 @@ export default function TokenGate({ onTokenValid }: TokenGateProps) {
       if (res.ok) {
         onTokenValid(token);
       } else if (res.status === 403) {
-        setError("Invalid token. Please check and try again.");
+        setError(t("tokenGate.invalid", "Invalid access token."));
       } else {
-        setError(`Unexpected response (${res.status}). Is the dashboard server running?`);
+        setError(t("tokenGate.loadError", "Failed to load access status.") + ` (${res.status})`);
       }
     } catch (err) {
       setError(
-        `Could not reach the server: ${err instanceof Error ? err.message : String(err)}`
+        `${t("tokenGate.loadError", "Failed to load access status.")} ${err instanceof Error ? err.message : String(err)}`
       );
     } finally {
       setLoading(false);
@@ -40,11 +42,10 @@ export default function TokenGate({ onTokenValid }: TokenGateProps) {
       <div className="w-full max-w-md px-8 py-10 bg-surface border border-border-subtle rounded-lg shadow-2xl">
         {/* Heading */}
         <h1 className="font-heading text-2xl text-text-primary tracking-wide text-center mb-2">
-          Access Token Required
+          {t("tokenGate.requiredTitle", "Access token required")}
         </h1>
         <p className="text-text-muted text-sm text-center mb-8">
-          Paste the access token from your terminal. Look for the{" "}
-          <span role="img" aria-label="key">&#x1F511;</span> line.
+          {t("tokenGate.requiredDescription", "Enter the shared dashboard token to continue.")}
         </p>
 
         {/* Form */}
@@ -56,7 +57,7 @@ export default function TokenGate({ onTokenValid }: TokenGateProps) {
               setInput(e.target.value);
               if (error) setError(null);
             }}
-            placeholder="Paste token here..."
+            placeholder={t("tokenGate.tokenPlaceholder", "Access token")}
             autoFocus
             className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded text-text-primary placeholder:text-text-muted/50 font-mono text-sm focus:outline-none focus:border-accent transition-colors"
           />
@@ -70,7 +71,7 @@ export default function TokenGate({ onTokenValid }: TokenGateProps) {
             disabled={loading || !input.trim()}
             className="w-full py-3 bg-accent text-root font-semibold rounded transition-all hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {loading ? "Validating..." : "Continue"}
+            {loading ? t("tokenGate.validating", "Validating...") : t("tokenGate.continue", "Continue")}
           </button>
         </form>
       </div>

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { GraphIssue } from "@understand-anything/core/schema";
+import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 import GraphView from "./GraphView";
 import DomainGraphView from "./DomainGraphView";
@@ -37,6 +38,7 @@ export default function MobileLayout({
   shortcuts,
   onBackToWorkspace,
 }: Props) {
+  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const tourActive = useDashboardStore((s) => s.tourActive);
@@ -84,7 +86,7 @@ export default function MobileLayout({
           type="button"
           onClick={onBackToWorkspace ?? (() => setDrawerOpen(true))}
           className="w-9 h-9 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-elevated transition-colors -ml-1"
-          aria-label={onBackToWorkspace ? "Open projects" : "Open menu"}
+          aria-label={onBackToWorkspace ? t("mobile.openProjects", "Open projects") : t("mobile.openMenu", "Open menu")}
         >
           {onBackToWorkspace ? (
             <svg
@@ -121,7 +123,7 @@ export default function MobileLayout({
               ? "text-accent bg-accent/15"
               : "text-text-secondary hover:text-text-primary hover:bg-elevated"
           }`}
-          aria-label={searchOpen ? "Hide search" : "Show search"}
+          aria-label={searchOpen ? t("mobile.hideSearch", "Hide search") : t("mobile.showSearch", "Show search")}
           aria-pressed={searchOpen}
         >
           <svg

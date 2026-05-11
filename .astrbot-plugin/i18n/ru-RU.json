@@ -1,0 +1,610 @@
+{
+  "metadata": {
+    "display_name": "Understand Anything",
+    "short_desc": "??????????? ???????, ????????? ? ???? ?????? ? ????????????? ????? ?????? ? AstrBot.",
+    "desc": "?????? ??????? Understand Anything ??? AstrBot."
+  },
+  "config": {
+    "provider_id": {
+      "description": "ID ???-?????????? AstrBot",
+      "hint": "???????? ??????, ????? ???????????? provider ??????? ??????."
+    },
+    "node_bin": {
+      "description": "??????????? ???? Node.js",
+      "hint": "????????????? Node.js 22 ??? ?????."
+    },
+    "pnpm_bin": {
+      "description": "??????????? ???? pnpm",
+      "hint": "????????????? pnpm 10 ??? ?????."
+    },
+    "git_bin": {
+      "description": "Исполняемый файл Git",
+      "hint": "Используется для клонирования и обновления публичных репозиториев GitHub перед анализом."
+    },
+    "cleanup_github_cache_after_analysis": {
+      "description": "Очищать clone-кэш GitHub после анализа",
+      "hint": "Если включено, после анализа GitHub удаляется только кэш исходного clone. Артефакты графа остаются в данных плагина."
+    },
+    "max_concurrent_jobs": {
+      "description": "???????? ???????????? ????? ???????",
+      "hint": "??????? ?????? ????????? model tokens ? CPU. ??????? ???????? ??????, ???? ? ????? ???? ????????."
+    },
+    "max_parallel_file_agents": {
+      "description": "???????? ???????????? file-analyzer SubAgents ?? ?????? ???????",
+      "hint": "????????? batch-level ????????????? SubAgent ?????? ?????? /understand job."
+    },
+    "max_parallel_article_agents": {
+      "description": "???????? ???????????? article-analyzer SubAgents ?? ?????? ??????",
+      "hint": "????????? batch-level ????????????? SubAgent ?????? ?????? /understand-knowledge job."
+    },
+    "subagent_provider_id": {
+      "description": "ID ???-?????????? AstrBot ??? Understand Anything SubAgents",
+      "hint": "???????? ??????, ????? ???????????? provider_id, ????? provider ??????? ??????."
+    },
+    "auto_build": {
+      "description": "????????????? ????????????? ? ???????? ?????????? Node-?????? Understand Anything",
+      "hint": "???? ????????, ?????? ?????? ????????? pnpm install ? ???????????? ????????????? runtime dist ?????."
+    },
+    "auto_update_poll_interval": {
+      "description": "???????? ?????????????? ? ????????",
+      "hint": "0 ????????? ??????? polling. ??? ????? ?????????? ??????????? chat-???????."
+    },
+    "allowed_roots": {
+      "description": "??????????? ????? ????????",
+      "hint": "?????? ???????? ???????? ??????? ??????? ?????????? AstrBot. ???????? ?????????? ?????????? ??? ??????? ???????? ? ?????? ??????."
+    },
+    "default_write_mode": {
+      "description": "????? ?????? ????? ?? ?????????",
+      "hint": "Understand Anything ?????????? ????? ????? ? ??????? ??????.",
+      "labels": [
+        "????????? .understand-anything"
+      ]
+    }
+  },
+  "pages": {
+    "dashboard": {
+      "title": "Understand Anything",
+      "description": "?????????????? ??????????? ?????, ???????? ?????, ????? ?????? ? ????? ??????? diff.",
+      "ui": {
+        "common": {
+          "ready": "Готово",
+          "missing": "Отсутствует",
+          "stale": "Устарело",
+          "loading": "Загрузка",
+          "error": "Ошибка",
+          "configured": "Настроено",
+          "currentSessionProvider": "Provider текущей сессии",
+          "refresh": "Обновить",
+          "pluginSettings": "Настройки плагина",
+          "register": "Зарегистрировать",
+          "registering": "Регистрация",
+          "dismiss": "Скрыть",
+          "open": "Открыть",
+          "close": "Закрыть",
+          "cancel": "Отмена",
+          "selected": "Выбрано",
+          "back": "Назад",
+          "focus": "Фокус",
+          "unfocus": "Снять фокус",
+          "show": "Показать",
+          "hide": "Скрыть",
+          "projects": "Проекты",
+          "project": "Проект",
+          "runtime": "Среда",
+          "graph": "Граф",
+          "info": "Инфо",
+          "files": "Файлы",
+          "path": "Путь",
+          "help": "Справка",
+          "theme": "Тема",
+          "filter": "Фильтр",
+          "export": "Экспорт",
+          "all": "Все",
+          "code": "Код",
+          "config": "Конфиг",
+          "docs": "Документы",
+          "infra": "Инфра",
+          "data": "Данные",
+          "domain": "Домен",
+          "knowledge": "Знания",
+          "structural": "Структура",
+          "view": "Вид",
+          "role": "Роль",
+          "tools": "Инструменты",
+          "layers": "Слои",
+          "nodeTypes": "Типы узлов",
+          "diffOverlay": "Diff-слой",
+          "dashboard": "Панель",
+          "controls": "Управление",
+          "settings": "Настройки",
+          "changed": "Изменено",
+          "affected": "Затронуто",
+          "on": "ВКЛ",
+          "off": "ВЫКЛ",
+          "file": "Файл",
+          "tags": "Теги",
+          "connections": "Связи",
+          "category": "Категория",
+          "preview": "Предпросмотр",
+          "entities": "Сущности",
+          "businessRules": "Бизнес-правила",
+          "crossDomain": "Междоменные",
+          "flows": "Потоки",
+          "entryPoint": "Точка входа",
+          "steps": "Шаги",
+          "implementation": "Реализация",
+          "wikilinks": "Wikilinks",
+          "backlinks": "Обратные ссылки",
+          "languageConcepts": "Языковые концепты",
+          "languageLesson": "Языковой урок",
+          "referencedComponents": "Связанные компоненты",
+          "sourceUnavailable": "Исходник недоступен",
+          "noGraphLoaded": "Граф не загружен",
+          "unnamed": "без имени"
+        },
+        "app": {
+          "bridgeUnavailable": "Мост AstrBotPluginPage недоступен.",
+          "selectProjectBeforeGraph": "Сначала выберите проект для загрузки графа.",
+          "invalidGraph": "В файле графа нет массивов nodes/edges.",
+          "invalidGraphUnknown": "В файле графа нет обязательных данных.",
+          "failedLoadGraph": "Не удалось загрузить граф: {error}",
+          "loadProjectFailed": "Не удалось загрузить проект {project}: {error}",
+          "graphMissing": "Этот проект еще не сгенерировал граф. Запустите анализ Understand Anything или повторно запустите проект из этой рабочей области.",
+          "noProjectsRegistered": "Проекты Understand Anything не зарегистрированы. Добавьте путь проекта ниже и запустите анализ.",
+          "multipleProjectsRegistered": "Выберите проект в рабочей области перед открытием графа.",
+          "pressShortcut": "Нажмите ? для справки по клавишам",
+          "projectsButton": "Проекты",
+          "domainViewTitle": "Доменный вид",
+          "structuralViewTitle": "Структурный вид",
+          "filesOnlyTitle": "Только файлы",
+          "classesTitle": "{count} классов",
+          "functionsTitle": "{count} функций",
+          "pathTitle": "Путь",
+          "keyboardTitle": "Горячие клавиши",
+          "hideTitle": "Скрыть {name}",
+          "showTitle": "Показать {name}"
+        },
+        "workspace": {
+          "subtitle": "Рабочая область плагина",
+          "notAnalyzed": "Не анализировалось",
+          "jobEventInterrupted": "Поток событий job прерван.",
+          "projectPathRequired": "Укажите путь проекта.",
+          "subagentsRequired": "Зарегистрируйте UA SubAgents перед анализом.",
+          "subagentsBlocked": "Зарегистрируйте UA SubAgents на этой панели перед запуском анализа.",
+          "initialConfiguration": "Начальная конфигурация",
+          "configManaged": "Конфигурация управляется в настройках плагина AstrBot.",
+          "llmProvider": "LLM Provider",
+          "nodeRuntime": "Среда Node",
+          "allowedRoots": "Разрешенные корни",
+          "registeredProjects": "Зарегистрировано: {count}",
+          "noProjects": "Зарегистрированных проектов пока нет.",
+          "analyzeProject": "Анализ проекта",
+          "projectPath": "Путь проекта",
+          "fullAnalysis": "Полный анализ",
+          "autoUpdate": "Автообновление",
+          "starting": "Запуск",
+          "startAnalysis": "Запустить анализ"
+        },
+        "subagents": {
+          "title": "UA SubAgents",
+          "registrationRequired": "Нужна регистрация",
+          "description": "Understand Anything использует постоянные AstrBot SubAgents для worker-пакетов. Зарегистрируйте роли UA один раз, затем задачи анализа смогут запускать реальные параллельные агенты.",
+          "allRegistered": "Все роли зарегистрированы",
+          "fileAgents": "Файловые agents",
+          "articleAgents": "Статейные agents",
+          "personaFolder": "Папка персон",
+          "registerButton": "Зарегистрировать UA SubAgents",
+          "registeringButton": "Регистрация UA SubAgents",
+          "registerWithProvider": "Зарегистрировать с provider",
+          "providerDialogTitle": "Выберите LLM Provider",
+          "providerDialogDescription": "Выбранный chat provider будет записан во все UA SubAgents при регистрации.",
+          "providerSearch": "Поиск provider",
+          "providerLoading": "Загрузка provider",
+          "providerNoProviders": "Доступных chat provider нет.",
+          "providerRouteUnavailable": "API выбора provider недоступен. Перезагрузите этот плагин в AstrBot и снова откройте Dashboard.",
+          "providerDefaultTitle": "Provider AstrBot по умолчанию",
+          "providerDefaultDescription": "Использовать текущий/стандартный chat provider без фиксированного provider id.",
+          "providerCapabilityImage": "Изображение",
+          "providerCapabilityAudio": "Аудио",
+          "providerCapabilityTools": "Tools",
+          "providerCapabilityReasoning": "Reasoning",
+          "missingRoles": "Отсутствующие роли",
+          "staleRoles": "Устаревшие роли",
+          "readyHint": "Готово к анализу проекта."
+        },
+        "runtimeItems": {
+          "runtimeDist": "Runtime dist",
+          "coreDist": "Core dist",
+          "dashboardDist": "Dashboard dist",
+          "dashboardPage": "Страница Dashboard",
+          "nodeModules": "Node modules"
+        },
+        "shortcut": {
+          "showHelp": "Показать справку по клавишам",
+          "closePanels": "Закрыть панели или окна",
+          "focusSearch": "Фокус на поиске",
+          "nextTour": "Следующий шаг тура",
+          "previousTour": "Предыдущий шаг тура",
+          "toggleDiff": "Переключить diff-слой",
+          "toggleFilter": "Переключить фильтр",
+          "toggleExport": "Открыть меню экспорта",
+          "openPath": "Открыть поиск пути зависимостей",
+          "general": "Общие",
+          "navigation": "Навигация",
+          "tour": "Тур",
+          "view": "Вид"
+        },
+        "filter": {
+          "title": "Фильтр графа",
+          "button": "Фильтр",
+          "nodeTypes": "Типы узлов",
+          "complexity": "Сложность",
+          "layers": "Слои",
+          "edgeCategories": "Категории ребер",
+          "resetAll": "Сбросить все"
+        },
+        "export": {
+          "graphNotReady": "Граф еще не готов к экспорту.",
+          "noNodes": "Нет узлов для экспорта.",
+          "failedPng": "Не удалось экспортировать PNG: {error}",
+          "failedSvg": "Не удалось экспортировать SVG: {error}",
+          "failedJson": "Не удалось экспортировать JSON: {error}",
+          "noGraphLoaded": "Граф не загружен",
+          "buttonTitle": "Экспорт графа (E)",
+          "button": "Экспорт",
+          "png": "Экспорт в PNG",
+          "svg": "Экспорт в SVG",
+          "json": "Экспорт в JSON"
+        },
+        "nodeInfo": {
+          "selectNode": "Выберите узел, чтобы увидеть детали",
+          "openCode": "Открыть код",
+          "definedInFile": "Определено в этом файле",
+          "connectionCount": "Связей: {count}",
+          "truncated": "обрезано",
+          "noDetails": "Нет деталей"
+        },
+        "projectOverview": {
+          "loadingProject": "Загрузка проекта...",
+          "nodes": "Узлы",
+          "edges": "Ребра",
+          "layers": "Слои",
+          "types": "Типы",
+          "fileTypes": "Типы файлов",
+          "languages": "Языки",
+          "frameworks": "Фреймворки",
+          "nodeTypeDistribution": "Распределение типов узлов",
+          "complexityDistribution": "Распределение сложности",
+          "mostConnectedNodes": "Самые связанные узлы",
+          "avgConnections": "Среднее число связей",
+          "analyzed": "Проанализировано",
+          "startGuidedTour": "Начать тур"
+        },
+        "search": {
+          "placeholder": "Искать файлы, функции, классы...",
+          "fuzzy": "Нечеткий",
+          "semantic": "Семантика",
+          "resultSingular": "{count} результат",
+          "resultPlural": "{count} результатов"
+        },
+        "warning": {
+          "title": "Предупреждения Dashboard",
+          "fatal": "Критично",
+          "autoCorrected": "Автоисправлено",
+          "dropped": "Отброшено",
+          "collapsedSummary": "Проблем Dashboard: {count}",
+          "dashboardBugIntro": "Некоторые из этих проблем похожи на ошибки рендеринга Dashboard.",
+          "bugReportLine": "Создайте issue на github.com/AstralSolipsism/astrbot_plugin_UnderstandAnything/issues и приложите текст ниже.",
+          "graphIssueIntro": "В knowledge-graph.json найдены следующие проблемы.",
+          "graphIssueCause": "Это ошибки генерации LLM, а не системный баг.",
+          "graphIssueAction": "Можно попросить агента исправить эти конкретные проблемы в knowledge-graph.json:",
+          "footerFatal": "Скопируйте эти проблемы и создайте bug report на GitHub",
+          "footerNormal": "Скопируйте эти проблемы и попросите агента исправить knowledge-graph.json",
+          "copied": "Скопировано",
+          "copyIssues": "Копировать проблемы",
+          "copyFailed": "Не удалось скопировать",
+          "clickToCollapse": "Нажмите, чтобы свернуть",
+          "clickToExpand": "Нажмите, чтобы раскрыть",
+          "footer": "Эти предупреждения нужны только для диагностики Dashboard и не изменяют данные графа."
+        },
+        "codeViewer": {
+          "noPath": "У этого узла нет пути к файлу.",
+          "sourcePreview": "Предпросмотр исходника для этого узла недоступен.",
+          "noFileSelected": "Файл не выбран",
+          "lines": "Строки",
+          "fullFile": "Весь файл",
+          "openTitle": "Открыть предпросмотр исходника",
+          "closeTitle": "Закрыть предпросмотр исходника",
+          "loadingSource": "Загрузка исходника...",
+          "lineCount": "{count} строк"
+        },
+        "fileExplorer": {
+          "noGraphLoaded": "Граф не загружен",
+          "title": "Проанализированные файлы",
+          "fileCount": "{count} файлов из {root}",
+          "noFiles": "Пути файлов не найдены",
+          "openHint": "Двойной щелчок для открытия"
+        },
+        "learn": {
+          "noTour": "Тур недоступен",
+          "noTourDescription": "Сгенерируйте тур командой /understand, чтобы пройти граф пошагово.",
+          "projectTour": "Тур по проекту",
+          "stepSummary": "{count} шагов · Пошаговый обзор этой кодовой базы",
+          "startTour": "Начать тур",
+          "steps": "Шаги",
+          "tour": "Тур",
+          "exitTour": "Выйти из тура",
+          "goToStep": "Перейти к шагу {index}",
+          "previous": "Назад",
+          "finish": "Готово",
+          "next": "Далее"
+        },
+        "pathFinder": {
+          "title": "Поиск пути зависимостей",
+          "description": "Найдите кратчайший путь между двумя узлами графа.",
+          "fromNode": "От узла",
+          "toNode": "К узлу",
+          "selectNode": "Выберите узел...",
+          "searching": "Поиск...",
+          "findPath": "Найти путь",
+          "noPath": "Путь между этими узлами не найден.",
+          "pathFound": "Путь найден ({count} узлов)"
+        },
+        "mobile": {
+          "openProjects": "Открыть проекты",
+          "openMenu": "Открыть меню",
+          "hideSearch": "Скрыть поиск",
+          "showSearch": "Показать поиск",
+          "closeMenu": "Закрыть меню",
+          "settings": "Настройки",
+          "keyboardShortcuts": "Горячие клавиши"
+        },
+        "keyboardHelp": {
+          "title": "Горячие клавиши",
+          "subtitle": "Нажмите ? в любой момент, чтобы открыть справку",
+          "closeHint": "Нажмите ESC, чтобы закрыть"
+        },
+        "theme": {
+          "changeTheme": "Сменить тему",
+          "accentColor": "Акцентный цвет",
+          "headingFont": "Шрифт заголовков",
+          "serif": "Serif",
+          "sans": "Sans",
+          "mono": "Mono"
+        },
+        "persona": {
+          "overview": "Обзор",
+          "overviewDescription": "Сбалансированный системный вид",
+          "learn": "Обучение",
+          "learnDescription": "Пояснения по шагам",
+          "deepDive": "Глубоко",
+          "deepDiveDescription": "Плотные технические детали"
+        },
+        "diff": {
+          "hideTitle": "Скрыть diff-слой",
+          "showTitle": "Показать diff-слой",
+          "noData": "Diff-данные не загружены",
+          "label": "Diff {state}"
+        },
+        "layer": {
+          "count": "Слоев: {count}",
+          "label": "Слой"
+        },
+        "graph": {
+          "noKnowledge": "Граф знаний недоступен. Запустите /understand-knowledge для генерации.",
+          "noKnowledgeLoaded": "Граф знаний не загружен",
+          "showingNeighborhood": "Показ окрестности",
+          "locatingTour": "Поиск подсветки тура...",
+          "computingLayout": "Расчет раскладки..."
+        },
+        "node": {
+          "tested": "Есть тесты",
+          "root": "(корень)",
+          "expand": "развернуть",
+          "collapse": "свернуть",
+          "container": "контейнер",
+          "itemSingular": "{count} элемент",
+          "itemPlural": "{count} элементов",
+          "hitSingular": "{count} совпадение",
+          "hitPlural": "{count} совпадений",
+          "matchSingular": "{count} совпадение",
+          "matchPlural": "{count} совпадений",
+          "fileSingular": "{count} файл",
+          "filePlural": "{count} файлов",
+          "flowSingular": "{count} поток",
+          "flowPlural": "{count} потоков",
+          "clickToExplore": "Нажмите для просмотра",
+          "connectionSingular": "{count} связь",
+          "connectionPlural": "{count} связей",
+          "inbound": "{count} вход",
+          "outbound": "{count} выход"
+        },
+        "breadcrumb": {
+          "projectOverview": "Обзор проекта",
+          "escToGoBack": "Esc для возврата"
+        },
+        "tokenGate": {
+          "loadError": "Не удалось загрузить статус доступа.",
+          "requiredTitle": "Требуется access token",
+          "requiredDescription": "Введите общий token Dashboard, чтобы продолжить.",
+          "tokenPlaceholder": "Access token",
+          "unlock": "Разблокировать",
+          "unlocking": "Разблокировка",
+          "continue": "Продолжить",
+          "validating": "Проверка...",
+          "invalid": "Неверный access token."
+        },
+        "nodeTypes": {
+          "all": "Все",
+          "file": "Файл",
+          "function": "Функция",
+          "class": "Класс",
+          "module": "Модуль",
+          "concept": "Концепт",
+          "config": "Конфиг",
+          "document": "Документ",
+          "service": "Сервис",
+          "table": "Таблица",
+          "endpoint": "Endpoint",
+          "pipeline": "Pipeline",
+          "schema": "Схема",
+          "resource": "Ресурс",
+          "domain": "Домен",
+          "flow": "Поток",
+          "step": "Шаг",
+          "article": "Статья",
+          "entity": "Сущность",
+          "topic": "Тема",
+          "claim": "Тезис",
+          "source": "Источник",
+          "code": "Код",
+          "docs": "Документы",
+          "infra": "Инфра",
+          "data": "Данные",
+          "knowledge": "Знания"
+        },
+        "complexity": {
+          "simple": "Простая",
+          "moderate": "Средняя",
+          "complex": "Сложная"
+        },
+        "edgeCategories": {
+          "structural": "Структура",
+          "runtime": "Runtime",
+          "data": "Данные",
+          "config": "Конфиг",
+          "test": "Тест",
+          "deploy": "Деплой",
+          "doc": "Документы",
+          "domain": "Домен",
+          "knowledge": "Знания",
+          "dependency": "Зависимость",
+          "ownership": "Владение"
+        },
+        "edgeLabels": {
+          "imports": {
+            "forward": "импортирует",
+            "backward": "импортируется"
+          },
+          "calls": {
+            "forward": "вызывает",
+            "backward": "вызывается"
+          },
+          "contains": {
+            "forward": "содержит",
+            "backward": "содержится в"
+          },
+          "defines": {
+            "forward": "определяет",
+            "backward": "определено в"
+          },
+          "configures": {
+            "forward": "настраивает",
+            "backward": "настроено через"
+          },
+          "tests": {
+            "forward": "тестирует",
+            "backward": "тестируется"
+          },
+          "deploys": {
+            "forward": "деплоит",
+            "backward": "деплоится"
+          },
+          "documents": {
+            "forward": "документирует",
+            "backward": "документировано"
+          },
+          "depends_on": {
+            "forward": "зависит от",
+            "backward": "требуется для"
+          },
+          "owns": {
+            "forward": "владеет",
+            "backward": "принадлежит"
+          },
+          "related": {
+            "forward": "связано с",
+            "backward": "связано с"
+          },
+          "links_to": {
+            "forward": "ссылается на",
+            "backward": "ссылка из"
+          },
+          "mentions": {
+            "forward": "упоминает",
+            "backward": "упомянуто в"
+          },
+          "supports": {
+            "forward": "поддерживает",
+            "backward": "поддерживается"
+          },
+          "conflicts_with": {
+            "forward": "конфликтует с",
+            "backward": "конфликтует с"
+          },
+          "implements": {
+            "forward": "реализует",
+            "backward": "реализовано через"
+          },
+          "triggers": {
+            "forward": "запускает",
+            "backward": "запущено через"
+          },
+          "reads": {
+            "forward": "читает",
+            "backward": "читается"
+          },
+          "writes": {
+            "forward": "пишет",
+            "backward": "записывается"
+          },
+          "owns_rule": {
+            "forward": "владеет правилом",
+            "backward": "правило принадлежит"
+          },
+          "crosses_domain": {
+            "forward": "переходит в",
+            "backward": "переход из"
+          },
+          "next_step": {
+            "forward": "следующий шаг",
+            "backward": "предыдущий шаг"
+          },
+          "uses": {
+            "forward": "использует",
+            "backward": "используется"
+          },
+          "validates": {
+            "forward": "проверяет",
+            "backward": "проверяется"
+          },
+          "transforms": {
+            "forward": "преобразует",
+            "backward": "преобразуется"
+          },
+          "summarizes": {
+            "forward": "суммирует",
+            "backward": "суммировано"
+          },
+          "cites": {
+            "forward": "цитирует",
+            "backward": "цитируется"
+          }
+        },
+        "themePresets": {
+          "aurora": "Aurora",
+          "graphite": "Graphite",
+          "paper": "Paper",
+          "obsidian": "Obsidian"
+        },
+        "accentSwatches": {
+          "cyan": "Cyan",
+          "violet": "Violet",
+          "emerald": "Emerald",
+          "amber": "Amber",
+          "rose": "Rose"
+        }
+      }
+    }
+  }
+}
