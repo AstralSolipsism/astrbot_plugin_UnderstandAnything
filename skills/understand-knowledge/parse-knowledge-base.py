@@ -14,7 +14,6 @@ Output:
 """
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -35,10 +34,12 @@ INFRA_FILES = {"index.md", "log.md", "claude.md", "agents.md", "soul.md"}
 # Detection: is this a Karpathy-pattern wiki?
 # ---------------------------------------------------------------------------
 
+
 def detect_format(root: Path) -> dict:
     """Detect if directory follows the Karpathy LLM wiki three-layer pattern."""
     signals = {
-        "has_index": (root / "index.md").is_file() or (root / "wiki" / "index.md").is_file(),
+        "has_index": (root / "index.md").is_file()
+        or (root / "wiki" / "index.md").is_file(),
         "has_log": (root / "log.md").is_file() or (root / "wiki" / "log.md").is_file(),
         "has_raw": (root / "raw").is_dir(),
         "has_schema": any(
@@ -73,6 +74,7 @@ def detect_format(root: Path) -> dict:
 # Markdown extraction helpers
 # ---------------------------------------------------------------------------
 
+
 def extract_frontmatter(text: str) -> dict:
     """Extract YAML frontmatter as a simple key-value dict."""
     m = FRONTMATTER_RE.match(text)
@@ -90,10 +92,12 @@ def extract_wikilinks(text: str) -> list[dict]:
     """Extract all [[target]] and [[target|display]] wikilinks."""
     links = []
     for m in WIKILINK_RE.finditer(text):
-        links.append({
-            "target": m.group(1).strip(),
-            "display": m.group(2).strip() if m.group(2) else None,
-        })
+        links.append(
+            {
+                "target": m.group(1).strip(),
+                "display": m.group(2).strip() if m.group(2) else None,
+            }
+        )
     return links
 
 
@@ -141,7 +145,7 @@ def extract_first_paragraph(text: str) -> str:
     # Try: find first paragraph after H1
     for i, line in enumerate(lines):
         if line.strip().startswith("# "):
-            result = _collect_paragraph(lines[i + 1:])
+            result = _collect_paragraph(lines[i + 1 :])
             if result:
                 if len(result) > 200:
                     return result[:197] + "..."
@@ -166,6 +170,7 @@ def extract_h1(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Index.md parsing — categories come from section headings
 # ---------------------------------------------------------------------------
+
 
 def parse_index(index_path: Path) -> list[dict]:
     """Parse index.md to extract categories from ## headings and their wikilinks."""
@@ -198,6 +203,7 @@ def parse_index(index_path: Path) -> list[dict]:
 # Log.md parsing — extract operation timeline
 # ---------------------------------------------------------------------------
 
+
 def parse_log(log_path: Path) -> list[dict]:
     """Parse log.md to extract chronological entries."""
     if not log_path.is_file():
@@ -208,17 +214,20 @@ def parse_log(log_path: Path) -> list[dict]:
         r"^##\s+\[(\d{4}-\d{2}-\d{2})\]\s+(\w+)\s*\|\s*(.+)$", re.MULTILINE
     )
     for m in log_entry_re.finditer(text):
-        entries.append({
-            "date": m.group(1),
-            "operation": m.group(2),
-            "title": m.group(3).strip(),
-        })
+        entries.append(
+            {
+                "date": m.group(1),
+                "operation": m.group(2),
+                "title": m.group(3).strip(),
+            }
+        )
     return entries
 
 
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
+
 
 def build_name_to_stem_map(wiki_root: Path) -> dict[str, str]:
     """Build a case-insensitive map from filename stem to relative stem path.
@@ -233,7 +242,7 @@ def build_name_to_stem_map(wiki_root: Path) -> dict[str, str]:
     for md_file in wiki_root.rglob("*.md"):
         rel = md_file.relative_to(wiki_root)
         stem = str(rel.with_suffix(""))  # e.g., "decisions/decision-foo"
-        basename = md_file.stem            # e.g., "decision-foo"
+        basename = md_file.stem  # e.g., "decision-foo"
         # Full relative path always maps uniquely
         name_map[stem.lower()] = stem
         # Track basename for ambiguity detection
@@ -249,7 +258,9 @@ def build_name_to_stem_map(wiki_root: Path) -> dict[str, str]:
     return name_map
 
 
-def resolve_wikilink(target: str, name_map: dict[str, str], node_ids: set[str] | None = None) -> str | None:
+def resolve_wikilink(
+    target: str, name_map: dict[str, str], node_ids: set[str] | None = None
+) -> str | None:
     """Resolve a wikilink target to an article node ID.
 
     If node_ids is provided, only resolve to IDs that exist in the set.
@@ -279,8 +290,12 @@ def parse_wiki(root: Path) -> dict:
     """Parse a Karpathy-pattern wiki and produce the scan manifest."""
     detection = detect_format(root)
     if not detection["detected"]:
-        print(json.dumps({"error": "Not a Karpathy-pattern wiki", "detection": detection}),
-              file=sys.stderr)
+        print(
+            json.dumps(
+                {"error": "Not a Karpathy-pattern wiki", "detection": detection}
+            ),
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     wiki_root = Path(detection["wiki_root"])
@@ -338,11 +353,11 @@ def parse_wiki(root: Path) -> dict:
         h1 = extract_h1(text)
         frontmatter = extract_frontmatter(text)
         wikilinks = extract_wikilinks(text)
-        headings = extract_headings(text)
-        code_langs = extract_code_blocks(text)
+        extract_headings(text)
+        extract_code_blocks(text)
         summary = extract_first_paragraph(text)
-        line_count = text.count("\n") + 1
-        word_count = len(text.split())
+        text.count("\n") + 1
+        len(text.split())
 
         # Derive category from index.md lookup
         category = category_lookup.get(basename.lower(), "")
@@ -371,20 +386,22 @@ def parse_wiki(root: Path) -> dict:
             complexity = "simple"
 
         node_id = f"article:{stem}"
-        nodes.append({
-            "id": node_id,
-            "type": "article",
-            "name": h1 or basename,
-            "filePath": str(rel),
-            "summary": summary or f"Wiki article: {h1 or basename}",
-            "tags": tags,
-            "complexity": complexity,
-            "knowledgeMeta": {
-                "wikilinks": [wl["target"] for wl in wikilinks],
-                "category": category or None,
-                "content": text[:3000],  # First 3000 chars for LLM analysis
-            },
-        })
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "article",
+                "name": h1 or basename,
+                "filePath": str(rel),
+                "summary": summary or f"Wiki article: {h1 or basename}",
+                "tags": tags,
+                "complexity": complexity,
+                "knowledgeMeta": {
+                    "wikilinks": [wl["target"] for wl in wikilinks],
+                    "category": category or None,
+                    "content": text[:3000],  # First 3000 chars for LLM analysis
+                },
+            }
+        )
         stats["articles"] += 1
         stats["wikilinks"] += wl_count
 
@@ -392,13 +409,15 @@ def parse_wiki(root: Path) -> dict:
         for wl in wikilinks:
             target_id = resolve_wikilink(wl["target"], name_map, article_ids)
             if target_id and target_id != node_id:
-                edges.append({
-                    "source": node_id,
-                    "target": target_id,
-                    "type": "related",
-                    "direction": "forward",
-                    "weight": 0.7,
-                })
+                edges.append(
+                    {
+                        "source": node_id,
+                        "target": target_id,
+                        "type": "related",
+                        "direction": "forward",
+                        "weight": 0.7,
+                    }
+                )
             elif not target_id:
                 warnings.append(f"Unresolved wikilink: [[{wl['target']}]] in {rel}")
                 stats["unresolved"] += 1
@@ -406,27 +425,31 @@ def parse_wiki(root: Path) -> dict:
     # --- Build topic nodes from index.md categories ---
     for cat in categories:
         topic_id = f"topic:{cat['name'].lower().replace(' ', '-')}"
-        nodes.append({
-            "id": topic_id,
-            "type": "topic",
-            "name": cat["name"],
-            "summary": f"Category from index: {cat['name']} ({len(cat['articles'])} articles)",
-            "tags": ["category"],
-            "complexity": "simple",
-        })
+        nodes.append(
+            {
+                "id": topic_id,
+                "type": "topic",
+                "name": cat["name"],
+                "summary": f"Category from index: {cat['name']} ({len(cat['articles'])} articles)",
+                "tags": ["category"],
+                "complexity": "simple",
+            }
+        )
         stats["topics"] += 1
 
         # categorized_under edges (only resolve to known article nodes)
         for article_target in cat["articles"]:
             article_id = resolve_wikilink(article_target, name_map, article_ids)
             if article_id:
-                edges.append({
-                    "source": article_id,
-                    "target": topic_id,
-                    "type": "categorized_under",
-                    "direction": "forward",
-                    "weight": 0.6,
-                })
+                edges.append(
+                    {
+                        "source": article_id,
+                        "target": topic_id,
+                        "type": "categorized_under",
+                        "direction": "forward",
+                        "weight": 0.6,
+                    }
+                )
 
     # --- Build source nodes from raw/ ---
     if raw_root.is_dir():
@@ -436,15 +459,17 @@ def parse_wiki(root: Path) -> dict:
                 ext = raw_file.suffix.lower()
                 size_kb = raw_file.stat().st_size / 1024
                 source_id = f"source:{raw_file.relative_to(raw_root).with_suffix('')}"
-                nodes.append({
-                    "id": source_id,
-                    "type": "source",
-                    "name": raw_file.name,
-                    "filePath": str(rel_raw),
-                    "summary": f"Raw source ({ext or 'unknown'}, {size_kb:.0f} KB)",
-                    "tags": ["raw", ext.lstrip(".") or "unknown"],
-                    "complexity": "simple",
-                })
+                nodes.append(
+                    {
+                        "id": source_id,
+                        "type": "source",
+                        "name": raw_file.name,
+                        "filePath": str(rel_raw),
+                        "summary": f"Raw source ({ext or 'unknown'}, {size_kb:.0f} KB)",
+                        "tags": ["raw", ext.lstrip(".") or "unknown"],
+                        "complexity": "simple",
+                    }
+                )
                 stats["sources"] += 1
 
     # --- Compute backlinks ---
@@ -471,7 +496,9 @@ def parse_wiki(root: Path) -> dict:
     return {
         "format": "karpathy",
         "stats": stats,
-        "categories": [{"name": c["name"], "count": len(c["articles"])} for c in categories],
+        "categories": [
+            {"name": c["name"], "count": len(c["articles"])} for c in categories
+        ],
         "logEntries": len(log_entries),
         "nodes": nodes,
         "edges": deduped_edges,
@@ -499,9 +526,12 @@ def main():
 
     # Report to stderr
     s = manifest["stats"]
-    print(f"[parse] Karpathy wiki: {s['articles']} articles, {s['sources']} sources, "
-          f"{s['topics']} topics, {s['wikilinks']} wikilinks "
-          f"({s['unresolved']} unresolved)", file=sys.stderr)
+    print(
+        f"[parse] Karpathy wiki: {s['articles']} articles, {s['sources']} sources, "
+        f"{s['topics']} topics, {s['wikilinks']} wikilinks "
+        f"({s['unresolved']} unresolved)",
+        file=sys.stderr,
+    )
     print(f"[parse] Output: {out_path}", file=sys.stderr)
 
 

@@ -13,7 +13,6 @@ Output:
 """
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -31,90 +30,185 @@ MAX_OUTPUT_BYTES = 512 * 1024  # 512 KB — keeps output within agent context li
 
 # File extensions we care about for domain analysis
 SOURCE_EXTENSIONS = {
-    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-    ".py", ".pyi",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".py",
+    ".pyi",
     ".go",
     ".rs",
-    ".java", ".kt", ".scala",
+    ".java",
+    ".kt",
+    ".scala",
     ".rb",
     ".cs",
     ".php",
     ".swift",
-    ".c", ".cpp", ".h", ".hpp",
-    ".ex", ".exs",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".ex",
+    ".exs",
     ".hs",
     ".lua",
-    ".r", ".R",
+    ".r",
+    ".R",
 }
 
 # Directories to always skip
 SKIP_DIRS = {
-    "node_modules", ".git", ".svn", ".hg", "__pycache__", ".tox",
-    "venv", ".venv", "env", ".env", "dist", "build", "out", ".next",
-    ".nuxt", "target", "vendor", ".idea", ".vscode", "coverage",
-    ".understand-anything", ".pytest_cache", ".mypy_cache",
-    "Pods", "DerivedData", ".gradle", "bin", "obj",
+    "node_modules",
+    ".git",
+    ".svn",
+    ".hg",
+    "__pycache__",
+    ".tox",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    "target",
+    "vendor",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".understand-anything",
+    ".pytest_cache",
+    ".mypy_cache",
+    "Pods",
+    "DerivedData",
+    ".gradle",
+    "bin",
+    "obj",
 }
 
 # Files that reveal project metadata
 METADATA_FILES = [
-    "package.json", "Cargo.toml", "go.mod", "pyproject.toml",
-    "setup.py", "setup.cfg", "pom.xml", "build.gradle",
-    "Gemfile", "composer.json", "mix.exs", "Makefile",
-    "docker-compose.yml", "docker-compose.yaml",
-    "README.md", "README.rst", "README.txt", "README",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "pom.xml",
+    "build.gradle",
+    "Gemfile",
+    "composer.json",
+    "mix.exs",
+    "Makefile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "README.md",
+    "README.rst",
+    "README.txt",
+    "README",
 ]
 
 # ── Entry point detection patterns ─────────────────────────────────────────
 
 ENTRY_POINT_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
     # HTTP routes
-    ("http", "Express/Koa route", re.compile(
-        r"""(?:app|router|server)\s*\.\s*(?:get|post|put|patch|delete|all|use)\s*\(\s*['"](/[^'"]*?)['"]""",
-        re.IGNORECASE,
-    )),
-    ("http", "Decorator route (Flask/FastAPI/NestJS)", re.compile(
-        r"""@(?:app\.)?(?:route|get|post|put|patch|delete|api_view|RequestMapping|GetMapping|PostMapping)\s*\(\s*['"](/[^'"]*?)['"]""",
-        re.IGNORECASE,
-    )),
-    ("http", "Next.js/Remix route handler", re.compile(
-        r"""export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b""",
-    )),
+    (
+        "http",
+        "Express/Koa route",
+        re.compile(
+            r"""(?:app|router|server)\s*\.\s*(?:get|post|put|patch|delete|all|use)\s*\(\s*['"](/[^'"]*?)['"]""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "http",
+        "Decorator route (Flask/FastAPI/NestJS)",
+        re.compile(
+            r"""@(?:app\.)?(?:route|get|post|put|patch|delete|api_view|RequestMapping|GetMapping|PostMapping)\s*\(\s*['"](/[^'"]*?)['"]""",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "http",
+        "Next.js/Remix route handler",
+        re.compile(
+            r"""export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b""",
+        ),
+    ),
     # CLI
-    ("cli", "CLI command", re.compile(
-        r"""\.command\s*\(\s*['"]([\w\-:]+)['"]""",
-    )),
-    ("cli", "argparse subparser", re.compile(
-        r"""add_parser\s*\(\s*['"]([\w\-]+)['"]""",
-    )),
+    (
+        "cli",
+        "CLI command",
+        re.compile(
+            r"""\.command\s*\(\s*['"]([\w\-:]+)['"]""",
+        ),
+    ),
+    (
+        "cli",
+        "argparse subparser",
+        re.compile(
+            r"""add_parser\s*\(\s*['"]([\w\-]+)['"]""",
+        ),
+    ),
     # Event handlers
-    ("event", "Event listener", re.compile(
-        r"""\.on\s*\(\s*['"]([\w\-:.]+)['"]""",
-    )),
-    ("event", "Event subscriber decorator", re.compile(
-        r"""@(?:EventHandler|Subscribe|Listener|on_event)\s*\(\s*['"]([\w\-:.]+)['"]""",
-    )),
+    (
+        "event",
+        "Event listener",
+        re.compile(
+            r"""\.on\s*\(\s*['"]([\w\-:.]+)['"]""",
+        ),
+    ),
+    (
+        "event",
+        "Event subscriber decorator",
+        re.compile(
+            r"""@(?:EventHandler|Subscribe|Listener|on_event)\s*\(\s*['"]([\w\-:.]+)['"]""",
+        ),
+    ),
     # Cron / scheduled
-    ("cron", "Cron schedule", re.compile(
-        r"""@?(?:Cron|Schedule|Scheduled|crontab)\s*\(\s*['"]([^'"]+)['"]""",
-        re.IGNORECASE,
-    )),
+    (
+        "cron",
+        "Cron schedule",
+        re.compile(
+            r"""@?(?:Cron|Schedule|Scheduled|crontab)\s*\(\s*['"]([^'"]+)['"]""",
+            re.IGNORECASE,
+        ),
+    ),
     # GraphQL
-    ("http", "GraphQL resolver", re.compile(
-        r"""@(?:Query|Mutation|Subscription|Resolver)\s*\(""",
-    )),
+    (
+        "http",
+        "GraphQL resolver",
+        re.compile(
+            r"""@(?:Query|Mutation|Subscription|Resolver)\s*\(""",
+        ),
+    ),
     # gRPC (only in .proto files — handled by file extension check below)
-    ("http", "gRPC service", re.compile(
-        r"""^service\s+(\w+)\s*\{""", re.MULTILINE,
-    )),
+    (
+        "http",
+        "gRPC service",
+        re.compile(
+            r"""^service\s+(\w+)\s*\{""",
+            re.MULTILINE,
+        ),
+    ),
     # Exported handlers (generic)
-    ("manual", "Exported handler", re.compile(
-        r"""export\s+(?:async\s+)?function\s+(handle\w+|process\w+|on\w+)\b""",
-    )),
+    (
+        "manual",
+        "Exported handler",
+        re.compile(
+            r"""export\s+(?:async\s+)?function\s+(handle\w+|process\w+|on\w+)\b""",
+        ),
+    ),
 ]
 
 
 # ── Gitignore support ──────────────────────────────────────────────────────
+
 
 def parse_gitignore(project_root: Path) -> list[re.Pattern[str]]:
     """Parse .gitignore into a list of compiled regex patterns."""
@@ -128,13 +222,21 @@ def parse_gitignore(project_root: Path) -> list[re.Pattern[str]]:
         if not line or line.startswith("#"):
             continue
         # Convert glob to regex (simplified)
-        regex = line.replace(".", r"\.").replace("**/", "(.*/)?").replace("*", "[^/]*").replace("?", "[^/]")
+        regex = (
+            line.replace(".", r"\.")
+            .replace("**/", "(.*/)?")
+            .replace("*", "[^/]*")
+            .replace("?", "[^/]")
+        )
         if line.endswith("/"):
             regex = regex.rstrip("/") + "(/|$)"
         try:
             patterns.append(re.compile(regex))
         except re.error as e:
-            print(f"Warning: skipping invalid gitignore pattern '{line}': {e}", file=sys.stderr)
+            print(
+                f"Warning: skipping invalid gitignore pattern '{line}': {e}",
+                file=sys.stderr,
+            )
     return patterns
 
 
@@ -148,6 +250,7 @@ def is_ignored(rel_path: str, gitignore_patterns: list[re.Pattern[str]]) -> bool
 
 # ── File tree scanner ──────────────────────────────────────────────────────
 
+
 def scan_file_tree(
     root: Path,
     gitignore_patterns: list[re.Pattern[str]],
@@ -160,7 +263,9 @@ def scan_file_tree(
         if depth > max_depth or len(result) >= MAX_FILES_TOTAL:
             return
         try:
-            entries = sorted(dir_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+            entries = sorted(
+                dir_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+            )
         except PermissionError:
             return
 
@@ -194,12 +299,15 @@ def scan_file_tree(
 
 # ── Entry point detection ──────────────────────────────────────────────────
 
+
 def detect_entry_points(root: Path, file_paths: list[str]) -> list[dict[str, Any]]:
     """Scan source files for entry point patterns."""
     entry_points: list[dict[str, Any]] = []
 
     # Skip test files and the extraction script itself
-    test_patterns = re.compile(r"(?:\.test\.|\.spec\.|__tests__|_test\.py|test_\w+\.py|extract-domain-context\.py)")
+    test_patterns = re.compile(
+        r"(?:\.test\.|\.spec\.|__tests__|_test\.py|test_\w+\.py|extract-domain-context\.py)"
+    )
 
     for rel_path in file_paths:
         if len(entry_points) >= MAX_ENTRY_POINTS:
@@ -216,20 +324,22 @@ def detect_entry_points(root: Path, file_paths: list[str]) -> list[dict[str, Any
         for entry_type, description, pattern in ENTRY_POINT_PATTERNS:
             for match in pattern.finditer(content):
                 # Find line number
-                line_no = content[:match.start()].count("\n") + 1
+                line_no = content[: match.start()].count("\n") + 1
                 # Extract a snippet (signature + a few lines)
                 start = max(0, line_no - 1)
                 end = min(len(lines), start + 5)
                 snippet = "\n".join(lines[start:end])
 
-                entry_points.append({
-                    "file": rel_path,
-                    "line": line_no,
-                    "type": entry_type,
-                    "description": description,
-                    "match": match.group(0)[:120],
-                    "snippet": snippet[:300],
-                })
+                entry_points.append(
+                    {
+                        "file": rel_path,
+                        "line": line_no,
+                        "type": entry_type,
+                        "description": description,
+                        "match": match.group(0)[:120],
+                        "snippet": snippet[:300],
+                    }
+                )
 
                 if len(entry_points) >= MAX_ENTRY_POINTS:
                     break
@@ -241,17 +351,39 @@ def detect_entry_points(root: Path, file_paths: list[str]) -> list[dict[str, Any
 
 # ── File signatures ────────────────────────────────────────────────────────
 
+
 def extract_file_signatures(root: Path, file_paths: list[str]) -> list[dict[str, Any]]:
     """Extract exports and imports from each file (lightweight)."""
     signatures: list[dict[str, Any]] = []
 
     # Prioritize files likely to contain business logic
     priority_keywords = [
-        "controller", "service", "handler", "router", "route", "api",
-        "model", "entity", "repository", "usecase", "use_case",
-        "command", "query", "event", "subscriber", "listener",
-        "middleware", "guard", "interceptor", "resolver",
-        "workflow", "flow", "process", "pipeline", "job", "task",
+        "controller",
+        "service",
+        "handler",
+        "router",
+        "route",
+        "api",
+        "model",
+        "entity",
+        "repository",
+        "usecase",
+        "use_case",
+        "command",
+        "query",
+        "event",
+        "subscriber",
+        "listener",
+        "middleware",
+        "guard",
+        "interceptor",
+        "resolver",
+        "workflow",
+        "flow",
+        "process",
+        "pipeline",
+        "job",
+        "task",
     ]
 
     def priority_score(path: str) -> int:
@@ -290,18 +422,21 @@ def extract_file_signatures(root: Path, file_paths: list[str]) -> list[dict[str,
         )
         import_list = [m[0] or m[1] for m in imports][:20]
 
-        signatures.append({
-            "file": rel_path,
-            "exports": exports[:20],
-            "imports": import_list,
-            "lines": len(content.splitlines()),
-            "preview": truncated[:500],
-        })
+        signatures.append(
+            {
+                "file": rel_path,
+                "exports": exports[:20],
+                "imports": import_list,
+                "lines": len(content.splitlines()),
+                "preview": truncated[:500],
+            }
+        )
 
     return signatures
 
 
 # ── Metadata extraction ────────────────────────────────────────────────────
+
 
 def extract_metadata(root: Path) -> dict[str, Any]:
     """Read project metadata files."""
@@ -340,6 +475,7 @@ def extract_metadata(root: Path) -> dict[str, Any]:
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
+
 def _truncate_to_fit(context: dict[str, Any]) -> dict[str, Any]:
     """Progressively trim context sections to stay under MAX_OUTPUT_BYTES."""
     output = json.dumps(context, indent=2)
@@ -375,7 +511,10 @@ def _truncate_to_fit(context: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python extract-domain-context.py <project-root> [graph-root]", file=sys.stderr)
+        print(
+            "Usage: python extract-domain-context.py <project-root> [graph-root]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     project_root = Path(sys.argv[1]).resolve()

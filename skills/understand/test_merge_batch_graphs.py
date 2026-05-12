@@ -14,7 +14,6 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-
 # ── Module loader ─────────────────────────────────────────────────────────
 # `merge-batch-graphs.py` has a hyphen in its name, so we cannot `import` it
 # directly. Load it via importlib so we can call its module-level helpers.
@@ -38,6 +37,7 @@ mbg = _load_module()
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
+
 def _file_node(path: str, **extra: Any) -> dict[str, Any]:
     """Build a minimal file node with the given relative path."""
     node: dict[str, Any] = {
@@ -54,6 +54,7 @@ def _file_node(path: str, **extra: Any) -> dict[str, Any]:
 
 
 # ── is_test_path ──────────────────────────────────────────────────────────
+
 
 class IsTestPathTests(unittest.TestCase):
     """Path classification: production vs. test."""
@@ -141,6 +142,7 @@ class IsTestPathTests(unittest.TestCase):
 
 # ── production_candidates ─────────────────────────────────────────────────
 
+
 class ProductionCandidatesTests(unittest.TestCase):
     """For each test path, what production paths should we try?"""
 
@@ -222,9 +224,7 @@ class ProductionCandidatesTests(unittest.TestCase):
         # `src/cartservice/src/services/CartService.cs`. The candidate list
         # only knows the basename; the matcher must produce a parent-level
         # candidate that the linker can verify against the actual file index.
-        cands = mbg.production_candidates(
-            "src/cartservice/tests/CartServiceTests.cs"
-        )
+        cands = mbg.production_candidates("src/cartservice/tests/CartServiceTests.cs")
         # Drop tests/ entirely:
         self.assertIn("src/cartservice/CartService.cs", cands)
         # Mirror through `src/`:
@@ -264,6 +264,7 @@ class ProductionCandidatesTests(unittest.TestCase):
 
 
 # ── link_tests (end-to-end) ───────────────────────────────────────────────
+
 
 class LinkTestsTests(unittest.TestCase):
     """End-to-end behaviour of the linker against a node/edge set."""
@@ -422,10 +423,20 @@ class LinkTestsTests(unittest.TestCase):
             "file:src/foo.test.ts": _file_node("src/foo.test.ts"),
         }
         edges: list[dict[str, Any]] = [
-            {"source": "file:src/foo.ts", "target": "file:src/foo.test.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.3},
-            {"source": "file:src/foo.ts", "target": "file:src/foo.test.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.9},
+            {
+                "source": "file:src/foo.ts",
+                "target": "file:src/foo.test.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.3,
+            },
+            {
+                "source": "file:src/foo.ts",
+                "target": "file:src/foo.test.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.9,
+            },
         ]
         added, dropped, tagged, swapped = mbg.link_tests(nodes_by_id, edges)
         self.assertEqual((added, dropped, swapped), (0, 1, 0))
@@ -442,10 +453,20 @@ class LinkTestsTests(unittest.TestCase):
             "file:src/foo.test.ts": _file_node("src/foo.test.ts"),
         }
         edges: list[dict[str, Any]] = [
-            {"source": "file:src/foo.ts", "target": "file:src/foo.test.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.9},
-            {"source": "file:src/foo.test.ts", "target": "file:src/foo.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.3},
+            {
+                "source": "file:src/foo.ts",
+                "target": "file:src/foo.test.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.9,
+            },
+            {
+                "source": "file:src/foo.test.ts",
+                "target": "file:src/foo.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.3,
+            },
         ]
         added, dropped, tagged, swapped = mbg.link_tests(nodes_by_id, edges)
         self.assertEqual((added, dropped, swapped), (0, 1, 0))
@@ -466,10 +487,20 @@ class LinkTestsTests(unittest.TestCase):
             "file:src/foo.test.ts": _file_node("src/foo.test.ts"),
         }
         edges: list[dict[str, Any]] = [
-            {"source": "file:src/foo.ts", "target": "file:src/foo.test.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.3},
-            {"source": "file:src/foo.test.ts", "target": "file:src/foo.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.9},
+            {
+                "source": "file:src/foo.ts",
+                "target": "file:src/foo.test.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.3,
+            },
+            {
+                "source": "file:src/foo.test.ts",
+                "target": "file:src/foo.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.9,
+            },
         ]
         added, dropped, tagged, swapped = mbg.link_tests(nodes_by_id, edges)
         self.assertEqual(added, 0)
@@ -492,10 +523,20 @@ class LinkTestsTests(unittest.TestCase):
             "file:src/foo.test.ts": _file_node("src/foo.test.ts"),
         }
         edges: list[dict[str, Any]] = [
-            {"source": "file:src/foo.test.ts", "target": "file:src/foo.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.3},
-            {"source": "file:src/foo.ts", "target": "file:src/foo.test.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.9},
+            {
+                "source": "file:src/foo.test.ts",
+                "target": "file:src/foo.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.3,
+            },
+            {
+                "source": "file:src/foo.ts",
+                "target": "file:src/foo.test.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.9,
+            },
         ]
         added, dropped, tagged, swapped = mbg.link_tests(nodes_by_id, edges)
         self.assertEqual(added, 0)
@@ -514,10 +555,20 @@ class LinkTestsTests(unittest.TestCase):
             "file:src/foo.test.ts": _file_node("src/foo.test.ts"),
         }
         edges: list[dict[str, Any]] = [
-            {"source": "file:src/foo.test.ts", "target": "file:src/foo.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.3},
-            {"source": "file:src/foo.test.ts", "target": "file:src/foo.ts",
-             "type": "tested_by", "direction": "forward", "weight": 0.9},
+            {
+                "source": "file:src/foo.test.ts",
+                "target": "file:src/foo.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.3,
+            },
+            {
+                "source": "file:src/foo.test.ts",
+                "target": "file:src/foo.ts",
+                "type": "tested_by",
+                "direction": "forward",
+                "weight": 0.9,
+            },
         ]
         added, dropped, tagged, swapped = mbg.link_tests(nodes_by_id, edges)
         self.assertEqual(added, 0)
@@ -604,10 +655,18 @@ class LinkTestsTests(unittest.TestCase):
         # but the LLM saw the same-package usage and emitted the edges
         # (with wrong direction). Swap should recover them.
         nodes_by_id = {
-            "file:src/shippingservice/main.go": _file_node("src/shippingservice/main.go"),
-            "file:src/shippingservice/tracker.go": _file_node("src/shippingservice/tracker.go"),
-            "file:src/shippingservice/quote.go": _file_node("src/shippingservice/quote.go"),
-            "file:src/shippingservice/shippingservice_test.go": _file_node("src/shippingservice/shippingservice_test.go"),
+            "file:src/shippingservice/main.go": _file_node(
+                "src/shippingservice/main.go"
+            ),
+            "file:src/shippingservice/tracker.go": _file_node(
+                "src/shippingservice/tracker.go"
+            ),
+            "file:src/shippingservice/quote.go": _file_node(
+                "src/shippingservice/quote.go"
+            ),
+            "file:src/shippingservice/shippingservice_test.go": _file_node(
+                "src/shippingservice/shippingservice_test.go"
+            ),
         }
         edges: list[dict[str, Any]] = [
             {
@@ -637,8 +696,12 @@ class LinkTestsTests(unittest.TestCase):
         # emit an edge for it, and there's no path-convention pair).
         self.assertEqual(tagged, 2)
         self.assertIn("tested", nodes_by_id["file:src/shippingservice/main.go"]["tags"])
-        self.assertIn("tested", nodes_by_id["file:src/shippingservice/tracker.go"]["tags"])
-        self.assertNotIn("tested", nodes_by_id["file:src/shippingservice/quote.go"]["tags"])
+        self.assertIn(
+            "tested", nodes_by_id["file:src/shippingservice/tracker.go"]["tags"]
+        )
+        self.assertNotIn(
+            "tested", nodes_by_id["file:src/shippingservice/quote.go"]["tags"]
+        )
 
     def test_unrelated_edges_pass_through(self) -> None:
         nodes_by_id = {
@@ -676,8 +739,12 @@ class LinkTestsTests(unittest.TestCase):
             "file:src/__tests__/foo.test.ts": _file_node("src/__tests__/foo.test.ts"),
             "file:internal/bar.go": _file_node("internal/bar.go"),
             "file:internal/bar_test.go": _file_node("internal/bar_test.go"),
-            "file:src/main/java/com/foo/Bar.java": _file_node("src/main/java/com/foo/Bar.java"),
-            "file:src/test/java/com/foo/BarTest.java": _file_node("src/test/java/com/foo/BarTest.java"),
+            "file:src/main/java/com/foo/Bar.java": _file_node(
+                "src/main/java/com/foo/Bar.java"
+            ),
+            "file:src/test/java/com/foo/BarTest.java": _file_node(
+                "src/test/java/com/foo/BarTest.java"
+            ),
         }
         edges: list[dict[str, Any]] = []
 
@@ -689,11 +756,11 @@ class LinkTestsTests(unittest.TestCase):
             self.assertEqual(edge["direction"], "forward")
             # Target must be the test file (basename gives it away)
             self.assertTrue(
-                mbg.is_test_path(edge["target"][len("file:"):]),
+                mbg.is_test_path(edge["target"][len("file:") :]),
                 f"target {edge['target']} should classify as test",
             )
             self.assertFalse(
-                mbg.is_test_path(edge["source"][len("file:"):]),
+                mbg.is_test_path(edge["source"][len("file:") :]),
                 f"source {edge['source']} should classify as production",
             )
 
@@ -819,6 +886,7 @@ class LinkTestsTests(unittest.TestCase):
 
 
 # ── merge_and_normalize integration ───────────────────────────────────────
+
 
 class MergeIntegrationTests(unittest.TestCase):
     """Verify the linker is wired into merge_and_normalize correctly."""

@@ -26,16 +26,32 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-
 # ── Configuration ─────────────────────────────────────────────────────────
 
 VALID_NODE_PREFIXES = {
-    "file", "func", "function", "class", "module", "concept",
-    "config", "document", "service", "table", "endpoint",
-    "pipeline", "schema", "resource",
-    "domain", "flow", "step",
+    "file",
+    "func",
+    "function",
+    "class",
+    "module",
+    "concept",
+    "config",
+    "document",
+    "service",
+    "table",
+    "endpoint",
+    "pipeline",
+    "schema",
+    "resource",
+    "domain",
+    "flow",
+    "step",
     # Knowledge-base node types (schema.ts NodeType enum)
-    "article", "entity", "topic", "claim", "source",
+    "article",
+    "entity",
+    "topic",
+    "claim",
+    "source",
 }
 
 # node.type → canonical ID prefix
@@ -116,6 +132,7 @@ def _num(v: Any) -> float:
 
 # ── Batch loading ─────────────────────────────────────────────────────────
 
+
 def load_batch(path: Path) -> dict[str, Any] | None:
     """Load a batch JSON file, tolerating malformed files."""
     try:
@@ -125,16 +142,23 @@ def load_batch(path: Path) -> dict[str, Any] | None:
         return None
 
     if not isinstance(data.get("nodes"), list):
-        print(f"  Warning: skipping {path.name}: missing or invalid 'nodes' array", file=sys.stderr)
+        print(
+            f"  Warning: skipping {path.name}: missing or invalid 'nodes' array",
+            file=sys.stderr,
+        )
         return None
     if not isinstance(data.get("edges"), list):
-        print(f"  Warning: skipping {path.name}: missing or invalid 'edges' array", file=sys.stderr)
+        print(
+            f"  Warning: skipping {path.name}: missing or invalid 'edges' array",
+            file=sys.stderr,
+        )
         return None
 
     return data
 
 
 # ── ID normalization ──────────────────────────────────────────────────────
+
 
 def classify_id_fix(original: str, corrected: str) -> str:
     """Return a human-readable pattern label for an ID correction."""
@@ -145,7 +169,11 @@ def classify_id_fix(original: str, corrected: str) -> str:
 
     # Project-name prefix: "my-project:file:..." → "file:..."
     parts = original.split(":")
-    if len(parts) >= 3 and parts[0] not in VALID_NODE_PREFIXES and parts[1] in VALID_NODE_PREFIXES:
+    if (
+        len(parts) >= 3
+        and parts[0] not in VALID_NODE_PREFIXES
+        and parts[1] in VALID_NODE_PREFIXES
+    ):
         return f"<project>:{parts[1]}: → {parts[1]}: (project-name prefix)"
 
     # Legacy func: → function:
@@ -168,12 +196,15 @@ def normalize_node_id(node_id: str, node: dict[str, Any]) -> str:
     for prefix in VALID_NODE_PREFIXES:
         double = f"{prefix}:{prefix}:"
         if nid.startswith(double):
-            nid = nid[len(prefix) + 1:]
+            nid = nid[len(prefix) + 1 :]
             break
 
     # Strip project-name prefix: "my-project:file:src/foo.ts" → "file:src/foo.ts"
     # Pattern: <word>:<valid-prefix>:<path>
-    match = re.match(r"^[^:]+:(" + "|".join(re.escape(p) for p in VALID_NODE_PREFIXES) + r"):(.+)$", nid)
+    match = re.match(
+        r"^[^:]+:(" + "|".join(re.escape(p) for p in VALID_NODE_PREFIXES) + r"):(.+)$",
+        nid,
+    )
     if match:
         # Only strip if the first segment is NOT a valid prefix itself
         first_seg = nid.split(":")[0]
@@ -259,6 +290,7 @@ def normalize_complexity(value: Any) -> tuple[str, str]:
 # files in the same package, .NET `<svc>/tests/X.cs` against
 # `<svc>/src/Y/X.cs`). Stripping LLM edges drops that real-world coverage
 # signal entirely. Swapping preserves it.
+
 
 def _path_segments(path: str) -> list[str]:
     """Split a relative POSIX-style path into segments (ignoring empties)."""
@@ -375,7 +407,7 @@ def production_candidates(test_path: str) -> list[str]:
     # ── Python ────────────────────────────────────────────────────────
     elif ext == ".py" and (stem.startswith("test_") or stem.endswith("_test")):
         if stem.startswith("test_"):
-            base_stem = stem[len("test_"):]
+            base_stem = stem[len("test_") :]
         else:
             base_stem = stem[: -len("_test")]
 
@@ -468,7 +500,11 @@ def production_candidates(test_path: str) -> list[str]:
                 if dir_segs:
                     top = dir_segs[0]
                     if top.endswith(".Tests") or top.endswith(".Test"):
-                        sibling = top[: -len(".Tests")] if top.endswith(".Tests") else top[: -len(".Test")]
+                        sibling = (
+                            top[: -len(".Tests")]
+                            if top.endswith(".Tests")
+                            else top[: -len(".Test")]
+                        )
                         if sibling:
                             mirror_dir = "/".join([sibling, *dir_segs[1:]])
                             _add_unique(
@@ -480,7 +516,7 @@ def production_candidates(test_path: str) -> list[str]:
     # ── C/C++ ─────────────────────────────────────────────────────────
     elif ext in {".c", ".cpp", ".cc"}:
         if stem.startswith("test_"):
-            base_stem = stem[len("test_"):]
+            base_stem = stem[len("test_") :]
         elif stem.endswith("_test"):
             base_stem = stem[: -len("_test")]
         else:
@@ -499,7 +535,7 @@ def _file_node_path(node: dict[str, Any]) -> str | None:
     fp = node.get("filePath")
     if isinstance(fp, str) and fp:
         return fp
-    return nid[len("file:"):]
+    return nid[len("file:") :]
 
 
 def _swap_tested_by_in_place(
@@ -679,14 +715,16 @@ def link_tests(
             pair = (prod_node["id"], test_node["id"])
             if pair in covered:
                 continue
-            edges.append({
-                "source": prod_node["id"],
-                "target": test_node["id"],
-                "type": "tested_by",
-                "direction": "forward",
-                "weight": 0.5,
-                "description": "Path-based pairing (deterministic)",
-            })
+            edges.append(
+                {
+                    "source": prod_node["id"],
+                    "target": test_node["id"],
+                    "type": "tested_by",
+                    "direction": "forward",
+                    "weight": 0.5,
+                    "description": "Path-based pairing (deterministic)",
+                }
+            )
             covered.add(pair)
             added += 1
             break
@@ -706,7 +744,10 @@ def link_tests(
 
 # ── Main merge + normalize ────────────────────────────────────────────────
 
-def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+
+def merge_and_normalize(
+    batches: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
     """Merge batch results and normalize. Returns (assembled_graph, report_lines)."""
 
     # ── Pattern counters for "Fixed" report ──────────────────────────
@@ -734,7 +775,9 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
     for i, node in enumerate(all_nodes):
         original_id = node.get("id")
         if not original_id:
-            unfixable.append(f"Node[{i}] has no 'id' field (name={node.get('name', '?')}, type={node.get('type', '?')})")
+            unfixable.append(
+                f"Node[{i}] has no 'id' field (name={node.get('name', '?')}, type={node.get('type', '?')})"
+            )
             continue
 
         # Flag unknown node types
@@ -758,11 +801,17 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
         normalized, status = normalize_complexity(original)
 
         if status == "mapped":
-            orig_repr = repr(original) if not isinstance(original, str) else f'"{original}"'
-            complexity_fix_patterns[f"{orig_repr} → \"{normalized}\""] += 1
+            orig_repr = (
+                repr(original) if not isinstance(original, str) else f'"{original}"'
+            )
+            complexity_fix_patterns[f'{orig_repr} → "{normalized}"'] += 1
         elif status == "unknown":
-            orig_repr = repr(original) if not isinstance(original, str) else f'"{original}"'
-            complexity_unknown_patterns[f"complexity {orig_repr} → defaulted to \"moderate\""] += 1
+            orig_repr = (
+                repr(original) if not isinstance(original, str) else f'"{original}"'
+            )
+            complexity_unknown_patterns[
+                f'complexity {orig_repr} → defaulted to "moderate"'
+            ] += 1
 
         node["complexity"] = normalized
 
@@ -789,8 +838,8 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
 
     # ── Step 5b: Deterministic tested_by linker ──────────────────────
     # See module-level "Deterministic tested_by linker" section above.
-    tested_by_added, tested_by_dropped, tested_by_tagged, tested_by_swapped = link_tests(
-        nodes_by_id, all_edges
+    tested_by_added, tested_by_dropped, tested_by_tagged, tested_by_swapped = (
+        link_tests(nodes_by_id, all_edges)
     )
 
     # ── Step 6: Deduplicate edges, drop dangling ─────────────────────
@@ -811,12 +860,16 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
                 missing.append(f"source '{src}'")
             if tgt not in node_ids:
                 missing.append(f"target '{tgt}'")
-            unfixable.append(f"Edge {src} → {tgt} ({etype}): dropped, missing {', '.join(missing)}")
+            unfixable.append(
+                f"Edge {src} → {tgt} ({etype}): dropped, missing {', '.join(missing)}"
+            )
             continue
 
         key = (src, tgt, etype, direction)
         existing = edges_by_key.get(key)
-        if existing is None or _num(edge.get("weight", 0)) > _num(existing.get("weight", 0)):
+        if existing is None or _num(edge.get("weight", 0)) > _num(
+            existing.get("weight", 0)
+        ):
             edges_by_key[key] = edge
 
     # ── Build report ─────────────────────────────────────────────────
@@ -832,13 +885,21 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
         for pattern, count in complexity_fix_patterns.most_common():
             fixed_lines.append(f"  {count:>4} × complexity {pattern}")
     if edges_rewritten:
-        fixed_lines.append(f"  {edges_rewritten:>4} × edge references rewritten after ID normalization")
+        fixed_lines.append(
+            f"  {edges_rewritten:>4} × edge references rewritten after ID normalization"
+        )
     if duplicate_count:
-        fixed_lines.append(f"  {duplicate_count:>4} × duplicate node IDs removed (kept last)")
+        fixed_lines.append(
+            f"  {duplicate_count:>4} × duplicate node IDs removed (kept last)"
+        )
     if tested_by_swapped:
-        fixed_lines.append(f"  {tested_by_swapped:>4} × tested_by edges flipped (test → production became production → test)")
+        fixed_lines.append(
+            f"  {tested_by_swapped:>4} × tested_by edges flipped (test → production became production → test)"
+        )
     if tested_by_dropped:
-        fixed_lines.append(f"  {tested_by_dropped:>4} × tested_by edges dropped (orphan endpoint or test↔test / prod↔prod pair)")
+        fixed_lines.append(
+            f"  {tested_by_dropped:>4} × tested_by edges dropped (orphan endpoint or test↔test / prod↔prod pair)"
+        )
 
     if fixed_lines:
         report.append("")
@@ -858,8 +919,10 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
     if tested_by_added or tested_by_tagged:
         report.append("")
         report.append("Tested-by linker:")
-        report.append(f"  {tested_by_added:>4} × tested_by edges produced (path-convention supplement, production → test)")
-        report.append(f"  {tested_by_tagged:>4} × production nodes tagged \"tested\"")
+        report.append(
+            f"  {tested_by_added:>4} × tested_by edges produced (path-convention supplement, production → test)"
+        )
+        report.append(f'  {tested_by_tagged:>4} × production nodes tagged "tested"')
 
     # Could not fix section — unknown patterns (grouped) + individual details
     unfixable_total = (
@@ -872,7 +935,9 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
         report.append(f"Could not fix ({unfixable_total} issues — needs agent review):")
         # Unknown node types (grouped by count)
         for ntype, count in unknown_node_types.most_common():
-            report.append(f"  {count:>4} × unknown node type \"{ntype}\" (not in schema, kept as-is)")
+            report.append(
+                f'  {count:>4} × unknown node type "{ntype}" (not in schema, kept as-is)'
+            )
         # Unknown complexity patterns (grouped by count)
         for pattern, count in complexity_unknown_patterns.most_common():
             report.append(f"  {count:>4} × {pattern}")
@@ -894,6 +959,7 @@ def merge_and_normalize(batches: list[dict[str, Any]]) -> tuple[dict[str, Any], 
 
 # ── Imports-edge recovery from importMap ──────────────────────────────────
 
+
 def recover_imports_from_scan(
     assembled: dict[str, Any],
     scan_result_path: Path,
@@ -913,11 +979,15 @@ def recover_imports_from_scan(
     try:
         scan = json.loads(scan_result_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        return 0, [f"  importMap recovery skipped — could not parse {scan_result_path.name}: {e}"]
+        return 0, [
+            f"  importMap recovery skipped — could not parse {scan_result_path.name}: {e}"
+        ]
 
     import_map = scan.get("importMap")
     if not isinstance(import_map, dict):
-        return 0, [f"  importMap recovery skipped — no importMap field in {scan_result_path.name}"]
+        return 0, [
+            f"  importMap recovery skipped — no importMap field in {scan_result_path.name}"
+        ]
 
     # Build the set of file: node ids actually present in the assembled graph.
     file_node_ids: set[str] = set()
@@ -953,14 +1023,16 @@ def recover_imports_from_scan(
                 continue
             if (src_id, tgt_id) in existing:
                 continue
-            assembled["edges"].append({
-                "source": src_id,
-                "target": tgt_id,
-                "type": "imports",
-                "direction": "forward",
-                "weight": 0.7,
-                "recoveredFromImportMap": True,
-            })
+            assembled["edges"].append(
+                {
+                    "source": src_id,
+                    "target": tgt_id,
+                    "type": "imports",
+                    "direction": "forward",
+                    "weight": 0.7,
+                    "recoveredFromImportMap": True,
+                }
+            )
             existing.add((src_id, tgt_id))
             recovered += 1
 
@@ -983,6 +1055,7 @@ def recover_imports_from_scan(
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     if len(sys.argv) < 2:
@@ -1007,9 +1080,11 @@ def main() -> None:
     # Discover batch files, sorted by numeric index (not lexicographic)
     batch_files = sorted(
         intermediate_dir.glob("batch-*.json"),
-        key=lambda p: int(re.search(r"batch-(\d+)", p.stem).group(1))
-        if re.search(r"batch-(\d+)", p.stem)
-        else 0,
+        key=lambda p: (
+            int(re.search(r"batch-(\d+)", p.stem).group(1))
+            if re.search(r"batch-(\d+)", p.stem)
+            else 0
+        ),
     )
     if not batch_files:
         print("Error: no batch-*.json files found in intermediate/", file=sys.stderr)
@@ -1051,7 +1126,9 @@ def main() -> None:
 
     # Write output
     output_path = intermediate_dir / "assembled-graph.json"
-    output_path.write_text(json.dumps(assembled, indent=2, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(
+        json.dumps(assembled, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
     size_kb = output_path.stat().st_size / 1024
     print(f"\nWritten to {output_path} ({size_kb:.0f} KB)", file=sys.stderr)

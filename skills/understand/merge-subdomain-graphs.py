@@ -42,7 +42,9 @@ def load_graph(path: Path) -> dict[str, Any] | None:
         return None
 
     # Must have at minimum nodes and edges arrays
-    if not isinstance(data.get("nodes"), list) or not isinstance(data.get("edges"), list):
+    if not isinstance(data.get("nodes"), list) or not isinstance(
+        data.get("edges"), list
+    ):
         print(f"  Skipping {path.name}: missing nodes or edges array", file=sys.stderr)
         return None
 
@@ -67,7 +69,9 @@ def merge_graphs(graphs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str
         for node in g.get("nodes", []):
             nid = node.get("id")
             if not nid:
-                unfixable.append(f"Node with no 'id' (name={node.get('name', '?')}, type={node.get('type', '?')})")
+                unfixable.append(
+                    f"Node with no 'id' (name={node.get('name', '?')}, type={node.get('type', '?')})"
+                )
                 continue
             if nid in nodes_by_id:
                 node_type = node.get("type", "?")
@@ -101,7 +105,9 @@ def merge_graphs(graphs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str
                 missing.append(f"source '{src}'")
             if tgt not in node_ids:
                 missing.append(f"target '{tgt}'")
-            unfixable.append(f"Edge {src} → {tgt} ({e.get('type', '?')}): dropped, missing {', '.join(missing)}")
+            unfixable.append(
+                f"Edge {src} → {tgt} ({e.get('type', '?')}): dropped, missing {', '.join(missing)}"
+            )
 
     # ── Layers: merge by id, union nodeIds ────────────────────────────
     layers_by_id: dict[str, dict] = {}
@@ -138,7 +144,9 @@ def merge_graphs(graphs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str
                     if nid not in existing.get("nodeIds", []):
                         existing.setdefault("nodeIds", []).append(nid)
                 # Keep the longer description
-                if len(step.get("description", "")) > len(existing.get("description", "")):
+                if len(step.get("description", "")) > len(
+                    existing.get("description", "")
+                ):
                     existing["description"] = step["description"]
             else:
                 new_step = {**step}
@@ -182,22 +190,37 @@ def merge_graphs(graphs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str
 
     # ── Build report ─────────────────────────────────────────────────
     report: list[str] = []
-    report.append(f"Input: {total_input_nodes} nodes, {total_input_edges} edges (from {len(graphs)} graphs)")
+    report.append(
+        f"Input: {total_input_nodes} nodes, {total_input_edges} edges (from {len(graphs)} graphs)"
+    )
 
     # Fixed section
     fixed_lines: list[str] = []
     if node_dedup_by_type:
         for ntype, count in node_dedup_by_type.most_common():
-            fixed_lines.append(f"  {count:>4} × duplicate '{ntype}' nodes removed (kept later)")
+            fixed_lines.append(
+                f"  {count:>4} × duplicate '{ntype}' nodes removed (kept later)"
+            )
     if edge_dedup_count:
-        fixed_lines.append(f"  {edge_dedup_count:>4} × duplicate edges removed (kept higher weight)")
+        fixed_lines.append(
+            f"  {edge_dedup_count:>4} × duplicate edges removed (kept higher weight)"
+        )
     if dropped_layer_refs:
-        fixed_lines.append(f"  {dropped_layer_refs:>4} × dangling layer nodeId refs removed")
+        fixed_lines.append(
+            f"  {dropped_layer_refs:>4} × dangling layer nodeId refs removed"
+        )
     if dropped_tour_refs:
-        fixed_lines.append(f"  {dropped_tour_refs:>4} × dangling tour nodeId refs removed")
+        fixed_lines.append(
+            f"  {dropped_tour_refs:>4} × dangling tour nodeId refs removed"
+        )
 
     if fixed_lines:
-        total_fixed = sum(node_dedup_by_type.values()) + edge_dedup_count + dropped_layer_refs + dropped_tour_refs
+        total_fixed = (
+            sum(node_dedup_by_type.values())
+            + edge_dedup_count
+            + dropped_layer_refs
+            + dropped_tour_refs
+        )
         report.append("")
         report.append(f"Fixed ({total_fixed} corrections):")
         report.extend(fixed_lines)
@@ -211,7 +234,9 @@ def merge_graphs(graphs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str
 
     # Output stats
     report.append("")
-    report.append(f"Output: {len(nodes_by_id)} nodes, {len(valid_edges)} edges, {len(layers_by_id)} layers, {len(all_tour_steps)} tour steps")
+    report.append(
+        f"Output: {len(nodes_by_id)} nodes, {len(valid_edges)} edges, {len(layers_by_id)} layers, {len(all_tour_steps)} tour steps"
+    )
 
     merged: dict[str, Any] = {
         "version": "1.0.0",
@@ -219,7 +244,9 @@ def merge_graphs(graphs: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str
             "name": project_name,
             "languages": languages,
             "frameworks": frameworks,
-            "description": " | ".join(descriptions) if len(descriptions) > 1 else (descriptions[0] if descriptions else ""),
+            "description": " | ".join(descriptions)
+            if len(descriptions) > 1
+            else (descriptions[0] if descriptions else ""),
             "analyzedAt": latest_at,
             "gitCommitHash": latest_hash,
         },
@@ -251,7 +278,11 @@ def main() -> None:
             sys.exit(1)
         graph_root_arg = args[index + 1]
         del args[index : index + 2]
-    ua_dir = Path(graph_root_arg).resolve() if graph_root_arg else project_root / ".understand-anything"
+    ua_dir = (
+        Path(graph_root_arg).resolve()
+        if graph_root_arg
+        else project_root / ".understand-anything"
+    )
 
     if not ua_dir.is_dir():
         print(f"Error: {ua_dir} does not exist", file=sys.stderr)
@@ -267,7 +298,8 @@ def main() -> None:
         # Auto-discover subdomain graphs — exclude the main output file
         # to avoid self-merging on repeated runs
         graph_files = sorted(
-            p for p in ua_dir.glob("*knowledge-graph*.json")
+            p
+            for p in ua_dir.glob("*knowledge-graph*.json")
             if p.name != "knowledge-graph.json"
         )
 
@@ -287,7 +319,10 @@ def main() -> None:
             graphs.append(g)
             node_count = len(g.get("nodes", []))
             edge_count = len(g.get("edges", []))
-            print(f"    Loaded {f.name}: {node_count} nodes, {edge_count} edges", file=sys.stderr)
+            print(
+                f"    Loaded {f.name}: {node_count} nodes, {edge_count} edges",
+                file=sys.stderr,
+            )
 
     if not graphs:
         print("Error: no valid subdomain graphs loaded", file=sys.stderr)
@@ -299,7 +334,10 @@ def main() -> None:
         if base:
             node_count = len(base.get("nodes", []))
             edge_count = len(base.get("edges", []))
-            print(f"    Loaded base knowledge-graph.json: {node_count} nodes, {edge_count} edges", file=sys.stderr)
+            print(
+                f"    Loaded base knowledge-graph.json: {node_count} nodes, {edge_count} edges",
+                file=sys.stderr,
+            )
             graphs.insert(0, base)  # Base first — subdomain data wins on conflict
 
     # Merge
@@ -311,7 +349,9 @@ def main() -> None:
         print(line, file=sys.stderr)
 
     # Write output
-    output_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(
+        json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
     size_kb = output_path.stat().st_size / 1024
     print(f"\nWritten to {output_path} ({size_kb:.0f} KB)", file=sys.stderr)
