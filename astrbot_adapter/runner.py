@@ -33,6 +33,12 @@ from .runtime import UnderstandAnythingRuntime
 from .subagent_dispatcher import UnderstandAnythingSubAgentDispatcher
 from .subagent_registry import UnderstandAnythingSubAgentRegistry
 
+REQUIRED_GRAPH_OUTPUTS_BY_JOB = {
+    "understand": ("knowledge-graph.json",),
+    "understand-domain": ("domain-graph.json",),
+    "understand-knowledge": ("knowledge-graph.json",),
+}
+
 
 class UnderstandAnythingRunner:
     def __init__(
@@ -396,6 +402,7 @@ class UnderstandAnythingRunner:
                 self.jobs.append_log(
                     job.job_id, f"Target project root: {job.project_root}"
                 )
+                self._ensure_graph_root_defaults(job)
                 ensure_computer_use_enabled(
                     self.context,
                     umo=getattr(event, "unified_msg_origin", None) if event else None,
@@ -451,6 +458,7 @@ class UnderstandAnythingRunner:
                     extra_tools=subagent_dispatcher.tool_set(),
                 )
                 self.jobs.append_log(job.job_id, "Agent workflow finished.")
+                self._validate_required_outputs(job)
                 self.jobs.mark_finished(job.job_id, {"message": result})
                 self.registry.register(
                     job.project_root,
@@ -531,6 +539,36 @@ class UnderstandAnythingRunner:
             "tmp outputs under `$UA_GRAPH_ROOT`.\n"
             "- Preserve Understand Anything JSON schema and Dashboard compatibility.\n"
         )
+
+    def _ensure_graph_root_defaults(self, job: JobSnapshot) -> None:
+        graph_root = self._job_graph_root(job)
+        graph_root.mkdir(parents=True, exist_ok=True)
+        (graph_root / ".understandignore").touch(exist_ok=True)
+
+    def _validate_required_outputs(self, job: JobSnapshot) -> None:
+        required = REQUIRED_GRAPH_OUTPUTS_BY_JOB.get(job.kind, ())
+        if not required:
+            return
+        graph_root = self._job_graph_root(job)
+        missing = [
+            file_name
+            for file_name in required
+            if not (graph_root / file_name).is_file()
+        ]
+        if missing:
+            raise RuntimeError(
+                "Understand Anything job did not produce required graph file(s): "
+                + ", ".join(missing)
+                + f". Expected under: {graph_root}"
+            )
+        store = ProjectStore(job.project_root, graph_root=graph_root)
+        for file_name in required:
+            store.read_json(file_name)
+
+    @staticmethod
+    def _job_graph_root(job: JobSnapshot) -> Path:
+        value = job.args.get("graph_root")
+        return Path(str(value)) if value else job.project_root / ".understand-anything"
 
     @staticmethod
     def _coerce_positive_int(value: Any, default: int) -> int:

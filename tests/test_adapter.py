@@ -1388,6 +1388,84 @@ async def test_runner_uses_event_session_config_for_computer_use_check(
 
 
 @pytest.mark.asyncio
+async def test_runner_fails_graph_job_when_required_graph_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyDispatcher:
+        called = False
+
+        async def run_with_local_tools(self, **_kwargs):
+            self.called = True
+            return "analysis complete"
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            return None
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    graph_root = project_root / ".understand-anything"
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "local"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    dispatcher = DummyDispatcher()
+    runner.dispatcher = dispatcher  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+        },
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FAILED
+    assert "knowledge-graph.json" in (snapshot.error or "")
+    assert "did not produce required graph file" in (snapshot.error or "")
+    assert (graph_root / ".understandignore").is_file()
+    assert dispatcher.called is True
+
+
+@pytest.mark.asyncio
 async def test_web_api_subagent_provider_options_are_sanitized(tmp_path: Path) -> None:
     class DummyRunner:
         config: dict[str, object] = {}

@@ -3,6 +3,7 @@ import {
   describePluginRouteError,
   disabledComputerUseConfigs,
   describeGraphLoadError,
+  errorMessage,
   hasProjectRef,
   isComputerUseReady,
   isPluginRouteMissingError,
@@ -50,6 +51,16 @@ describe("AstrBot bridge helpers", () => {
       "has not generated a graph",
     );
     expect(describeGraphLoadError(new Error("Request failed with status code 404"))).toContain(
+      "has not generated a graph",
+    );
+  });
+
+  it("formats plugin error objects without leaking object string output", () => {
+    expect(errorMessage({ error: "File not found" })).toBe("File not found");
+    expect(errorMessage({ status: "error", message: "Graph file not found" })).toBe(
+      "Graph file not found",
+    );
+    expect(describeGraphLoadError({ error: "File not found" })).toContain(
       "has not generated a graph",
     );
   });

@@ -281,7 +281,20 @@ export function unwrapPluginPayload(payload: unknown): unknown {
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    for (const key of ["message", "error", "detail"] as const) {
+      if (record[key]) return errorMessage(record[key]);
+    }
+    try {
+      return JSON.stringify(record);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
 }
 
 export function isPluginRouteMissingError(error: unknown): boolean {
