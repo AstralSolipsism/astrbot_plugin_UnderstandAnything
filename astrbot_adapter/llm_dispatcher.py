@@ -15,6 +15,8 @@ from astrbot.core.tools.computer_tools import (
     LocalPythonTool,
 )
 
+from .constants import UA_TOOL_CALL_TIMEOUT_SECONDS
+
 
 class LLMDispatcher:
     def __init__(self, context: Context, provider_id: str = "") -> None:
@@ -53,7 +55,7 @@ class LLMDispatcher:
             system_prompt=system_prompt,
             tools=self._local_tool_set(extra_tools),
             max_steps=max_steps,
-            tool_call_timeout=300,
+            tool_call_timeout=UA_TOOL_CALL_TIMEOUT_SECONDS,
         )
         return resp.completion_text or ""
 

@@ -14,6 +14,7 @@ DASHBOARD_PAGE_ROOT = PLUGIN_ROOT / "pages" / "dashboard"
 
 GRAPH_DIR_NAME = ".understand-anything"
 MAX_SOURCE_FILE_BYTES = 1024 * 1024
+UA_TOOL_CALL_TIMEOUT_SECONDS = 30 * 60
 
 SKILL_COMMANDS = {
     "understand": "understand",

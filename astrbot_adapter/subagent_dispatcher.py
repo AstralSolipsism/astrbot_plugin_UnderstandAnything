@@ -22,7 +22,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.star import Context
 
-from .constants import PLUGIN_NAME
+from .constants import PLUGIN_NAME, UA_TOOL_CALL_TIMEOUT_SECONDS
 from .subagent_registry import ROLE_NAMES, UnderstandAnythingSubAgentRegistry
 
 HandoffExecutor = Callable[
@@ -329,11 +329,11 @@ class UnderstandAnythingSubAgentDispatcher:
         if self._uses_custom_handoff_executor:
             return ContextWrapper(
                 context=SimpleNamespace(context=self.context, event=worker_event),
-                tool_call_timeout=300,
+                tool_call_timeout=UA_TOOL_CALL_TIMEOUT_SECONDS,
             )
         return ContextWrapper(
             context=AstrAgentContext(context=self.context, event=worker_event),
-            tool_call_timeout=300,
+            tool_call_timeout=UA_TOOL_CALL_TIMEOUT_SECONDS,
         )
 
     @staticmethod
