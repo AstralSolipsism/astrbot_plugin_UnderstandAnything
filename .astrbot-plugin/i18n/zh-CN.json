@@ -1,70 +1,54 @@
 {
   "metadata": {
     "display_name": "Understand Anything",
-    "short_desc": "? AstrBot ?????????????????????",
-    "desc": "Understand Anything ? AstrBot ?????????"
+    "short_desc": "将项目、文档和知识库转换为 AstrBot 中的交互式知识图谱。",
+    "desc": "为 AstrBot 提供完整 Understand Anything 宿主适配能力。"
   },
   "config": {
     "provider_id": {
-      "description": "AstrBot ?? Provider ID",
-      "hint": "????????? Provider?"
-    },
-    "node_bin": {
-      "description": "Node.js ?????",
-      "hint": "???? Node.js 22 ??????"
-    },
-    "pnpm_bin": {
-      "description": "pnpm ?????",
-      "hint": "???? pnpm 10 ??????"
-    },
-    "git_bin": {
-      "description": "Git 可执行文件",
-      "hint": "用于克隆和更新公开 GitHub 仓库以供分析。"
+      "description": "AstrBot 聊天 Provider ID",
+      "hint": "留空则使用当前会话 Provider。"
     },
     "cleanup_github_cache_after_analysis": {
       "description": "分析后清理 GitHub clone 缓存",
       "hint": "启用后，GitHub 分析任务结束只删除克隆的源码缓存，图谱产物会保留在插件数据目录。"
     },
     "max_concurrent_jobs": {
-      "description": "?????????",
-      "hint": "????????? token ? CPU????????????????"
+      "description": "最大并发分析任务数",
+      "hint": "大型分析会消耗模型 token 和 CPU。除非主机资源充足，否则建议保持较低数值。"
     },
     "max_parallel_file_agents": {
-      "description": "??????????? file-analyzer SubAgent ?",
-      "hint": "???? /understand job ?????? SubAgent ???"
+      "description": "每个分析任务的最大并行 file-analyzer SubAgent 数",
+      "hint": "控制单个 /understand job 内部的批次级 SubAgent 并发。"
     },
     "max_parallel_article_agents": {
-      "description": "??????????? article-analyzer SubAgent ?",
-      "hint": "???? /understand-knowledge job ?????? SubAgent ???"
+      "description": "每个知识分析任务的最大并行 article-analyzer SubAgent 数",
+      "hint": "控制单个 /understand-knowledge job 内部的批次级 SubAgent 并发。"
     },
     "subagent_provider_id": {
-      "description": "Understand Anything SubAgents ??? AstrBot ?? Provider ID",
-      "hint": "????? provider_id????????? Provider?"
+      "description": "Understand Anything SubAgents 使用的 AstrBot 聊天 Provider ID",
+      "hint": "留空则复用 provider_id，再退回当前会话 Provider。"
     },
     "auto_build": {
-      "description": "????????? Understand Anything Node ?",
-      "hint": "?????????? pnpm install?????????? dist ???"
+      "description": "自动修复缺失的内置运行依赖",
+      "hint": "启用后，首次使用可在插件 understand-anything 目录内运行 pnpm install/build，修复缺失的依赖或 dist 文件。"
     },
     "auto_update_poll_interval": {
-      "description": "???????????",
-      "hint": "0 ?????????????????????"
-    },
-    "allowed_roots": {
-      "description": "????????",
-      "hint": "?????? AstrBot ????????????????????????"
+      "description": "自动更新轮询间隔（秒）",
+      "hint": "0 表示禁用后台轮询。需要更新时可使用聊天命令手动触发。"
     },
     "default_write_mode": {
-      "description": "????????",
-      "hint": "Understand Anything ?????????????",
+      "description": "默认图谱输出模式",
+      "hint": "Understand Anything 会将图谱文件写入目标项目。",
       "labels": [
-        "?? .understand-anything"
+        "项目 .understand-anything"
       ]
     }
   },
   "pages": {
     "dashboard": {
       "title": "Understand Anything",
-      "description": "????????????????????? diff ?????",
+      "description": "浏览生成的结构图、领域图、知识图谱和 diff 影响图。",
       "ui": {
         "common": {
           "ready": "就绪",
@@ -169,17 +153,53 @@
           "notAnalyzed": "尚未分析",
           "jobEventInterrupted": "Job 事件流已中断。",
           "projectPathRequired": "项目路径不能为空。",
+          "projectTargetRequired": "项目目标不能为空。",
           "subagentsRequired": "启动分析前请先注册 UA SubAgents。",
           "subagentsBlocked": "请先在此面板注册 UA SubAgents，再启动分析任务。",
+          "setupRequired": "需要配置",
+          "computerUseRequired": "启用“使用电脑能力”后才能启动分析。",
+          "computerUseBlocked": "默认配置启用“使用电脑能力-运行环境”后才能从 Dashboard 启动分析任务。",
+          "computerUseDisabledTitle": "启用使用电脑能力-运行环境",
+          "computerUseDisabledDescription": "Dashboard 分析任务使用 AstrBot 默认配置。请先在默认配置中启用“使用电脑能力-运行环境”，再从此页面启动分析。",
+          "computerUseSetupPathLabel": "配置位置",
+          "computerUseSetupPath": "设置 -> 使用电脑能力 -> 运行环境",
+          "computerUseSetupValueLabel": "运行环境取值",
+          "computerUseSetupValue": "local 或 sandbox",
+          "computerUseSetupApplyLabel": "保存后",
+          "computerUseSetupApply": "重载插件或刷新当前 Dashboard。",
+          "computerUseDefaultConfigLabel": "Dashboard 使用配置",
+          "computerUsePartialTitle": "部分会话配置不可用",
+          "computerUsePartialDescription": "Dashboard 分析可以启动，但绑定到未启用“使用电脑能力-运行环境”的配置的会话中，聊天命令分析会不可用。",
           "initialConfiguration": "初始配置",
           "configManaged": "配置由 AstrBot 插件设置统一管理。",
           "llmProvider": "LLM Provider",
-          "nodeRuntime": "Node 运行时",
-          "allowedRoots": "允许根目录",
+          "runtimeEnvironment": "运行环境检查",
+          "runtimeToolCheck": "运行工具检查",
+          "runtimeToolMissing": "未在 PATH 中找到 {tool}。",
+          "runtimeToolUnsupported": "{tool} {version} 低于要求的 {minimum}。",
+          "runtimeUnavailable": "Understand Anything 运行时尚未就绪。",
+          "runtimeBlocked": "Understand Anything 运行时就绪后才能启动分析任务。",
+          "runtimeRepairNeeded": "内置运行依赖需要修复。",
+          "repairRuntime": "修复插件运行依赖",
+          "repairingRuntime": "正在修复运行依赖",
+          "runtimeRepairSucceeded": "运行依赖修复完成。",
+          "runtimeAlreadyReady": "运行依赖已经就绪。",
+          "computerUseRuntime": "使用电脑能力-运行环境",
+          "computerUseDisabled": "未启用",
+          "computerUseLocal": "本地",
+          "computerUseSandbox": "沙箱",
+          "computerUseRequireAdmin": "需要管理员权限",
+          "computerUseNoAdmin": "不要求管理员权限",
+          "computerUseSandboxBooter": "沙箱驱动器",
+          "computerUseDashboardUses": "Dashboard 使用",
+          "computerUseDefaultBadge": "默认",
           "registeredProjects": "已注册 {count} 个",
           "noProjects": "还没有注册项目。",
           "analyzeProject": "分析项目",
+          "gitUnavailable": "当前 AstrBot 主机无法使用 Git。",
           "projectPath": "项目路径",
+          "projectTarget": "项目目标",
+          "projectTargetPlaceholder": "https://github.com/owner/repo/tree/main/packages/app 或 D:\\path\\to\\project",
           "fullAnalysis": "完整分析",
           "autoUpdate": "自动更新",
           "starting": "启动中",
@@ -187,6 +207,7 @@
         },
         "subagents": {
           "title": "UA SubAgents",
+          "statusUnavailable": "UA SubAgent 状态不可用",
           "registrationRequired": "需要注册",
           "description": "Understand Anything 使用持久化 AstrBot SubAgents 执行 worker 批处理。注册 UA 角色后，分析任务即可派发真实并行 agent。",
           "allRegistered": "所有角色已注册",
@@ -217,7 +238,9 @@
           "coreDist": "Core dist",
           "dashboardDist": "Dashboard dist",
           "dashboardPage": "Dashboard 页面",
-          "nodeModules": "Node modules"
+          "nodeModules": "Node modules",
+          "githubCacheRoot": "GitHub 缓存",
+          "githubArtifactRoot": "GitHub 产物"
         },
         "shortcut": {
           "showHelp": "显示快捷键帮助",

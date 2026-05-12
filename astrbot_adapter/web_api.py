@@ -11,6 +11,7 @@ from quart import jsonify, request
 from astrbot.core.star import Context
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
+from .computer_use import computer_use_status
 from .constants import (
     DASHBOARD_PAGE_ROOT,
     DASHBOARD_SOURCE_ROOT,
@@ -19,9 +20,11 @@ from .constants import (
     PLUGIN_NAME,
     UNDERSTAND_ANYTHING_ROOT,
 )
+from .github_repo import GITHUB_PROXY_PRESETS
 from .job_store import JobStatus
 from .path_security import PathSecurityError
 from .runner import UnderstandAnythingRunner
+from .runtime_tools import detect_runtime_tools, runtime_readiness
 from .subagent_registry import UnderstandAnythingSubAgentRegistry
 
 WebHandler = Callable[[], Awaitable[Any]]
@@ -44,6 +47,12 @@ class UnderstandAnythingWebApi:
         prefix = f"/{PLUGIN_NAME}"
         return [
             (f"{prefix}/status", self.status, ["GET"], "Read plugin status"),
+            (
+                f"{prefix}/runtime/repair",
+                self.repair_runtime,
+                ["POST"],
+                "Repair bundled Understand Anything runtime dependencies",
+            ),
             (
                 f"{prefix}/subagents/status",
                 self.subagents_status,
@@ -116,32 +125,30 @@ class UnderstandAnythingWebApi:
 
     def status_payload(self) -> dict[str, Any]:
         config = getattr(self.runner, "config", {}) or {}
-        security = getattr(self.runner, "security", None)
-        allowed_roots = [
-            str(root)
-            for root in getattr(security, "allowed_roots", [])
-            if str(root)
-        ]
+        runtime = getattr(self.runner, "runtime", None)
+        tools = (
+            runtime.tools()
+            if runtime is not None and hasattr(runtime, "tools")
+            else detect_runtime_tools()
+        )
+        auto_repair_enabled = bool(config.get("auto_build", True))
         return {
             "plugin": {
                 "name": PLUGIN_NAME,
                 "display_name": PLUGIN_DISPLAY_NAME,
+            },
+            "astrbot": {
+                "computer_use": computer_use_status(self.context),
             },
             "config": {
                 "provider_configured": bool(config.get("provider_id")),
                 "subagent_provider_configured": bool(
                     config.get("subagent_provider_id"),
                 ),
-                "node_bin": str(config.get("node_bin") or "node"),
-                "pnpm_bin": str(config.get("pnpm_bin") or "pnpm"),
-                "git_bin": str(config.get("git_bin") or "git"),
-                "git_available": self._git_available(),
-                "github_cache_root": self._github_cache_root(),
-                "github_artifact_root": self._github_artifact_root(),
                 "cleanup_github_cache_after_analysis": bool(
                     config.get("cleanup_github_cache_after_analysis", False),
                 ),
-                "auto_build": bool(config.get("auto_build", True)),
+                "auto_build": auto_repair_enabled,
                 "auto_update_poll_interval": self._int_config(
                     config.get("auto_update_poll_interval"),
                     0,
@@ -158,10 +165,12 @@ class UnderstandAnythingWebApi:
                     config.get("max_parallel_article_agents"),
                     3,
                 ),
-                "allowed_roots": allowed_roots,
                 "default_write_mode": str(
                     config.get("default_write_mode") or "project",
                 ),
+            },
+            "github": {
+                "proxy_presets": list(GITHUB_PROXY_PRESETS),
             },
             "runtime": {
                 "understand_anything_root": self._path_state(
@@ -171,7 +180,11 @@ class UnderstandAnythingWebApi:
                     UNDERSTAND_ANYTHING_ROOT / "dist" / "index.js",
                 ),
                 "core_dist": self._path_state(
-                    UNDERSTAND_ANYTHING_ROOT / "packages" / "core" / "dist" / "index.js",
+                    UNDERSTAND_ANYTHING_ROOT
+                    / "packages"
+                    / "core"
+                    / "dist"
+                    / "index.js",
                 ),
                 "dashboard_dist": self._path_state(
                     DASHBOARD_SOURCE_ROOT / "dist" / "index.html",
@@ -184,12 +197,27 @@ class UnderstandAnythingWebApi:
                     getattr(getattr(self.runner, "github", None), "cache_root", None),
                 ),
                 "github_artifact_root": self._path_state(
-                    getattr(getattr(self.runner, "github", None), "artifact_root", None),
+                    getattr(
+                        getattr(self.runner, "github", None), "artifact_root", None
+                    ),
+                ),
+                "tools": tools.to_dict(),
+                "readiness": runtime_readiness(
+                    UNDERSTAND_ANYTHING_ROOT,
+                    tools,
+                    auto_repair_enabled=auto_repair_enabled,
                 ),
             },
             "subagents": self.subagent_registry.status_payload(),
             "subagent_provider_options": self._provider_options_payload(),
         }
+
+    async def repair_runtime(self):
+        try:
+            payload = await self.runner.runtime.repair()
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
 
     async def subagents_status(self):
         return jsonify(
@@ -282,6 +310,7 @@ class UnderstandAnythingWebApi:
                     flags=self._job_flags(body),
                     repo_url=repo_url,
                     ref=self._string_or_none(body.get("ref")),
+                    github_proxy=self._string_or_none(body.get("github_proxy")),
                     **project_ref,
                 )
             return jsonify({"status": "ok", "data": job.to_dict()})
@@ -451,20 +480,6 @@ class UnderstandAnythingWebApi:
             "is_dir": path.is_dir(),
         }
 
-    def _git_available(self) -> bool:
-        github = getattr(self.runner, "github", None)
-        if github and hasattr(github, "git_available"):
-            return bool(github.git_available())
-        return False
-
-    def _github_cache_root(self) -> str:
-        github = getattr(self.runner, "github", None)
-        return str(getattr(github, "cache_root", "") or "")
-
-    def _github_artifact_root(self) -> str:
-        github = getattr(self.runner, "github", None)
-        return str(getattr(github, "artifact_root", "") or "")
-
     def _provider_options_payload(self) -> dict[str, Any]:
         providers = self._chat_provider_summaries()
         recommended = self.subagent_registry.desired_provider_id()
@@ -555,7 +570,9 @@ class UnderstandAnythingWebApi:
         }
 
     @classmethod
-    def _provider_summary_from_config(cls, config: dict[str, Any]) -> dict[str, Any] | None:
+    def _provider_summary_from_config(
+        cls, config: dict[str, Any]
+    ) -> dict[str, Any] | None:
         provider_id = str(config.get("id") or "").strip()
         if not provider_id:
             return None

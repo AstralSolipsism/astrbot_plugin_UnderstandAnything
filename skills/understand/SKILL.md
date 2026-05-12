@@ -65,7 +65,7 @@ Determine whether to run a full analysis or incremental update.
    - If no host value is available, set `UA_GRAPH_ROOT="$PROJECT_ROOT/.understand-anything"`.
    - Use `$PROJECT_ROOT` only for source files and git state.
    - Use `$UA_GRAPH_ROOT` for every Understand Anything artifact: `knowledge-graph.json`, `domain-graph.json`, `meta.json`, `fingerprints.json`, `config.json`, `intermediate/`, `tmp/`, reviews, and batch outputs.
-1.5. **Ensure the bundled runtime is built.** Later phases invoke Node scripts that import `@understand-anything/core`. In AstrBot, the plugin root is the `astrbot_plugin_UnderstandAnything` directory and the bundled runtime is always at `<PLUGIN_ROOT>/understand-anything`.
+1.5. **Verify the bundled runtime is ready.** The AstrBot host adapter checks and repairs the runtime before starting this workflow. Later phases invoke Node scripts that import `@understand-anything/core`. In AstrBot, the plugin root is the `astrbot_plugin_UnderstandAnything` directory and the bundled runtime is always at `<PLUGIN_ROOT>/understand-anything`.
 
    Resolve paths from the AstrBot plugin layout:
 
@@ -80,8 +80,9 @@ Determine whether to run a full analysis or incremental update.
      exit 1
    fi
 
-   if [ ! -f "$RUNTIME_ROOT/packages/core/dist/index.js" ] || [ ! -f "$RUNTIME_ROOT/dist/index.js" ]; then
-     cd "$RUNTIME_ROOT" && (pnpm install --frozen-lockfile 2>/dev/null || pnpm install) && pnpm --filter @understand-anything/core build && pnpm build
+   if [ ! -d "$RUNTIME_ROOT/node_modules" ] || [ ! -f "$RUNTIME_ROOT/packages/core/dist/index.js" ] || [ ! -f "$RUNTIME_ROOT/dist/index.js" ]; then
+     echo "Error: Understand Anything runtime is incomplete. Use the plugin Dashboard runtime repair action, then retry."
+     exit 1
    fi
    ```
 

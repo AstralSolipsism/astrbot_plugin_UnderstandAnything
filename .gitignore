@@ -7,6 +7,7 @@ __pycache__/
 understand-anything/node_modules/
 understand-anything/packages/*/node_modules/
 .plugin_data/
+data/
 
 # C extensions
 *.so

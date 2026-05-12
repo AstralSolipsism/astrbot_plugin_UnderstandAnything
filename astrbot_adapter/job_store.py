@@ -48,7 +48,9 @@ class JobStore:
     def __init__(self) -> None:
         self._jobs: dict[str, JobSnapshot] = {}
 
-    def create(self, kind: str, project_root: Path, args: dict[str, Any]) -> JobSnapshot:
+    def create(
+        self, kind: str, project_root: Path, args: dict[str, Any]
+    ) -> JobSnapshot:
         job = JobSnapshot(
             job_id=uuid.uuid4().hex,
             kind=kind,

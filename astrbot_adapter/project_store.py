@@ -27,7 +27,11 @@ class ProjectStore:
 
     def graph_path(self, file_name: str) -> Path:
         normalized = Path(file_name)
-        if normalized.is_absolute() or ".." in normalized.parts or len(normalized.parts) != 1:
+        if (
+            normalized.is_absolute()
+            or ".." in normalized.parts
+            or len(normalized.parts) != 1
+        ):
             raise PathSecurityError(f"Invalid graph file name: {file_name}")
         return self.graph_root / normalized.name
 
@@ -55,14 +59,10 @@ class ProjectStore:
             return None
 
     def read_source_file(self, file_path: str) -> dict[str, Any]:
-        graph = self.read_json("knowledge-graph.json")
-        allowed_files = self._graph_file_paths(graph)
         relative_path = self.security.normalize_relative_path(
             self.project_root,
             file_path,
         )
-        if relative_path not in allowed_files:
-            raise PermissionError("File is not in the knowledge graph.")
 
         absolute_path = self.project_root / relative_path
         if not absolute_path.is_file():
@@ -82,22 +82,6 @@ class ProjectStore:
             "sizeBytes": len(raw),
             "lineCount": 0 if not content else len(content.splitlines()),
         }
-
-    @staticmethod
-    def _graph_file_paths(graph: dict[str, Any]) -> set[str]:
-        paths: set[str] = set()
-        nodes = graph.get("nodes", [])
-        if not isinstance(nodes, list):
-            return paths
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            file_path = node.get("filePath")
-            if isinstance(file_path, str) and file_path:
-                normalized = Path(file_path.replace("\\", "/")).as_posix()
-                if normalized and not normalized.startswith("../"):
-                    paths.add(normalized)
-        return paths
 
     @staticmethod
     def _detect_language(file_path: str) -> str:

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "../i18n";
 import {
   type AstrBotPluginPageBridge,
@@ -7,9 +7,16 @@ import {
   type ProjectRefParams,
   type ProjectSummary,
   type ProviderSummary,
+  type RuntimeToolStatus,
   type SubAgentProviderOptions,
   type SubAgentSetupStatus,
+  describePluginRouteError,
+  disabledComputerUseConfigs,
+  errorMessage,
+  isComputerUseReady,
+  isPluginRouteMissingError,
   pluginGet,
+  pluginGetOptional,
   pluginPost,
   projectParamsFromProject,
 } from "../utils/astrbotBridge";
@@ -85,6 +92,111 @@ function providerCapabilities(
   return capabilities;
 }
 
+function computerUseRuntimeName(
+  runtime: string | undefined,
+  t: (key: string, fallback: string) => string,
+): string {
+  if (runtime === "local") return t("workspace.computerUseLocal", "Local");
+  if (runtime === "sandbox") return t("workspace.computerUseSandbox", "Sandbox");
+  if (runtime && runtime !== "none") return runtime;
+  return t("workspace.computerUseDisabled", "Disabled");
+}
+
+function runtimeToolDetail(
+  tool: RuntimeToolStatus,
+  label: string,
+  t: (
+    key: string,
+    fallback: string,
+    vars?: Record<string, string | number | boolean | null | undefined>,
+  ) => string,
+): string {
+  if (!tool.available) {
+    return t("workspace.runtimeToolMissing", "{tool} was not found in PATH.", {
+      tool: label,
+    });
+  }
+  if (!tool.supported && tool.min_major) {
+    return t("workspace.runtimeToolUnsupported", "{tool} {version} is below {minimum}.", {
+      tool: label,
+      version: tool.version || tool.command,
+      minimum: `${tool.min_major}+`,
+    });
+  }
+  if (tool.version && tool.path) return `${tool.version} · ${tool.path}`;
+  if (tool.version) return tool.version;
+  if (tool.path) return tool.path;
+  return tool.blocking_reason || tool.command;
+}
+
+function statusTone(ready: boolean): string {
+  return ready
+    ? "border-green-400/30 bg-green-400/10 text-green-300"
+    : "border-amber-400/30 bg-amber-400/10 text-amber-300";
+}
+
+function StatusPill({
+  ready,
+  label,
+}: {
+  ready: boolean;
+  label: string;
+}) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold ${statusTone(ready)}`}
+    >
+      <span
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${ready ? "bg-green-300" : "bg-amber-300"}`}
+      />
+      {label}
+    </span>
+  );
+}
+
+function Panel({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section
+      className={`rounded-lg border border-border-subtle bg-surface shadow-[0_0_0_1px_rgba(255,255,255,0.02)] ${className}`}
+    >
+      {children}
+    </section>
+  );
+}
+
+function SetupRow({
+  label,
+  detail,
+  ready,
+  statusLabel,
+  action,
+}: {
+  label: string;
+  detail: ReactNode;
+  ready: boolean;
+  statusLabel: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="border-b border-border-subtle py-3 last:border-b-0">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-text-primary">{label}</div>
+          <div className="mt-1 text-xs leading-relaxed text-text-muted">{detail}</div>
+        </div>
+        <StatusPill ready={ready} label={statusLabel} />
+      </div>
+      {action && <div className="mt-3">{action}</div>}
+    </div>
+  );
+}
+
 export default function AstrBotWorkspace({
   bridge,
   onOpenProject,
@@ -92,13 +204,17 @@ export default function AstrBotWorkspace({
   const { t } = useI18n();
   const [status, setStatus] = useState<PluginStatus | null>(null);
   const [subagents, setSubagents] = useState<SubAgentSetupStatus | null>(null);
+  const [subagentError, setSubagentError] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [error, setError] = useState<string | null>(null);
   const [projectTarget, setProjectTarget] = useState("");
   const [fullAnalysis, setFullAnalysis] = useState(false);
   const [autoUpdate, setAutoUpdate] = useState(false);
+  const [githubProxy, setGithubProxy] = useState("");
   const [starting, setStarting] = useState(false);
+  const [repairingRuntime, setRepairingRuntime] = useState(false);
+  const [runtimeRepairMessage, setRuntimeRepairMessage] = useState<string | null>(null);
   const [registeringSubagents, setRegisteringSubagents] = useState(false);
   const [providerDialogOpen, setProviderDialogOpen] = useState(false);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -115,23 +231,61 @@ export default function AstrBotWorkspace({
   );
   const currentJobId = currentJob?.job_id;
   const currentJobStatus = currentJob?.status;
+  const computerUse = status?.astrbot?.computer_use;
+  const defaultComputerUse = computerUse?.default_config ?? computerUse;
+  const computerUseConfigs = computerUse?.configs?.length
+    ? computerUse.configs
+    : defaultComputerUse
+      ? [defaultComputerUse]
+      : [];
+  const disabledComputerUse = disabledComputerUseConfigs(computerUse);
+  const disabledSessionComputerUse = disabledComputerUse.filter(
+    (config) => !config.is_default,
+  );
+  const computerUseReady = status ? isComputerUseReady(computerUse) : false;
+  const runtimeReadiness = status?.runtime.readiness;
+  const localRuntimeReady = runtimeReadiness?.local_analysis_ready ?? false;
 
   const loadWorkspace = useCallback(async () => {
     setLoadState("loading");
     setError(null);
+    setSubagentError(null);
     try {
-      const [nextStatus, projectPayload, subagentPayload] = await Promise.all([
+      const [nextStatus, projectPayload] = await Promise.all([
         pluginGet<PluginStatus>(bridge, "status"),
         pluginGet<{ projects: ProjectSummary[] }>(bridge, "projects"),
-        pluginGet<SubAgentSetupStatus>(bridge, "subagents/status"),
       ]);
       setStatus(nextStatus);
-      setSubagents(subagentPayload);
       setProjects(projectPayload.projects);
+
+      try {
+        const subagentPayload = await pluginGetOptional<SubAgentSetupStatus>(
+          bridge,
+          "subagents/status",
+        );
+        setSubagents(subagentPayload);
+        if (!subagentPayload) {
+          setSubagentError(
+            describePluginRouteError("subagents/status", new Error("未找到该路由")),
+          );
+        }
+      } catch (subagentLoadError) {
+        setSubagents(null);
+        setSubagentError(
+          subagentLoadError instanceof Error
+            ? subagentLoadError.message
+            : String(subagentLoadError),
+        );
+      }
+
       setLoadState("ready");
     } catch (loadError) {
       setLoadState("error");
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(
+        isPluginRouteMissingError(loadError)
+          ? describePluginRouteError("status/projects", loadError)
+          : errorMessage(loadError),
+      );
     }
   }, [bridge]);
 
@@ -221,6 +375,15 @@ export default function AstrBotWorkspace({
       ["runtimeItems.githubArtifactRoot", "GitHub artifacts", status.runtime.github_artifact_root?.exists],
     ] as const;
   }, [status]);
+  const runtimeToolItems = useMemo(() => {
+    if (!status) return [];
+    return [
+      { key: "node", label: "Node.js", tool: status.runtime.tools.node },
+      { key: "pnpm", label: "pnpm", tool: status.runtime.tools.pnpm },
+      { key: "git", label: "Git", tool: status.runtime.tools.git },
+    ];
+  }, [status]);
+  const githubProxyPresets = status?.github?.proxy_presets ?? [];
 
   const subagentsReady = Boolean(subagents?.ready);
   const showSubagentGuide = Boolean(
@@ -282,14 +445,10 @@ export default function AstrBotWorkspace({
       const payload = await pluginGet<SubAgentProviderOptions>(bridge, "subagents/providers");
       applyProviderOptions(payload);
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : String(loadError);
       setProviderError(
-        /未找到该路由|route not found|not found/i.test(message)
-          ? t(
-              "subagents.providerRouteUnavailable",
-              "Provider selector API is unavailable. Reload this plugin in AstrBot, then reopen the dashboard.",
-            )
-          : message,
+        isPluginRouteMissingError(loadError)
+          ? describePluginRouteError("subagents/providers", loadError)
+          : errorMessage(loadError),
       );
       setProviders([]);
       setSelectedProviderId("");
@@ -325,6 +484,29 @@ export default function AstrBotWorkspace({
     }
   };
 
+  const repairRuntime = async () => {
+    setRepairingRuntime(true);
+    setError(null);
+    setRuntimeRepairMessage(null);
+    try {
+      const result = await pluginPost<{ actions?: string[]; ready?: boolean }>(
+        bridge,
+        "runtime/repair",
+      );
+      const actions = result.actions ?? [];
+      setRuntimeRepairMessage(
+        actions.length > 0
+          ? t("workspace.runtimeRepairSucceeded", "Runtime repair completed.")
+          : t("workspace.runtimeAlreadyReady", "Runtime dependencies are already ready."),
+      );
+      await loadWorkspace();
+    } catch (repairError) {
+      setError(errorMessage(repairError));
+    } finally {
+      setRepairingRuntime(false);
+    }
+  };
+
   const startAnalysis = async (event: React.FormEvent) => {
     event.preventDefault();
     const trimmedTarget = projectTarget.trim();
@@ -332,12 +514,35 @@ export default function AstrBotWorkspace({
       setError(t("workspace.projectTargetRequired", "Project target is required."));
       return;
     }
+    if (subagentError) {
+      setError(subagentError);
+      return;
+    }
     if (!subagentsReady) {
       setError(t("workspace.subagentsRequired", "Register UA SubAgents before starting analysis."));
       return;
     }
-    if (looksLikeGitHubTarget(trimmedTarget) && status?.config.git_available === false) {
-      setError(t("workspace.gitUnavailable", "Git is unavailable on this AstrBot host."));
+    if (!computerUseReady) {
+      setError(
+        t(
+          "workspace.computerUseRequired",
+          "Enable Computer Use runtime before starting analysis.",
+        ),
+      );
+      return;
+    }
+    if (!localRuntimeReady) {
+      const reason =
+        runtimeReadiness?.blocking_reasons?.join(" ") ||
+        t("workspace.runtimeUnavailable", "Understand Anything runtime is not ready.");
+      setError(reason);
+      return;
+    }
+    if (looksLikeGitHubTarget(trimmedTarget) && !runtimeReadiness?.github_analysis_ready) {
+      setError(
+        runtimeReadiness?.github_blocking_reason ||
+          t("workspace.gitUnavailable", "Git is unavailable on this AstrBot host."),
+      );
       return;
     }
     setStarting(true);
@@ -350,6 +555,7 @@ export default function AstrBotWorkspace({
           target: trimmedTarget,
           fullAnalysis,
           autoUpdate,
+          githubProxy,
         }),
       );
       setCurrentJob(job);
@@ -360,36 +566,60 @@ export default function AstrBotWorkspace({
     }
   };
   const analysisTargetReady = Boolean(projectTarget.trim());
+  const analyzingGithubTarget = looksLikeGitHubTarget(projectTarget);
   const gitReady =
-    !looksLikeGitHubTarget(projectTarget) || status?.config.git_available !== false;
+    !analyzingGithubTarget ||
+    runtimeReadiness?.github_analysis_ready !== false;
+  const computerUseRuntimeLabel = (() => {
+    if (!defaultComputerUse) return t("common.loading", "Loading");
+    return computerUseRuntimeName(defaultComputerUse.runtime, t);
+  })();
+  const setupReadyCount = [computerUseReady, localRuntimeReady, subagentsReady].filter(Boolean).length;
+  const setupTotal = 3;
+  const setupComplete = setupReadyCount === setupTotal;
+  const setupProgressLabel = t("workspace.setupProgress", "{ready}/{total} ready", {
+    ready: setupReadyCount,
+    total: setupTotal,
+  });
+  const dashboardConfigName = defaultComputerUse?.name || t("common.default", "Default");
+  const canStartAnalysis =
+    !starting &&
+    analysisTargetReady &&
+    !subagentError &&
+    subagentsReady &&
+    computerUseReady &&
+    localRuntimeReady &&
+    gitReady;
 
   return (
-    <div className="h-screen w-screen bg-root text-text-primary noise-overlay overflow-auto">
-      <div className="mx-auto max-w-[1120px] px-4 py-5 sm:px-6 sm:py-7">
-        <header className="mb-6 flex flex-col gap-3 border-b border-border-subtle pb-5 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="font-heading text-2xl text-text-primary">
-              Understand Anything
-            </h1>
-            <p className="mt-1 text-sm text-text-secondary">
-              {t("workspace.subtitle", "Plugin workspace")}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void loadWorkspace()}
-              className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary"
-            >
-              {t("common.refresh", "Refresh")}
-            </button>
-            <a
-              href="/#/extension/astrbot_plugin_UnderstandAnything"
-              target="_top"
-              className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-all hover:brightness-110"
-            >
-              {t("common.pluginSettings", "Plugin Settings")}
-            </a>
+    <div className="min-h-screen w-screen bg-root text-text-primary noise-overlay overflow-auto">
+      <div className="mx-auto max-w-[1280px] px-4 py-5 sm:px-6 sm:py-7">
+        <header className="mb-5 border-b border-border-subtle pb-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0">
+              <h1 className="font-heading text-2xl text-text-primary">
+                Understand Anything
+              </h1>
+              <p className="mt-1 max-w-2xl text-sm text-text-secondary">
+                {t("workspace.subtitle", "Plugin workspace")}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill
+                ready={setupComplete}
+                label={setupComplete ? t("common.ready", "Ready") : setupProgressLabel}
+              />
+              <span className="rounded-full border border-border-subtle bg-elevated px-2.5 py-1 text-xs font-semibold text-text-secondary">
+                {t("workspace.registeredProjects", "{count} registered", { count: projects.length })}
+              </span>
+              <button
+                type="button"
+                onClick={() => void loadWorkspace()}
+                className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                {t("common.refresh", "Refresh")}
+              </button>
+            </div>
           </div>
         </header>
 
@@ -399,343 +629,487 @@ export default function AstrBotWorkspace({
           </div>
         )}
 
-        {showSubagentGuide && subagents && (
-          <section className="mb-6 rounded-lg border border-accent/40 bg-surface p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.03)]">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="font-heading text-lg text-text-primary">
-                    {t("subagents.title", "UA SubAgents")}
-                  </h2>
-                  <span
-                    className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                      subagents.ready
-                        ? "bg-green-400/10 text-green-400"
-                        : "bg-amber-400/10 text-amber-400"
-                    }`}
-                  >
-                    {subagents.ready
-                      ? t("common.ready", "Ready")
-                      : t("subagents.registrationRequired", "Registration required")}
-                  </span>
-                </div>
-                <p className="mt-2 max-w-3xl text-sm text-text-secondary">
-                  {t(
-                    "subagents.description",
-                    "Understand Anything uses persistent AstrBot SubAgents for worker batches. Register the UA roles once, then analysis jobs can dispatch real parallel agents.",
-                  )}
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {blockedRoles.length === 0 ? (
-                    <span className="rounded-md bg-green-400/10 px-2.5 py-1 text-xs font-semibold text-green-400">
-                      {t("subagents.allRegistered", "All roles registered")}
-                    </span>
-                  ) : (
-                    blockedRoles.map((role) => (
-                      <span
-                        key={role}
-                        className="rounded-md bg-root px-2.5 py-1 font-mono text-xs text-amber-300"
-                      >
-                        {role}
-                      </span>
-                    ))
-                  )}
-                </div>
-                {status && (
-                  <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-muted">
-                    <span>
-                      {t("subagents.fileAgents", "File agents")} {status.config.max_parallel_file_agents} / {t("subagents.articleAgents", "Article agents")} {status.config.max_parallel_article_agents}
-                    </span>
-                    {subagents.persona_folder_name && (
-                      <span>
-                        {t("subagents.personaFolder", "Persona folder")} {subagents.persona_folder_name}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void openSubagentProviderDialog()}
-                  disabled={registeringSubagents}
-                  className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {registeringSubagents
-                    ? t("subagents.registeringButton", "Registering UA SubAgents")
-                    : t("subagents.registerButton", "Register UA SubAgents")}
-                </button>
-                <button
-                  type="button"
-                  onClick={dismissSubagentGuide}
-                  className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary"
-                >
-                  {t("common.dismiss", "Dismiss")}
-                </button>
-              </div>
-            </div>
-          </section>
+        {loadState === "loading" && (
+          <Panel className="p-5">
+            <div className="text-sm text-text-secondary">{t("common.loading", "Loading")}</div>
+          </Panel>
         )}
 
-        <section className="mb-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="rounded-lg border border-border-subtle bg-surface p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="font-heading text-lg text-text-primary">
-                  {t("workspace.initialConfiguration", "Initial Configuration")}
-                </h2>
-                <p className="mt-1 text-sm text-text-secondary">
-                  {t("workspace.configManaged", "Configuration is managed from AstrBot plugin settings.")}
-                </p>
-              </div>
-              <span
-                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                  loadState === "ready"
-                    ? "bg-green-400/10 text-green-400"
-                    : "bg-amber-400/10 text-amber-400"
-                }`}
-              >
-                {loadState === "loading"
-                  ? t("common.loading", "Loading")
-                  : loadState === "ready"
-                    ? t("common.ready", "Ready")
-                    : t("common.error", "Error")}
-              </span>
-            </div>
+        {status && (
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+            <main className="space-y-5">
+              <Panel className="p-4 sm:p-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h2 className="font-heading text-xl text-text-primary">
+                      {t("workspace.analyzeProject", "Analyze Project")}
+                    </h2>
+                    <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-secondary">
+                      {t(
+                        "workspace.analyzeProjectDescription",
+                        "Start with a local project directory or GitHub repository URL. Finished jobs open directly into the graph view.",
+                      )}
+                    </p>
+                  </div>
+                  <StatusPill
+                    ready={canStartAnalysis}
+                    label={canStartAnalysis ? t("common.ready", "Ready") : t("workspace.setupRequired", "Setup required")}
+                  />
+                </div>
 
-            {status && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-md bg-elevated p-3">
-                  <div className="text-[11px] uppercase tracking-wider text-text-muted">
-                    {t("workspace.llmProvider", "LLM Provider")}
-                  </div>
-                  <div className="mt-1 text-sm text-text-primary">
-                    {status.config.provider_configured
-                      ? t("common.configured", "Configured")
-                      : t("common.currentSessionProvider", "Current session provider")}
-                  </div>
-                </div>
-                <div className="rounded-md bg-elevated p-3">
-                  <div className="text-[11px] uppercase tracking-wider text-text-muted">
-                    {t("workspace.nodeRuntime", "Node Runtime")}
-                  </div>
-                  <div className="mt-1 text-sm text-text-primary">
-                    {status.config.node_bin} / {status.config.pnpm_bin}
-                  </div>
-                </div>
-                <div className="rounded-md bg-elevated p-3 sm:col-span-2">
-                  <div className="text-[11px] uppercase tracking-wider text-text-muted">
-                    {t("workspace.gitRuntime", "Git Runtime")}
-                  </div>
-                  <div className="mt-1 text-sm text-text-primary">
-                    {status.config.git_bin} · {status.config.git_available
-                      ? t("common.ready", "Ready")
-                      : t("common.missing", "Missing")}
-                  </div>
-                  {status.config.github_cache_root && (
-                    <div
-                      className="mt-1 truncate font-mono text-xs text-text-muted"
-                      title={status.config.github_cache_root}
-                    >
-                      {status.config.github_cache_root}
-                    </div>
-                  )}
-                  {status.config.github_artifact_root && (
-                    <div
-                      className="mt-1 truncate font-mono text-xs text-text-muted"
-                      title={status.config.github_artifact_root}
-                    >
-                      {status.config.github_artifact_root}
-                    </div>
-                  )}
-                </div>
-                <div className="rounded-md bg-elevated p-3 sm:col-span-2">
-                  <div className="text-[11px] uppercase tracking-wider text-text-muted">
-                    {t("workspace.allowedRoots", "Allowed Roots")}
-                  </div>
-                  <div className="mt-2 space-y-1">
-                    {status.config.allowed_roots.map((root) => (
-                      <div
-                        key={root}
-                        className="truncate font-mono text-xs text-text-secondary"
-                        title={root}
-                      >
-                        {root}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+                <form onSubmit={startAnalysis} className="mt-5 space-y-4">
+                  <label className="block">
+                    <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
+                      {t("workspace.projectTarget", "Project Target")}
+                    </span>
+                    <input
+                      type="text"
+                      value={projectTarget}
+                      onChange={(event) => setProjectTarget(event.target.value)}
+                      placeholder={t(
+                        "workspace.projectTargetPlaceholder",
+                        "https://github.com/owner/repo/tree/main/packages/app or D:\\path\\to\\project",
+                      )}
+                      className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    />
+                  </label>
 
-          <div className="rounded-lg border border-border-subtle bg-surface p-4">
-            <h2 className="font-heading text-lg text-text-primary">{t("common.runtime", "Runtime")}</h2>
-            <div className="mt-4 space-y-2">
-              {runtimeItems.map(([key, fallback, exists]) => (
-                <div
-                  key={key}
-                  className="flex items-center justify-between gap-3 rounded-md bg-elevated px-3 py-2"
-                >
-                  <span className="text-sm text-text-secondary">{t(key, fallback)}</span>
-                  <span
-                    className={`text-xs font-semibold ${
-                      exists ? "text-green-400" : "text-amber-400"
-                    }`}
-                  >
-                    {Boolean(exists) ? t("common.ready", "Ready") : t("common.missing", "Missing")}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="rounded-lg border border-border-subtle bg-surface p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="font-heading text-lg text-text-primary">{t("common.projects", "Projects")}</h2>
-              <span className="text-xs uppercase tracking-wider text-text-muted">
-                {t("workspace.registeredProjects", "{count} registered", { count: projects.length })}
-              </span>
-            </div>
-
-            {projects.length === 0 ? (
-              <div className="rounded-md border border-border-subtle bg-elevated p-4 text-sm text-text-secondary">
-                {t("workspace.noProjects", "No registered projects yet.")}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {projects.map((project) => (
-                  <button
-                    type="button"
-                    key={project.project_id}
-                    onClick={() => onOpenProject(projectParamsFromProject(project))}
-                    className="w-full rounded-md border border-border-subtle bg-elevated p-3 text-left transition-colors hover:border-border-medium hover:bg-accent/10"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-text-primary">
-                          {project.name}
-                        </div>
-                        {githubAlias(project) && (
-                          <div className="mt-1 truncate text-xs font-semibold text-accent">
-                            {githubAlias(project)}
-                          </div>
-                        )}
-                        <div className="mt-1 truncate font-mono text-xs text-text-muted">
-                          {project.path}
-                        </div>
-                        {project.graph_root && project.graph_root !== project.path && (
-                          <div
-                            className="mt-1 truncate font-mono text-xs text-text-muted"
-                            title={project.graph_root}
-                          >
-                            {project.graph_root}
-                          </div>
-                        )}
-                      </div>
-                      <span className="shrink-0 rounded-full bg-accent/10 px-2 py-1 text-[11px] font-semibold text-accent">
-                        {t("common.open", "Open")}
+                  {analyzingGithubTarget && (
+                    <label className="block">
+                      <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
+                        {t("workspace.githubProxy", "Git clone proxy")}
                       </span>
-                    </div>
-                    <div className="mt-2 text-xs text-text-muted">
-                      {formatDate(project.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-lg border border-border-subtle bg-surface p-4">
-            <h2 className="font-heading text-lg text-text-primary">{t("workspace.analyzeProject", "Analyze Project")}</h2>
-            <form onSubmit={startAnalysis} className="mt-4 space-y-4">
-              <label className="block">
-                <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
-                  {t("workspace.projectTarget", "Project Target")}
-                </span>
-                <input
-                  type="text"
-                  value={projectTarget}
-                  onChange={(event) => setProjectTarget(event.target.value)}
-                  placeholder={t(
-                    "workspace.projectTargetPlaceholder",
-                    "https://github.com/owner/repo/tree/main/packages/app or D:\\path\\to\\project",
+                      <select
+                        value={githubProxy}
+                        onChange={(event) => setGithubProxy(event.target.value)}
+                        className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2.5 text-sm text-text-primary focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      >
+                        <option value="">
+                          {t("workspace.githubProxyDirect", "Direct GitHub")}
+                        </option>
+                        {githubProxyPresets.map((proxy) => (
+                          <option key={proxy} value={proxy}>
+                            {proxy}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-xs leading-relaxed text-text-muted">
+                        {t(
+                          "workspace.githubProxyDescription",
+                          "Uses AstrBot's bundled GitHub proxy presets for git clone and fetch.",
+                        )}
+                      </p>
+                    </label>
                   )}
-                  className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none"
-                />
-              </label>
 
-              <div className="flex flex-wrap gap-3">
-                <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={fullAnalysis}
-                    onChange={(event) => setFullAnalysis(event.target.checked)}
-                    className="h-4 w-4 accent-[var(--color-accent)]"
-                  />
-                  {t("workspace.fullAnalysis", "Full analysis")}
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={autoUpdate}
-                    onChange={(event) => setAutoUpdate(event.target.checked)}
-                    className="h-4 w-4 accent-[var(--color-accent)]"
-                  />
-                  {t("workspace.autoUpdate", "Auto update")}
-                </label>
-              </div>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-wrap gap-3">
+                      <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
+                        <input
+                          type="checkbox"
+                          checked={fullAnalysis}
+                          onChange={(event) => setFullAnalysis(event.target.checked)}
+                          className="h-4 w-4 accent-[var(--color-accent)]"
+                        />
+                        {t("workspace.fullAnalysis", "Full analysis")}
+                      </label>
+                      <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
+                        <input
+                          type="checkbox"
+                          checked={autoUpdate}
+                          onChange={(event) => setAutoUpdate(event.target.checked)}
+                          className="h-4 w-4 accent-[var(--color-accent)]"
+                        />
+                        {t("workspace.autoUpdate", "Auto update")}
+                      </label>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={!canStartAnalysis}
+                      className="rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    >
+                      {starting
+                        ? t("workspace.starting", "Starting")
+                        : t("workspace.startAnalysis", "Start Analysis")}
+                    </button>
+                  </div>
+                </form>
 
-              <button
-                type="submit"
-                disabled={starting || !analysisTargetReady || !subagentsReady || !gitReady}
-                className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-root transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {starting
-                  ? t("workspace.starting", "Starting")
-                  : t("workspace.startAnalysis", "Start Analysis")}
-              </button>
-              {!subagentsReady && (
-                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                  {t("workspace.subagentsBlocked", "Register UA SubAgents from this panel before starting analysis jobs.")}
+                <div className="mt-4 grid gap-2 md:grid-cols-2">
+                  {!subagentsReady && (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                      {subagentError ||
+                        t("workspace.subagentsBlocked", "Register UA SubAgents from this panel before starting analysis jobs.")}
+                    </div>
+                  )}
+                  {!computerUseReady && (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                      <div>
+                        {t(
+                          "workspace.computerUseBlocked",
+                          "Enable Computer Use runtime before starting analysis jobs.",
+                        )}
+                      </div>
+                      <div className="mt-1 text-xs text-amber-100/80">
+                        {t("workspace.computerUseSetupPath", "Config -> General -> Computer Use -> Runtime")} ·{" "}
+                        {t("workspace.computerUseSetupValue", "local or sandbox")}
+                      </div>
+                    </div>
+                  )}
+                  {!localRuntimeReady && (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                      <div>
+                        {t(
+                          "workspace.runtimeBlocked",
+                          "Understand Anything runtime must be ready before starting analysis jobs.",
+                        )}
+                      </div>
+                      {runtimeReadiness?.blocking_reasons?.length ? (
+                        <div className="mt-1 text-xs text-amber-100/80">
+                          {runtimeReadiness.blocking_reasons.join(" ")}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                  {!gitReady && (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                      {t("workspace.gitUnavailable", "Git is unavailable on this AstrBot host.")}
+                    </div>
+                  )}
                 </div>
-              )}
-              {!gitReady && (
-                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                  {t("workspace.gitUnavailable", "Git is unavailable on this AstrBot host.")}
-                </div>
-              )}
-            </form>
+              </Panel>
 
-            {currentJob && (
-              <div className="mt-4 rounded-md border border-border-subtle bg-elevated p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-text-primary">
+              {currentJob && (
+                <Panel className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h2 className="font-heading text-lg text-text-primary">
+                        {t("workspace.currentJob", "Current job")}
+                      </h2>
+                      <div className="mt-1 truncate font-mono text-xs text-text-muted">
+                        {currentJob.project_root}
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-root px-2 py-1 text-xs font-semibold text-accent">
+                      {currentJob.status}
+                    </span>
+                  </div>
+                  <div className="mt-3 text-sm font-semibold text-text-primary">
                     {currentJob.kind}
                   </div>
-                  <span className="rounded-full bg-root px-2 py-1 text-xs font-semibold text-accent">
-                    {currentJob.status}
+                  {currentJob.error && (
+                    <div className="mt-2 text-sm text-red-200">{currentJob.error}</div>
+                  )}
+                  {currentJob.logs.length > 0 && (
+                    <div className="mt-3 max-h-[220px] overflow-auto rounded-md bg-root p-2 font-mono text-xs text-text-secondary">
+                      {currentJob.logs.map((line, index) => (
+                        <div key={`${line}-${index}`}>{line}</div>
+                      ))}
+                    </div>
+                  )}
+                </Panel>
+              )}
+
+              <Panel className="p-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-heading text-lg text-text-primary">{t("common.projects", "Projects")}</h2>
+                    <p className="mt-1 text-sm text-text-secondary">
+                      {t("workspace.projectsDescription", "Open a registered graph or start a new analysis above.")}
+                    </p>
+                  </div>
+                  <span className="text-xs uppercase tracking-wider text-text-muted">
+                    {t("workspace.registeredProjects", "{count} registered", { count: projects.length })}
                   </span>
                 </div>
-                <div className="mt-2 truncate font-mono text-xs text-text-muted">
-                  {currentJob.project_root}
-                </div>
-                {currentJob.error && (
-                  <div className="mt-2 text-sm text-red-200">{currentJob.error}</div>
-                )}
-                {currentJob.logs.length > 0 && (
-                  <div className="mt-3 max-h-[200px] overflow-auto rounded bg-root p-2 font-mono text-xs text-text-secondary">
-                    {currentJob.logs.map((line, index) => (
-                      <div key={`${line}-${index}`}>{line}</div>
+
+                {projects.length === 0 ? (
+                  <div className="rounded-md border border-border-subtle bg-elevated p-4 text-sm text-text-secondary">
+                    {t("workspace.noProjects", "No registered projects yet.")}
+                  </div>
+                ) : (
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {projects.map((project) => (
+                      <button
+                        type="button"
+                        key={project.project_id}
+                        onClick={() => onOpenProject(projectParamsFromProject(project))}
+                        className="w-full rounded-md border border-border-subtle bg-elevated p-3 text-left transition-colors hover:border-border-medium hover:bg-accent/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-text-primary">
+                              {project.name}
+                            </div>
+                            {githubAlias(project) && (
+                              <div className="mt-1 truncate text-xs font-semibold text-accent">
+                                {githubAlias(project)}
+                              </div>
+                            )}
+                            <div className="mt-1 truncate font-mono text-xs text-text-muted">
+                              {project.path}
+                            </div>
+                          </div>
+                          <span className="shrink-0 rounded-full bg-accent/10 px-2 py-1 text-[11px] font-semibold text-accent">
+                            {t("common.open", "Open")}
+                          </span>
+                        </div>
+                        <div className="mt-2 text-xs text-text-muted">
+                          {formatDate(project.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
+                        </div>
+                      </button>
                     ))}
                   </div>
                 )}
-              </div>
-            )}
+              </Panel>
+            </main>
+
+            <aside className="space-y-4 xl:sticky xl:top-5 xl:self-start">
+              <Panel className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-heading text-lg text-text-primary">
+                      {t("workspace.initialConfiguration", "Initial Configuration")}
+                    </h2>
+                    <p className="mt-1 text-sm text-text-secondary">
+                      {t("workspace.setupProgress", "{ready}/{total} ready", {
+                        ready: setupReadyCount,
+                        total: setupTotal,
+                      })}
+                    </p>
+                  </div>
+                  <StatusPill
+                    ready={setupComplete}
+                    label={setupComplete ? t("common.ready", "Ready") : t("workspace.setupRequired", "Setup required")}
+                  />
+                </div>
+
+                <div className="mt-3">
+                  <SetupRow
+                    label={t("workspace.computerUseRuntime", "Computer Use runtime")}
+                    ready={computerUseReady}
+                    statusLabel={computerUseReady ? t("common.ready", "Ready") : t("common.missing", "Missing")}
+                    detail={
+                      <>
+                        <span>{computerUseRuntimeLabel}</span>
+                        <span className="mx-1 text-text-muted">·</span>
+                        <span>
+                          {t("workspace.computerUseDashboardUses", "Dashboard uses")} {dashboardConfigName}
+                        </span>
+                        {!computerUseReady && (
+                          <span className="mt-1 block text-amber-200">
+                            {t("workspace.computerUseSetupPath", "Config -> General -> Computer Use -> Runtime")} ·{" "}
+                            {t("workspace.computerUseSetupValue", "local or sandbox")}
+                          </span>
+                        )}
+                      </>
+                    }
+                  />
+                  <SetupRow
+                    label={t("subagents.title", "UA SubAgents")}
+                    ready={subagentsReady}
+                    statusLabel={subagentsReady ? t("common.ready", "Ready") : t("subagents.registrationRequired", "Registration required")}
+                    detail={
+                      subagentError ||
+                      (blockedRoles.length > 0
+                        ? blockedRoles.join(", ")
+                        : t("subagents.allRegistered", "All roles registered"))
+                    }
+                    action={
+                      showSubagentGuide || !subagentsReady ? (
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void openSubagentProviderDialog()}
+                            disabled={registeringSubagents}
+                            className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                          >
+                            {registeringSubagents
+                              ? t("subagents.registeringButton", "Registering UA SubAgents")
+                              : t("subagents.registerButton", "Register UA SubAgents")}
+                          </button>
+                          {subagentsReady && (
+                            <button
+                              type="button"
+                              onClick={dismissSubagentGuide}
+                              className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                            >
+                              {t("common.dismiss", "Dismiss")}
+                            </button>
+                          )}
+                        </div>
+                      ) : undefined
+                    }
+                  />
+                  <SetupRow
+                    label={t("workspace.runtimeEnvironment", "Runtime Environment")}
+                    ready={localRuntimeReady}
+                    statusLabel={localRuntimeReady ? t("common.ready", "Ready") : t("common.missing", "Missing")}
+                    detail={
+                      runtimeReadiness?.blocking_reasons?.length
+                        ? runtimeReadiness.blocking_reasons.join(" ")
+                        : t("common.ready", "Ready")
+                    }
+                    action={
+                      runtimeReadiness?.repair_needed ? (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                          <div className="text-sm font-semibold text-amber-100">
+                            {t("workspace.runtimeRepairNeeded", "Bundled runtime dependencies need repair.")}
+                          </div>
+                          {runtimeReadiness.repair_blocking_reasons.length > 0 && (
+                            <div className="mt-1 text-sm leading-relaxed text-amber-100/80">
+                              {runtimeReadiness.repair_blocking_reasons.join(" ")}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void repairRuntime()}
+                            disabled={!runtimeReadiness.repair_available || repairingRuntime}
+                            className="mt-3 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                          >
+                            {repairingRuntime
+                              ? t("workspace.repairingRuntime", "Repairing runtime")
+                              : t("workspace.repairRuntime", "Repair plugin runtime")}
+                          </button>
+                        </div>
+                      ) : undefined
+                    }
+                  />
+                </div>
+
+                {runtimeRepairMessage && (
+                  <div className="mt-3 rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-200">
+                    {runtimeRepairMessage}
+                  </div>
+                )}
+              </Panel>
+
+              {disabledSessionComputerUse.length > 0 && (
+                <Panel className="p-4">
+                  <h2 className="font-heading text-base text-amber-100">
+                    {t("workspace.computerUsePartialTitle", "Some conversation configs are unavailable")}
+                  </h2>
+                  <p className="mt-1 text-sm leading-relaxed text-amber-100/80">
+                    {t(
+                      "workspace.computerUsePartialDescription",
+                      "Dashboard analysis can start, but chat commands will fail in conversations bound to configs where Computer Use runtime is disabled.",
+                    )}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {disabledSessionComputerUse.map((config) => (
+                      <span
+                        key={config.id}
+                        className="rounded-md bg-root/70 px-2.5 py-1 text-xs text-amber-100"
+                      >
+                        {config.name}
+                      </span>
+                    ))}
+                  </div>
+                </Panel>
+              )}
+
+              <Panel className="p-4">
+                <details className="group">
+                  <summary className="cursor-pointer list-none text-sm font-semibold text-text-primary transition-colors hover:text-accent">
+                    {t("workspace.environmentDetails", "Environment details")}
+                  </summary>
+                  <div className="mt-4 space-y-4">
+                    <div>
+                      <div className="mb-2 text-[11px] uppercase tracking-wider text-text-muted">
+                        {t("workspace.runtimeToolCheck", "Runtime tool check")}
+                      </div>
+                      <div className="space-y-2">
+                        {runtimeToolItems.map(({ key, label, tool }) => {
+                          const ready = tool.supported;
+                          const detail = runtimeToolDetail(tool, label, t);
+                          return (
+                            <div key={key} className="rounded-md bg-elevated px-3 py-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-sm font-semibold text-text-primary">
+                                  {label}
+                                </span>
+                                <span
+                                  className={`text-xs font-semibold ${
+                                    ready ? "text-green-400" : "text-amber-300"
+                                  }`}
+                                >
+                                  {ready ? t("common.ready", "Ready") : t("common.missing", "Missing")}
+                                </span>
+                              </div>
+                              <div
+                                className="mt-1 truncate font-mono text-xs text-text-muted"
+                                title={detail}
+                              >
+                                {detail}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-[11px] uppercase tracking-wider text-text-muted">
+                        {t("workspace.computerUseRuntime", "Computer Use runtime")}
+                      </div>
+                      <div className="space-y-2">
+                        {computerUseConfigs.map((config) => (
+                          <div key={config.id} className="rounded-md bg-elevated px-3 py-2">
+                            <div className="flex min-w-0 items-center justify-between gap-2">
+                              <div className="min-w-0 truncate text-sm text-text-primary">
+                                {config.name}
+                                {config.is_default && (
+                                  <span className="ml-2 rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent">
+                                    {t("workspace.computerUseDefaultBadge", "Default")}
+                                  </span>
+                                )}
+                              </div>
+                              <span
+                                className={`shrink-0 text-xs font-semibold ${
+                                  config.enabled ? "text-green-400" : "text-amber-300"
+                                }`}
+                              >
+                                {computerUseRuntimeName(config.runtime, t)}
+                              </span>
+                            </div>
+                            {!config.enabled && config.blocking_reason && (
+                              <div className="mt-1 text-xs text-amber-200">
+                                {config.blocking_reason}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-[11px] uppercase tracking-wider text-text-muted">
+                        {t("common.runtime", "Runtime")}
+                      </div>
+                      <div className="space-y-2">
+                        {runtimeItems.map(([key, fallback, exists]) => (
+                          <div
+                            key={key}
+                            className="flex items-center justify-between gap-3 rounded-md bg-elevated px-3 py-2"
+                          >
+                            <span className="text-sm text-text-secondary">{t(key, fallback)}</span>
+                            <span
+                              className={`text-xs font-semibold ${
+                                exists ? "text-green-400" : "text-amber-400"
+                              }`}
+                            >
+                              {Boolean(exists) ? t("common.ready", "Ready") : t("common.missing", "Missing")}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </details>
+              </Panel>
+            </aside>
           </div>
-        </section>
+        )}
       </div>
 
       {providerDialogOpen && (
@@ -756,7 +1130,7 @@ export default function AstrBotWorkspace({
               <button
                 type="button"
                 onClick={() => setProviderDialogOpen(false)}
-                className="rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:text-text-primary"
+                className="rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 {t("common.close", "Close")}
               </button>
@@ -767,8 +1141,8 @@ export default function AstrBotWorkspace({
                 type="search"
                 value={providerSearch}
                 onChange={(event) => setProviderSearch(event.target.value)}
-                placeholder={t("subagents.providerSearch", "Search providers")}
-                className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2 text-sm text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none"
+                placeholder={t("subagents.providerSearch", "Search providers...")}
+                className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2 text-sm text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               />
 
               {providersLoading && (
@@ -788,7 +1162,7 @@ export default function AstrBotWorkspace({
                   <button
                     type="button"
                     onClick={() => setSelectedProviderId("")}
-                    className={`w-full rounded-md border p-3 text-left transition-colors ${
+                    className={`w-full rounded-md border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                       selectedProviderId === ""
                         ? "border-accent bg-accent/10"
                         : "border-border-subtle bg-elevated hover:border-border-medium"
@@ -826,7 +1200,7 @@ export default function AstrBotWorkspace({
                           if (!disabled) setSelectedProviderId(provider.id);
                         }}
                         disabled={disabled}
-                        className={`w-full rounded-md border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                        className={`w-full rounded-md border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                           selected
                             ? "border-accent bg-accent/10"
                             : "border-border-subtle bg-elevated hover:border-border-medium"
@@ -876,7 +1250,7 @@ export default function AstrBotWorkspace({
               <button
                 type="button"
                 onClick={() => setProviderDialogOpen(false)}
-                className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary"
+                className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-sm text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 {t("common.cancel", "Cancel")}
               </button>
@@ -884,7 +1258,7 @@ export default function AstrBotWorkspace({
                 type="button"
                 onClick={() => void registerSubagents()}
                 disabled={providersLoading || registeringSubagents || providers.length === 0}
-                className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 {registeringSubagents
                   ? t("subagents.registeringButton", "Registering UA SubAgents")

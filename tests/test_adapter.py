@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import asyncio
@@ -13,25 +15,32 @@ from quart import Quart
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
-from astrbot_adapter.job_request import format_job_args, parse_job_args
 from astrbot_adapter.github_repo import (
     GitCommandResult,
     GitHubRepoError,
     GitHubRepoManager,
 )
-from astrbot_adapter.job_store import JobStore, JobStatus
-from astrbot_adapter.path_security import PathSecurityError, PathSecurity
+from astrbot_adapter.job_request import format_job_args, parse_job_args
+from astrbot_adapter.job_store import JobStatus, JobStore
+from astrbot_adapter.path_security import PathSecurity, PathSecurityError
 from astrbot_adapter.project_registry import ProjectRegistry, ProjectRegistryError
 from astrbot_adapter.project_store import ProjectStore
+from astrbot_adapter.runner import UnderstandAnythingRunner
+from astrbot_adapter.runtime import UnderstandAnythingRuntime
+from astrbot_adapter.runtime_tools import (
+    RuntimeToolset,
+    RuntimeToolStatus,
+    detect_runtime_tools,
+    runtime_readiness,
+)
 from astrbot_adapter.subagent_dispatcher import UnderstandAnythingSubAgentDispatcher
 from astrbot_adapter.subagent_registry import (
     ROLE_NAMES,
     UA_AGENT_TOOLS,
-    UA_ROLE_SKILLS,
     UA_PERSONA_FOLDER_NAME,
+    UA_ROLE_SKILLS,
     UnderstandAnythingSubAgentRegistry,
 )
-from astrbot_adapter.runner import UnderstandAnythingRunner
 from astrbot_adapter.web_api import UnderstandAnythingWebApi
 
 
@@ -90,6 +99,27 @@ def test_path_security_rejects_paths_outside_allowed_root(tmp_path: Path) -> Non
         security.resolve_project_path(str(other_root))
 
 
+def test_path_security_allows_any_existing_project_without_allowed_roots(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "external-project"
+    project.mkdir()
+    security = PathSecurity()
+
+    assert security.resolve_project_path(str(project)) == project.resolve()
+
+
+def test_path_security_rejects_non_directory_project_without_allowed_roots(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "not-a-project.txt"
+    file_path.write_text("not a directory", encoding="utf-8")
+    security = PathSecurity()
+
+    with pytest.raises(PathSecurityError, match="Project path is not a directory"):
+        security.resolve_project_path(str(file_path))
+
+
 def test_project_store_reads_graph_files_and_restricts_file_content(
     tmp_path: Path,
 ) -> None:
@@ -100,6 +130,8 @@ def test_project_store_reads_graph_files_and_restricts_file_content(
     graph_dir.mkdir()
     source_file = source_dir / "app.py"
     source_file.write_bytes(b"print('ok')\n")
+    ungraphed_file = project_root / "pyproject.toml"
+    ungraphed_file.write_bytes(b"[project]\nname = 'demo'\n")
     graph = {
         "version": "1.0.0",
         "project": {
@@ -135,9 +167,28 @@ def test_project_store_reads_graph_files_and_restricts_file_content(
     assert store.read_json("knowledge-graph.json")["project"]["name"] == "demo"
     source = store.read_source_file("src/app.py")
     assert source["content"] == "print('ok')\n"
+    assert store.read_source_file("pyproject.toml")["content"] == (
+        "[project]\nname = 'demo'\n"
+    )
 
-    with pytest.raises(PermissionError):
-        store.read_source_file("pyproject.toml")
+    with pytest.raises(PathSecurityError):
+        store.read_source_file("../outside.py")
+
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("print('outside')\n", encoding="utf-8")
+    with pytest.raises(PathSecurityError):
+        store.read_source_file(str(outside_file))
+
+    binary_file = project_root / "binary.dat"
+    binary_file.write_bytes(b"abc\0def")
+    with pytest.raises(ValueError, match="Binary files cannot be previewed"):
+        store.read_source_file("binary.dat")
+
+    oversized_file = project_root / "large.txt"
+    oversized_file.write_bytes(b"x" * 4)
+    small_limit_store = ProjectStore(project_root, max_source_file_bytes=3)
+    with pytest.raises(ValueError, match="File is too large"):
+        small_limit_store.read_source_file("large.txt")
 
 
 def test_project_store_reads_graph_from_separate_graph_root(
@@ -145,7 +196,15 @@ def test_project_store_reads_graph_from_separate_graph_root(
 ) -> None:
     source_root = tmp_path / "source-cache"
     source_dir = source_root / "src"
-    graph_root = tmp_path / "artifacts" / "github" / "owner" / "repo" / "target" / ".understand-anything"
+    graph_root = (
+        tmp_path
+        / "artifacts"
+        / "github"
+        / "owner"
+        / "repo"
+        / "target"
+        / ".understand-anything"
+    )
     source_dir.mkdir(parents=True)
     graph_root.mkdir(parents=True)
     (source_dir / "app.py").write_bytes(b"print('artifact')\n")
@@ -176,7 +235,9 @@ def test_project_store_reads_graph_from_separate_graph_root(
 
     store = ProjectStore(source_root, graph_root=graph_root)
 
-    assert store.read_json("knowledge-graph.json")["project"]["name"] == "artifact graph"
+    assert (
+        store.read_json("knowledge-graph.json")["project"]["name"] == "artifact graph"
+    )
     assert store.read_source_file("src/app.py")["content"] == "print('artifact')\n"
 
 
@@ -260,8 +321,13 @@ def test_project_registry_records_separate_source_and_graph_root(
     assert record.path == str(source_root.resolve())
     assert record.graph_root == str(graph_root.resolve())
     assert record.source["type"] == "github"
-    assert registry.resolve(security, project_id=record.project_id) == source_root.resolve()
-    assert registry.resolve_record(project_ref="owner/repo").graph_root == str(graph_root.resolve())
+    assert (
+        registry.resolve(security, project_id=record.project_id)
+        == source_root.resolve()
+    )
+    assert registry.resolve_record(project_ref="owner/repo").graph_root == str(
+        graph_root.resolve()
+    )
 
 
 def test_project_registry_requires_explicit_project_when_ambiguous(
@@ -312,10 +378,26 @@ def test_github_repo_url_parser_accepts_public_repo_forms(tmp_path: Path) -> Non
     assert checkout.ref is None
     assert checkout.subpath is None
     assert checkout.clone_url == "https://github.com/AstralSolipsism/demo.git"
-    assert checkout.worktree_path == tmp_path.resolve() / "cache" / "AstralSolipsism" / "demo"
-    assert checkout.artifact_root.parent == tmp_path.resolve() / "artifacts" / "AstralSolipsism" / "demo"
+    assert (
+        checkout.worktree_path
+        == tmp_path.resolve() / "cache" / "AstralSolipsism" / "demo"
+    )
+    assert (
+        checkout.artifact_root.parent
+        == tmp_path.resolve() / "artifacts" / "AstralSolipsism" / "demo"
+    )
     assert checkout.graph_root == checkout.artifact_root / ".understand-anything"
     assert checkout.source_key
+
+    proxied = manager.resolve(
+        "https://github.com/AstralSolipsism/demo",
+        github_proxy="https://gh.llkk.cc/",
+    )
+    assert proxied.github_proxy == "https://gh.llkk.cc"
+    assert (
+        proxied.clone_url
+        == "https://gh.llkk.cc/https://github.com/AstralSolipsism/demo.git"
+    )
 
     tree_checkout = manager.resolve(
         "https://github.com/AstralSolipsism/demo/tree/dev/packages/app",
@@ -365,6 +447,19 @@ def test_github_repo_url_parser_rejects_unsupported_urls(
         manager.resolve(repo_url)
 
 
+def test_github_repo_manager_rejects_unknown_proxy(tmp_path: Path) -> None:
+    manager = GitHubRepoManager(
+        cache_root=tmp_path / "cache",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    with pytest.raises(GitHubRepoError, match="Unsupported GitHub proxy"):
+        manager.resolve(
+            "https://github.com/AstralSolipsism/demo",
+            github_proxy="https://example.com",
+        )
+
+
 class _FakeGitHubRepoManager(GitHubRepoManager):
     def __init__(
         self,
@@ -385,12 +480,13 @@ class _FakeGitHubRepoManager(GitHubRepoManager):
         self.create_files = create_files or {}
         self.calls: list[list[str]] = []
 
-    async def _run_git(self, args: list[str], *, check: bool = True) -> GitCommandResult:
+    async def _run_git(
+        self, args: list[str], *, check: bool = True
+    ) -> GitCommandResult:
         self.calls.append(args)
         if args[0] == "ls-remote":
             stdout = "".join(
-                f"abc123\trefs/heads/{remote_ref}\n"
-                for remote_ref in self.remote_refs
+                f"abc123\trefs/heads/{remote_ref}\n" for remote_ref in self.remote_refs
             )
             return GitCommandResult(0, stdout, "")
         if args[0] == "clone":
@@ -412,7 +508,9 @@ class _FakeGitHubRepoManager(GitHubRepoManager):
 
 
 @pytest.mark.asyncio
-async def test_github_repo_manager_clones_then_updates_cached_repo(tmp_path: Path) -> None:
+async def test_github_repo_manager_clones_then_updates_cached_repo(
+    tmp_path: Path,
+) -> None:
     manager = _FakeGitHubRepoManager(tmp_path)
     checkout = manager.resolve("https://github.com/AstralSolipsism/demo")
 
@@ -526,7 +624,10 @@ async def test_github_cache_cleanup_keeps_artifacts_readable(tmp_path: Path) -> 
 
     assert not checkout.worktree_path.exists()
     store = runner.project_store(project_id=record.project_id)
-    assert store.read_json("knowledge-graph.json")["project"]["name"] == "artifact survives"
+    assert (
+        store.read_json("knowledge-graph.json")["project"]["name"]
+        == "artifact survives"
+    )
     assert store.read_json("meta.json")["gitCommitHash"] == "abc"
 
 
@@ -681,12 +782,20 @@ def test_runner_creates_github_job_without_allowed_roots_configuration(
 
     assert job.args["source"]["type"] == "github"  # type: ignore[index]
     assert job.args["source"]["display_name"] == "AstralSolipsism/demo"  # type: ignore[index]
-    assert job.project_root == tmp_path.resolve() / "github-cache" / "AstralSolipsism" / "demo--main-b28b7af6"
+    assert (
+        job.project_root
+        == tmp_path.resolve()
+        / "github-cache"
+        / "AstralSolipsism"
+        / "demo--main-b28b7af6"
+    )
     assert Path(str(job.args["graph_root"])).is_relative_to(
         tmp_path.resolve() / "github-artifacts",
     )
     assert job.args["source"]["cache_path"] == str(job.project_root)  # type: ignore[index]
-    assert job.args["source"]["artifact_root"] == str(Path(str(job.args["graph_root"])).parent)  # type: ignore[index]
+    assert job.args["source"]["artifact_root"] == str(
+        Path(str(job.args["graph_root"])).parent
+    )  # type: ignore[index]
 
 
 def test_runner_accepts_single_target_for_github_and_local_paths(
@@ -696,7 +805,7 @@ def test_runner_accepts_single_target_for_github_and_local_paths(
     local_project.mkdir()
     runner = UnderstandAnythingRunner(
         context=None,  # type: ignore[arg-type]
-        config={"allowed_roots": [str(tmp_path)]},
+        config={},
         registry_path=tmp_path / "projects.json",
     )
     runner.github = GitHubRepoManager(
@@ -778,14 +887,19 @@ async def test_web_api_start_job_maps_single_target_to_runner(tmp_path: Path) ->
             "action": "understand",
             "target": "https://github.com/AstralSolipsism/demo/tree/main/packages/app",
             "full": True,
+            "github_proxy": "https://gh.llkk.cc",
         },
     ):
         response = await api.start_job()
 
     assert (await response.get_json())["status"] == "ok"
-    assert runner.calls[-1]["repo_url"] == "https://github.com/AstralSolipsism/demo/tree/main/packages/app"
+    assert (
+        runner.calls[-1]["repo_url"]
+        == "https://github.com/AstralSolipsism/demo/tree/main/packages/app"
+    )
     assert runner.calls[-1]["project_path"] is None
     assert runner.calls[-1]["flags"] == ["--full"]
+    assert runner.calls[-1]["github_proxy"] == "https://gh.llkk.cc"
 
     async with app.test_request_context(
         "/astrbot_plugin_UnderstandAnything/jobs/start",
@@ -800,6 +914,53 @@ async def test_web_api_start_job_maps_single_target_to_runner(tmp_path: Path) ->
     assert (await response.get_json())["status"] == "ok"
     assert runner.calls[-1]["repo_url"] is None
     assert runner.calls[-1]["project_path"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_web_api_runtime_repair_delegates_to_plugin_runtime(
+    tmp_path: Path,
+) -> None:
+    class DummyRuntime:
+        def __init__(self) -> None:
+            self.called = False
+
+        def tools(self) -> RuntimeToolset:
+            return RuntimeToolset(
+                node=_runtime_tool("node"),
+                pnpm=_runtime_tool("pnpm"),
+                git=_runtime_tool("git"),
+            )
+
+        async def repair(self) -> dict[str, object]:
+            self.called = True
+            return {
+                "actions": ["pnpm install --frozen-lockfile"],
+                "ready": True,
+            }
+
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+        def __init__(self) -> None:
+            self.runtime = DummyRuntime()
+
+    runner = DummyRunner()
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/runtime/repair",
+        method="POST",
+        json={},
+    ):
+        response = await api.repair_runtime()
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["ready"] is True
+    assert runner.runtime.called is True
 
 
 def test_project_registry_default_resolution_is_not_last_project_global(
@@ -817,6 +978,124 @@ def test_project_registry_default_resolution_is_not_last_project_global(
         registry.resolve(PathSecurity([tmp_path]))
 
 
+def _runtime_tool(
+    name: str,
+    *,
+    available: bool = True,
+    supported: bool = True,
+    version: str = "v99.0.0",
+) -> RuntimeToolStatus:
+    return RuntimeToolStatus(
+        name=name,
+        command=name,
+        path=f"/usr/bin/{name}" if available else "",
+        available=available,
+        supported=supported,
+        version=version if available else "",
+        source="path",
+        blocking_reason="" if supported else f"{name} unavailable",
+    )
+
+
+def test_runtime_tool_detection_reports_missing_path_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.delenv("UA_NODE_BIN", raising=False)
+    monkeypatch.delenv("UA_PNPM_BIN", raising=False)
+    monkeypatch.delenv("UA_GIT_BIN", raising=False)
+
+    tools = detect_runtime_tools()
+    readiness = runtime_readiness(
+        tmp_path / "understand-anything",
+        tools,
+        auto_repair_enabled=True,
+    )
+
+    assert tools.node.available is False
+    assert tools.pnpm.available is False
+    assert tools.git.available is False
+    assert readiness["local_analysis_ready"] is False
+    assert readiness["github_analysis_ready"] is False
+    assert readiness["repair_available"] is False
+    assert readiness["blocking_reasons"]
+
+
+def test_runtime_readiness_allows_local_analysis_without_git(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "understand-anything"
+    (runtime_root / "node_modules").mkdir(parents=True)
+    (runtime_root / "packages" / "core" / "dist").mkdir(parents=True)
+    (runtime_root / "packages" / "core" / "dist" / "index.js").write_text(
+        "export {};",
+        encoding="utf-8",
+    )
+    (runtime_root / "dist").mkdir()
+    (runtime_root / "dist" / "index.js").write_text("export {};", encoding="utf-8")
+
+    readiness = runtime_readiness(
+        runtime_root,
+        RuntimeToolset(
+            node=_runtime_tool("node"),
+            pnpm=_runtime_tool("pnpm"),
+            git=_runtime_tool("git", available=False, supported=False),
+        ),
+        auto_repair_enabled=True,
+    )
+
+    assert readiness["local_analysis_ready"] is True
+    assert readiness["github_analysis_ready"] is False
+    assert "git" in readiness["github_blocking_reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_runtime_repair_runs_only_inside_bundled_runtime(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "plugin" / "understand-anything"
+    runtime_root.mkdir(parents=True)
+    runtime = UnderstandAnythingRuntime(auto_build=True)
+    runtime.root = runtime_root
+
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run(*command: str, capture: bool = False) -> str:
+        assert capture is False
+        calls.append(command)
+        assert runtime.root == runtime_root
+        if "install" in command:
+            (runtime_root / "node_modules").mkdir()
+        if "@understand-anything/core" in command:
+            core_dist = runtime_root / "packages" / "core" / "dist"
+            core_dist.mkdir(parents=True)
+            (core_dist / "index.js").write_text("export {};", encoding="utf-8")
+        elif "build" in command:
+            dist = runtime_root / "dist"
+            dist.mkdir()
+            (dist / "index.js").write_text("export {};", encoding="utf-8")
+        return ""
+
+    runtime.tools = lambda: RuntimeToolset(  # type: ignore[method-assign]
+        node=_runtime_tool("node"),
+        pnpm=_runtime_tool("pnpm"),
+        git=_runtime_tool("git"),
+    )
+    runtime._run = fake_run  # type: ignore[method-assign]
+
+    result = await runtime.repair()
+
+    assert result["ready"] is True
+    assert result["actions"] == [
+        "pnpm install --frozen-lockfile",
+        "pnpm --filter @understand-anything/core build",
+        "pnpm build",
+    ]
+    assert all(str(runtime_root) not in " ".join(command) for command in calls)
+    assert not (tmp_path / "node_modules").exists()
+
+
 def test_web_api_status_summarizes_config_without_provider_secret(
     tmp_path: Path,
 ) -> None:
@@ -824,9 +1103,6 @@ def test_web_api_status_summarizes_config_without_provider_secret(
         config = {
             "provider_id": "secret-provider-id",
             "subagent_provider_id": "secret-subagent-provider-id",
-            "node_bin": "node-custom",
-            "pnpm_bin": "pnpm-custom",
-            "git_bin": "git-custom",
             "auto_build": False,
             "auto_update_poll_interval": 30,
             "max_concurrent_jobs": 2,
@@ -836,22 +1112,31 @@ def test_web_api_status_summarizes_config_without_provider_secret(
             "cleanup_github_cache_after_analysis": True,
         }
         security = PathSecurity([tmp_path])
+        runtime = SimpleNamespace(
+            tools=lambda: RuntimeToolset(
+                node=_runtime_tool("node"),
+                pnpm=_runtime_tool("pnpm"),
+                git=_runtime_tool("git"),
+            ),
+        )
 
     api = UnderstandAnythingWebApi(context=None, runner=DummyRunner())  # type: ignore[arg-type]
     routes = {route for route, *_ in api.routes()}
     payload = api.status_payload()
 
     assert "/astrbot_plugin_UnderstandAnything/status" in routes
+    assert "/astrbot_plugin_UnderstandAnything/runtime/repair" in routes
     assert "/astrbot_plugin_UnderstandAnything/subagents/providers" in routes
     assert payload["plugin"]["name"] == "astrbot_plugin_UnderstandAnything"
     assert payload["config"]["provider_configured"] is True
-    assert payload["config"]["node_bin"] == "node-custom"
-    assert payload["config"]["git_bin"] == "git-custom"
-    assert payload["config"]["git_available"] is False
-    assert payload["config"]["github_cache_root"] == ""
-    assert payload["config"]["github_artifact_root"] == ""
+    assert "node_bin" not in payload["config"]
+    assert "pnpm_bin" not in payload["config"]
+    assert "git_bin" not in payload["config"]
+    assert "git_available" not in payload["config"]
+    assert payload["runtime"]["tools"]["node"]["supported"] is True
+    assert payload["runtime"]["tools"]["git"]["available"] is True
     assert payload["config"]["cleanup_github_cache_after_analysis"] is True
-    assert payload["config"]["allowed_roots"] == [str(tmp_path.resolve())]
+    assert "allowed_roots" not in payload["config"]
     assert payload["config"]["subagent_provider_configured"] is True
     assert payload["config"]["max_parallel_file_agents"] == 4
     assert payload["config"]["max_parallel_article_agents"] == 2
@@ -860,6 +1145,246 @@ def test_web_api_status_summarizes_config_without_provider_secret(
     assert "secret-provider-id" not in json.dumps(payload, ensure_ascii=False)
     assert "secret-subagent-provider-id" not in json.dumps(payload, ensure_ascii=False)
     assert payload["runtime"]["dashboard_page"]["exists"] is True
+
+
+def test_web_api_status_reports_astrbot_computer_use_runtime(
+    tmp_path: Path,
+) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    for runtime, enabled, blocking_reason in [
+        ("none", False, "disabled"),
+        ("local", True, ""),
+        ("sandbox", True, ""),
+    ]:
+        context = _RegistryContext(
+            _DummyConfig(
+                {
+                    "provider_settings": {
+                        "computer_use_runtime": runtime,
+                        "computer_use_require_admin": False,
+                        "sandbox": {"booter": "shipyard_neo"},
+                    }
+                }
+            )
+        )
+        api = UnderstandAnythingWebApi(context=context, runner=DummyRunner())  # type: ignore[arg-type]
+
+        computer_use = api.status_payload()["astrbot"]["computer_use"]
+
+        assert computer_use["runtime"] == runtime
+        assert computer_use["enabled"] is enabled
+        assert computer_use["require_admin"] is False
+        assert computer_use["sandbox_booter"] == "shipyard_neo"
+        if blocking_reason:
+            assert blocking_reason in computer_use["blocking_reason"].lower()
+        else:
+            assert computer_use["blocking_reason"] == ""
+
+
+def test_web_api_status_reports_all_astrbot_computer_use_configs(
+    tmp_path: Path,
+) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    default_config = _DummyConfig(
+        {"provider_settings": {"computer_use_runtime": "none"}},
+    )
+    chat_config = _DummyConfig(
+        {
+            "provider_settings": {
+                "computer_use_runtime": "local",
+                "computer_use_require_admin": False,
+            },
+        },
+    )
+    context = _RegistryContext(
+        default_config,
+        config_by_umo={"platform:friend:chat": chat_config},
+    )
+    context.astrbot_config_mgr = _DummyAstrBotConfigManager(
+        {
+            "default": default_config,
+            "chat-config": chat_config,
+        },
+        [
+            {"id": "chat-config", "name": "Chat config", "path": "abconf_chat.json"},
+            {"id": "default", "name": "default", "path": "cmd_config.json"},
+        ],
+        umo_mapping={
+            "platform:friend:chat": {
+                "id": "chat-config",
+                "name": "Chat config",
+                "path": "abconf_chat.json",
+            },
+        },
+    )
+    api = UnderstandAnythingWebApi(context=context, runner=DummyRunner())  # type: ignore[arg-type]
+
+    computer_use = api.status_payload()["astrbot"]["computer_use"]
+
+    assert computer_use["runtime"] == "none"
+    assert computer_use["enabled"] is False
+    assert computer_use["dashboard_effective_config_id"] == "default"
+    assert computer_use["enabled_count"] == 1
+    assert computer_use["disabled_count"] == 1
+    assert computer_use["all_enabled"] is False
+    assert computer_use["default_config"]["id"] == "default"
+    configs_by_id = {item["id"]: item for item in computer_use["configs"]}
+    assert configs_by_id["default"]["enabled"] is False
+    assert configs_by_id["default"]["is_default"] is True
+    assert configs_by_id["chat-config"]["enabled"] is True
+    assert configs_by_id["chat-config"]["runtime"] == "local"
+
+
+def test_web_api_status_keeps_dashboard_available_when_only_session_config_disabled(
+    tmp_path: Path,
+) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    default_config = _DummyConfig(
+        {"provider_settings": {"computer_use_runtime": "sandbox"}},
+    )
+    disabled_config = _DummyConfig(
+        {"provider_settings": {"computer_use_runtime": "none"}},
+    )
+    context = _RegistryContext(default_config)
+    context.astrbot_config_mgr = _DummyAstrBotConfigManager(
+        {
+            "default": default_config,
+            "disabled-config": disabled_config,
+        },
+        [
+            {"id": "disabled-config", "name": "Disabled config", "path": "abconf.json"},
+            {"id": "default", "name": "default", "path": "cmd_config.json"},
+        ],
+    )
+    api = UnderstandAnythingWebApi(context=context, runner=DummyRunner())  # type: ignore[arg-type]
+
+    computer_use = api.status_payload()["astrbot"]["computer_use"]
+
+    assert computer_use["enabled"] is True
+    assert computer_use["default_config"]["runtime"] == "sandbox"
+    assert computer_use["enabled_count"] == 1
+    assert computer_use["disabled_count"] == 1
+    configs_by_id = {item["id"]: item for item in computer_use["configs"]}
+    assert configs_by_id["disabled-config"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_runner_fails_before_tool_loop_when_computer_use_disabled(
+    tmp_path: Path,
+) -> None:
+    class DummyDispatcher:
+        called = False
+
+        async def run_with_local_tools(self, **_kwargs):
+            self.called = True
+            return "should not run"
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    context = _RegistryContext(
+        _DummyConfig(
+            {
+                "provider_settings": {
+                    "computer_use_runtime": "none",
+                    "computer_use_require_admin": True,
+                }
+            }
+        )
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    dispatcher = DummyDispatcher()
+    runner.dispatcher = dispatcher  # type: ignore[assignment]
+    job = runner.jobs.create(
+        "understand-diff",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "graph_root": str(project_root / ".understand-anything"),
+            "source": {"type": "local"},
+        },
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FAILED
+    assert "Computer Use runtime is disabled" in (snapshot.error or "")
+    assert dispatcher.called is False
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_event_session_config_for_computer_use_check(
+    tmp_path: Path,
+) -> None:
+    class DummyDispatcher:
+        called = False
+        event_umo = ""
+
+        async def run_with_local_tools(self, **kwargs):
+            self.called = True
+            self.event_umo = kwargs["event"].unified_msg_origin
+            return "analysis complete"
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            return None
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    default_config = _DummyConfig(
+        {"provider_settings": {"computer_use_runtime": "none"}},
+    )
+    session_config = _DummyConfig(
+        {"provider_settings": {"computer_use_runtime": "local"}},
+    )
+    context = _RegistryContext(
+        default_config,
+        config_by_umo={"parent-origin": session_config},
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    dispatcher = DummyDispatcher()
+    runner.dispatcher = dispatcher  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+    job = runner.jobs.create(
+        "understand-diff",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "graph_root": str(project_root / ".understand-anything"),
+            "source": {"type": "local"},
+        },
+    )
+
+    await runner._run_skill_job(job, event=_dummy_event())
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FINISHED
+    assert dispatcher.called is True
+    assert dispatcher.event_umo == "parent-origin"
 
 
 @pytest.mark.asyncio
@@ -897,7 +1422,10 @@ async def test_web_api_subagent_provider_options_are_sanitized(tmp_path: Path) -
     assert "secret-key" not in json.dumps(payload, ensure_ascii=False)
 
     status_payload = api.status_payload()
-    assert status_payload["subagent_provider_options"]["providers"][0]["id"] == "chat-provider"
+    assert (
+        status_payload["subagent_provider_options"]["providers"][0]["id"]
+        == "chat-provider"
+    )
     assert "secret-key" not in json.dumps(status_payload, ensure_ascii=False)
 
 
@@ -1175,24 +1703,57 @@ class _DummyConfig(dict):
         self.saved = True
 
 
+class _DummyAstrBotConfigManager:
+    def __init__(
+        self,
+        confs: dict[str, _DummyConfig],
+        conf_list: list[dict[str, str]],
+        umo_mapping: dict[str, dict[str, str]] | None = None,
+    ) -> None:
+        self.confs = confs
+        self._conf_list = conf_list
+        self._umo_mapping = umo_mapping or {}
+
+    def get_conf_list(self):
+        return list(self._conf_list)
+
+    def get_conf_info(self, umo):
+        return self._umo_mapping.get(
+            umo,
+            {"id": "default", "name": "default", "path": "cmd_config.json"},
+        )
+
+    def get_conf(self, umo=None):
+        info = self.get_conf_info(umo) if umo else {"id": "default"}
+        return self.confs.get(info["id"], self.confs["default"])
+
+
 class _RegistryContext(_DummyContext):
     def __init__(
         self,
         config: _DummyConfig,
         providers: list[_DummyProvider] | None = None,
+        config_by_umo: dict[str, _DummyConfig] | None = None,
     ) -> None:
         super().__init__(handoff_names=[], providers=providers)
         self.config = config
+        self.config_by_umo = config_by_umo or {}
 
-    def get_config(self):
+    def get_config(self, umo=None):
+        if umo in self.config_by_umo:
+            return self.config_by_umo[umo]
         return self.config
 
 
 def _dummy_event():
+    async def send(_message):
+        return None
+
     return SimpleNamespace(
         session_id="parent-session",
         role="admin",
         unified_msg_origin="parent-origin",
+        send=send,
     )
 
 
@@ -1242,9 +1803,7 @@ def test_subagent_registry_registers_from_empty_orchestrator() -> None:
     assert all(
         persona["skills"]
         == list(
-            UA_ROLE_SKILLS[
-                persona["persona_id"].removeprefix("ua_").replace("_", "-")
-            ]
+            UA_ROLE_SKILLS[persona["persona_id"].removeprefix("ua_").replace("_", "-")]
         )
         for persona in context.persona_manager.personas.values()
     )
@@ -1283,8 +1842,7 @@ def test_subagent_registry_preserves_non_ua_agents_and_hides_provider() -> None:
     assert len(agents) == len(ROLE_NAMES) + 1
     assert all(agent["persona_id"] == agent["name"] for agent in agents[1:])
     assert all(
-        agent["provider_id"] == "secret-subagent-provider-id"
-        for agent in agents[1:]
+        agent["provider_id"] == "secret-subagent-provider-id" for agent in agents[1:]
     )
     assert len(context.persona_manager.folders) == 1
     assert all(
@@ -1440,10 +1998,7 @@ def test_subagent_batches_respect_max_concurrency() -> None:
     assert result["status"] == "ok"
     assert max_seen == 2
     assert len(result["results"]) == 4
-    assert all(
-        item["role"] == "file-analyzer"
-        for item in result["results"]
-    )
+    assert all(item["role"] == "file-analyzer" for item in result["results"])
 
 
 def test_subagent_batches_continue_after_batch_failure() -> None:

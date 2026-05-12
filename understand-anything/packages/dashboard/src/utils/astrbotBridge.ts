@@ -37,37 +37,101 @@ export interface ProjectSummary {
   auto_update?: boolean;
 }
 
+export interface AstrBotComputerUseConfigStatus {
+  id: string;
+  name: string;
+  is_default: boolean;
+  runtime: string;
+  enabled: boolean;
+  require_admin: boolean;
+  sandbox_booter: string;
+  blocking_reason: string;
+}
+
+export interface AstrBotComputerUseStatus extends AstrBotComputerUseConfigStatus {
+  configs?: AstrBotComputerUseConfigStatus[];
+  default_config?: AstrBotComputerUseConfigStatus;
+  enabled_count?: number;
+  disabled_count?: number;
+  all_enabled?: boolean;
+  effective_config_id?: string;
+  dashboard_effective_config_id?: string;
+}
+
+export interface RuntimePathState {
+  path: string;
+  exists: boolean;
+  is_dir: boolean;
+}
+
+export interface RuntimeToolStatus {
+  name: string;
+  command: string;
+  path: string;
+  available: boolean;
+  supported: boolean;
+  version: string;
+  source: "path" | "env" | string;
+  min_major?: number | null;
+  blocking_reason: string;
+}
+
+export interface RuntimeReadiness {
+  local_analysis_ready: boolean;
+  github_analysis_ready: boolean;
+  repair_needed: boolean;
+  repair_available: boolean;
+  auto_repair_enabled: boolean;
+  dependency_state: {
+    node_modules: boolean;
+    core_dist: boolean;
+    runtime_dist: boolean;
+  };
+  blocking_reasons: string[];
+  repair_blocking_reasons: string[];
+  github_blocking_reason: string;
+}
+
+export interface RuntimeStatus {
+  understand_anything_root: RuntimePathState;
+  runtime_dist: RuntimePathState;
+  core_dist: RuntimePathState;
+  dashboard_dist: RuntimePathState;
+  dashboard_page: RuntimePathState;
+  node_modules: RuntimePathState;
+  github_cache_root: RuntimePathState;
+  github_artifact_root: RuntimePathState;
+  tools: {
+    node: RuntimeToolStatus;
+    pnpm: RuntimeToolStatus;
+    git: RuntimeToolStatus;
+  };
+  readiness: RuntimeReadiness;
+}
+
 export interface PluginStatus {
   plugin: {
     name: string;
     display_name: string;
   };
+  astrbot: {
+    computer_use: AstrBotComputerUseStatus;
+  };
   config: {
     provider_configured: boolean;
     subagent_provider_configured: boolean;
-    node_bin: string;
-    pnpm_bin: string;
-    git_bin: string;
-    git_available: boolean;
-    github_cache_root: string;
-    github_artifact_root: string;
     cleanup_github_cache_after_analysis: boolean;
     auto_build: boolean;
     auto_update_poll_interval: number;
     max_concurrent_jobs: number;
     max_parallel_file_agents: number;
     max_parallel_article_agents: number;
-    allowed_roots: string[];
     default_write_mode: string;
   };
-  runtime: Record<
-    string,
-    {
-      path: string;
-      exists: boolean;
-      is_dir: boolean;
-    }
-  >;
+  github?: {
+    proxy_presets: string[];
+  };
+  runtime: RuntimeStatus;
   subagents?: SubAgentSetupStatus;
   subagent_provider_options?: SubAgentProviderOptions;
 }
@@ -169,6 +233,22 @@ export function hasProjectRef(params: ProjectRefParams | undefined): boolean {
   );
 }
 
+export function isComputerUseReady(
+  status: AstrBotComputerUseStatus | null | undefined,
+): boolean {
+  return Boolean(status?.default_config?.enabled ?? status?.enabled);
+}
+
+export function disabledComputerUseConfigs(
+  status: AstrBotComputerUseStatus | null | undefined,
+): AstrBotComputerUseConfigStatus[] {
+  if (!status) return [];
+  if (status.configs?.length) {
+    return status.configs.filter((config) => !config.enabled);
+  }
+  return status.enabled ? [] : [status];
+}
+
 export function projectParamsFromProject(project: Pick<ProjectSummary, "project_id">): ProjectRefParams {
   return { project_id: project.project_id };
 }
@@ -200,11 +280,28 @@ export function unwrapPluginPayload(payload: unknown): unknown {
   return payload;
 }
 
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function isPluginRouteMissingError(error: unknown): boolean {
+  return /未找到该路由|route not found|plugin api route not found/i.test(
+    errorMessage(error),
+  );
+}
+
+export function describePluginRouteError(endpoint: string, error: unknown): string {
+  if (!isPluginRouteMissingError(error)) {
+    return errorMessage(error);
+  }
+  return `Plugin API route "${endpoint}" is not registered. Reload astrbot_plugin_UnderstandAnything in AstrBot, then reopen this dashboard.`;
+}
+
 export function describeGraphLoadError(
   error: unknown,
   t?: (key: string, fallback: string) => string,
 ): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   if (/file not found/i.test(message) || /status code 404/i.test(message)) {
     return t
       ? t(
@@ -241,6 +338,21 @@ export async function pluginGet<T>(
   return unwrapPluginPayload(
     await bridge.apiGet(endpoint, params ? { ...params } : undefined),
   ) as T;
+}
+
+export async function pluginGetOptional<T>(
+  bridge: AstrBotPluginPageBridge,
+  endpoint: string,
+  params?: ProjectRefParams | Record<string, unknown>,
+): Promise<T | null> {
+  try {
+    return await pluginGet<T>(bridge, endpoint, params);
+  } catch (error) {
+    if (isPluginRouteMissingError(error)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function pluginPost<T>(

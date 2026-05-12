@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  describePluginRouteError,
+  disabledComputerUseConfigs,
   describeGraphLoadError,
   hasProjectRef,
+  isComputerUseReady,
+  isPluginRouteMissingError,
+  pluginGetOptional,
   projectParamsFromProject,
   projectParamsFromSearch,
   unwrapPluginPayload,
@@ -47,5 +52,102 @@ describe("AstrBot bridge helpers", () => {
     expect(describeGraphLoadError(new Error("Request failed with status code 404"))).toContain(
       "has not generated a graph",
     );
+  });
+
+  it("treats disabled Computer Use Runtime as a blocking setup state", () => {
+    expect(
+      isComputerUseReady({
+        id: "default",
+        name: "default",
+        is_default: true,
+        runtime: "none",
+        enabled: false,
+        require_admin: true,
+        sandbox_booter: "shipyard_neo",
+        blocking_reason: "Computer Use Runtime is disabled.",
+      }),
+    ).toBe(false);
+    expect(
+      isComputerUseReady({
+        id: "default",
+        name: "default",
+        is_default: true,
+        runtime: "local",
+        enabled: true,
+        require_admin: true,
+        sandbox_booter: "shipyard_neo",
+        blocking_reason: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("uses default Computer Use config for dashboard readiness and lists disabled configs", () => {
+    const status = {
+      id: "default",
+      name: "default",
+      is_default: true,
+      runtime: "none",
+      enabled: false,
+      require_admin: true,
+      sandbox_booter: "",
+      blocking_reason: "disabled",
+      default_config: {
+        id: "default",
+        name: "default",
+        is_default: true,
+        runtime: "none",
+        enabled: false,
+        require_admin: true,
+        sandbox_booter: "",
+        blocking_reason: "disabled",
+      },
+      configs: [
+        {
+          id: "default",
+          name: "default",
+          is_default: true,
+          runtime: "none",
+          enabled: false,
+          require_admin: true,
+          sandbox_booter: "",
+          blocking_reason: "disabled",
+        },
+        {
+          id: "chat-config",
+          name: "Chat config",
+          is_default: false,
+          runtime: "local",
+          enabled: true,
+          require_admin: false,
+          sandbox_booter: "",
+          blocking_reason: "",
+        },
+      ],
+    };
+
+    expect(isComputerUseReady(status)).toBe(false);
+    expect(disabledComputerUseConfigs(status).map((config) => config.id)).toEqual([
+      "default",
+    ]);
+  });
+
+  it("recognizes AstrBot plugin API route missing errors", () => {
+    expect(isPluginRouteMissingError(new Error("未找到该路由"))).toBe(true);
+    expect(isPluginRouteMissingError(new Error("route not found"))).toBe(true);
+    expect(isPluginRouteMissingError(new Error("provider failed"))).toBe(false);
+    expect(describePluginRouteError("status", new Error("未找到该路由"))).toContain(
+      "Reload",
+    );
+  });
+
+  it("treats optional plugin route missing as unavailable instead of fatal", async () => {
+    const bridge = {
+      ready: async () => undefined,
+      apiGet: async () => {
+        throw new Error("未找到该路由");
+      },
+    };
+
+    await expect(pluginGetOptional(bridge, "subagents/status")).resolves.toBeNull();
   });
 });

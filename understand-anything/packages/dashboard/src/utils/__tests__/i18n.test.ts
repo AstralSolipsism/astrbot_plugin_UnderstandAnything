@@ -66,4 +66,29 @@ describe("dashboard i18n", () => {
       "pages.dashboard.ui.common.refresh"
     );
   });
+
+  it("localizes Computer Use setup guidance without unsupported routes", () => {
+    const guidance = [
+      translateLocal("zh-CN", "workspace.computerUseDisabledTitle", ""),
+      translateLocal("zh-CN", "workspace.computerUseDisabledDescription", ""),
+      translateLocal("zh-CN", "workspace.computerUseRuntime", ""),
+      translateLocal("zh-CN", "workspace.computerUseSetupPathLabel", ""),
+      translateLocal("zh-CN", "workspace.computerUseSetupPath", ""),
+      translateLocal("zh-CN", "workspace.computerUseSetupValueLabel", ""),
+      translateLocal("zh-CN", "workspace.computerUseSetupValue", ""),
+      translateLocal("zh-CN", "workspace.computerUseSetupApplyLabel", ""),
+      translateLocal("zh-CN", "workspace.computerUseSetupApply", ""),
+      translateLocal("zh-CN", "workspace.computerUsePartialDescription", "")
+    ].join("\n");
+
+    expect(guidance).toContain("配置");
+    expect(guidance).toContain("使用电脑能力");
+    expect(guidance).toContain("使用电脑能力-运行环境");
+    expect(guidance).toContain("运行环境");
+    expect(guidance).toContain("local");
+    expect(guidance).not.toContain("Agent Computer Use");
+    expect(guidance).not.toContain("AstrBot Computer Use");
+    expect(guidance).not.toContain("#/config");
+    expect(guidance).not.toContain("provider_settings.computer_use_runtime");
+  });
 });

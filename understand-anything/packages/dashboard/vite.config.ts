@@ -31,44 +31,6 @@ function projectRootFromGraphFile(candidate: string): string {
   return path.dirname(path.dirname(candidate));
 }
 
-function normalizeGraphPath(filePath: string, projectRoot: string): string | null {
-  const rawPath = path.isAbsolute(filePath)
-    ? filePath.startsWith(projectRoot)
-      ? path.relative(projectRoot, filePath)
-      : null
-    : filePath;
-  if (rawPath === null) return null;
-  const normalized = path.normalize(rawPath);
-  if (
-    !normalized ||
-    normalized === "." ||
-    normalized.includes("\0") ||
-    normalized === ".." ||
-    normalized.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(normalized)
-  ) {
-    return null;
-  }
-  return normalized.split(path.sep).join("/");
-}
-
-function graphFilePathSet(graphFile: string, projectRoot: string): Set<string> {
-  const allowed = new Set<string>();
-  try {
-    const raw = JSON.parse(fs.readFileSync(graphFile, "utf-8")) as {
-      nodes?: Array<Record<string, unknown>>;
-    };
-    for (const node of raw.nodes ?? []) {
-      if (typeof node.filePath !== "string") continue;
-      const normalized = normalizeGraphPath(node.filePath, projectRoot);
-      if (normalized) allowed.add(normalized);
-    }
-  } catch {
-    return allowed;
-  }
-  return allowed;
-}
-
 function detectLanguage(filePath: string): string {
   const ext = path.extname(filePath).slice(1).toLowerCase();
   const byExt: Record<string, string> = {
@@ -144,9 +106,6 @@ function readSourceFile(url: URL) {
     return rejectFileRequest("Path must stay inside the project");
   }
   const safeRelativePath = relativeToRoot.split(path.sep).join("/");
-  if (!graphFilePathSet(graphFile, projectRoot).has(safeRelativePath)) {
-    return rejectFileRequest("File is not in the knowledge graph", 404);
-  }
 
   let stat: fs.Stats;
   try {

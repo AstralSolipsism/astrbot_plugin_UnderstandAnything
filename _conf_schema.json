@@ -6,24 +6,6 @@
     "hint": "Leave empty to use the current session provider.",
     "_special": "select_provider"
   },
-  "node_bin": {
-    "description": "Node.js executable",
-    "type": "string",
-    "default": "node",
-    "hint": "Node.js 22 or newer is recommended."
-  },
-  "pnpm_bin": {
-    "description": "pnpm executable",
-    "type": "string",
-    "default": "pnpm",
-    "hint": "pnpm 10 or newer is recommended."
-  },
-  "git_bin": {
-    "description": "Git executable",
-    "type": "string",
-    "default": "git",
-    "hint": "Used to clone and update public GitHub repositories for analysis."
-  },
   "cleanup_github_cache_after_analysis": {
     "description": "Clean GitHub clone cache after analysis",
     "type": "bool",
@@ -56,22 +38,16 @@
     "_special": "select_provider"
   },
   "auto_build": {
-    "description": "Automatically install and build bundled Understand Anything Node packages",
+    "description": "Automatically repair missing bundled runtime dependencies",
     "type": "bool",
     "default": true,
-    "hint": "When enabled, the first use runs pnpm install and rebuilds missing runtime dist files."
+    "hint": "When enabled, the first use can run pnpm install/build inside the plugin's understand-anything directory if dependencies or dist files are missing."
   },
   "auto_update_poll_interval": {
     "description": "Auto-update polling interval in seconds",
     "type": "int",
     "default": 0,
     "hint": "0 disables background polling. Use chat commands for explicit updates."
-  },
-  "allowed_roots": {
-    "description": "Allowed project roots",
-    "type": "list",
-    "default": [],
-    "hint": "Empty means the current AstrBot working directory. Add absolute directories to allow analyzing projects elsewhere."
   },
   "default_write_mode": {
     "description": "Default graph output mode",

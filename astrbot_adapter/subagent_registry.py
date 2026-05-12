@@ -78,7 +78,9 @@ class UnderstandAnythingSubAgentRegistry:
         if not isinstance(metadata, dict):
             metadata = {}
         persona_folder_id = metadata.get("ua_persona_folder_id")
-        persona_folder_id = str(persona_folder_id).strip() if persona_folder_id else None
+        persona_folder_id = (
+            str(persona_folder_id).strip() if persona_folder_id else None
+        )
 
         by_name = {
             str(item.get("name", "")).strip(): item
@@ -171,8 +173,7 @@ class UnderstandAnythingSubAgentRegistry:
             item
             for item in agents
             if not (
-                isinstance(item, dict)
-                and str(item.get("name", "")).strip() in ua_names
+                isinstance(item, dict) and str(item.get("name", "")).strip() in ua_names
             )
         ]
         data.setdefault("main_enable", False)
@@ -240,9 +241,7 @@ class UnderstandAnythingSubAgentRegistry:
                     persona_id=agent_name,
                     handoff_name=f"transfer_to_{agent_name}",
                     prompt=prompt,
-                    prompt_sha256=hashlib.sha256(
-                        prompt.encode("utf-8")
-                    ).hexdigest(),
+                    prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                     skills=cls.skills_for_role(role),
                 )
             )
@@ -289,9 +288,7 @@ class UnderstandAnythingSubAgentRegistry:
             "enabled": True,
             "persona_id": spec.persona_id,
             "provider_id": provider_id,
-            "public_description": (
-                f"Understand Anything worker role: {spec.role}."
-            ),
+            "public_description": (f"Understand Anything worker role: {spec.role}."),
             "system_prompt": spec.prompt,
             "tools": list(UA_AGENT_TOOLS),
             "metadata": {
@@ -324,7 +321,9 @@ class UnderstandAnythingSubAgentRegistry:
         if existing.get("tools") != list(UA_AGENT_TOOLS):
             reasons.append("tools")
         existing_provider = existing.get("provider_id")
-        existing_provider = str(existing_provider).strip() if existing_provider else None
+        existing_provider = (
+            str(existing_provider).strip() if existing_provider else None
+        )
         if existing_provider != provider_id:
             reasons.append("provider")
         reasons.extend(
@@ -347,7 +346,9 @@ class UnderstandAnythingSubAgentRegistry:
             if existing:
                 update_persona = getattr(persona_mgr, "update_persona", None)
                 if not callable(update_persona):
-                    raise RuntimeError("AstrBot persona manager cannot update personas.")
+                    raise RuntimeError(
+                        "AstrBot persona manager cannot update personas."
+                    )
                 await update_persona(
                     persona_id=spec.persona_id,
                     system_prompt=spec.prompt,
@@ -364,7 +365,9 @@ class UnderstandAnythingSubAgentRegistry:
             else:
                 create_persona = getattr(persona_mgr, "create_persona", None)
                 if not callable(create_persona):
-                    raise RuntimeError("AstrBot persona manager cannot create personas.")
+                    raise RuntimeError(
+                        "AstrBot persona manager cannot create personas."
+                    )
                 await create_persona(
                     persona_id=spec.persona_id,
                     system_prompt=spec.prompt,

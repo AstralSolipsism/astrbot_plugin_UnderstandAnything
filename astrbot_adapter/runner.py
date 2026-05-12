@@ -15,6 +15,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.star import Context
 
+from .computer_use import ensure_computer_use_enabled
 from .constants import (
     AGENT_PROMPTS_ROOT,
     PLUGIN_NAME,
@@ -42,20 +43,13 @@ class UnderstandAnythingRunner:
     ) -> None:
         self.context = context
         self.config = config or {}
-        allowed_roots = self.config.get("allowed_roots") or []
-        if isinstance(allowed_roots, str):
-            allowed_roots = [allowed_roots]
-        self.github = GitHubRepoManager(
-            git_bin=str(self.config.get("git_bin") or "git"),
-        )
+        self.github = GitHubRepoManager()
         self.security = PathSecurity(
-            allowed_roots,
+            [],
             implicit_roots=[self.github.cache_root, self.github.artifact_root],
         )
         self.jobs = JobStore()
         self.runtime = UnderstandAnythingRuntime(
-            node_bin=str(self.config.get("node_bin") or "node"),
-            pnpm_bin=str(self.config.get("pnpm_bin") or "pnpm"),
             auto_build=bool(self.config.get("auto_build", True)),
         )
         self.dispatcher = LLMDispatcher(
@@ -177,6 +171,7 @@ class UnderstandAnythingRunner:
         checkout = await self.github.resolve_remote(
             str(source.get("target_url") or source.get("repo_url") or ""),
             None if has_target_url else ref,
+            self._source_github_proxy(source),
         )
         await self.github.prepare(checkout)
 
@@ -193,6 +188,7 @@ class UnderstandAnythingRunner:
         target: str | Path | None = None,
         repo_url: str | None = None,
         ref: str | None = None,
+        github_proxy: str | None = None,
         flags: Sequence[str] | None = None,
         start_task: bool = True,
     ) -> JobSnapshot:
@@ -211,6 +207,7 @@ class UnderstandAnythingRunner:
             repo_url=repo_url,
             ref=ref or parsed.git_ref,
             parsed_path=parsed.path,
+            github_proxy=github_proxy,
         )
         if (
             github_checkout is None
@@ -222,6 +219,7 @@ class UnderstandAnythingRunner:
                 project_id=project_id,
                 project_name=project_name,
                 project_ref=effective_project_ref,
+                github_proxy=github_proxy,
             )
         if github_checkout:
             project_root = github_checkout.analysis_root
@@ -395,7 +393,14 @@ class UnderstandAnythingRunner:
                     f"Starting {job.kind} job.",
                 )
                 await self._prepare_job_source(job)
-                self.jobs.append_log(job.job_id, f"Target project root: {job.project_root}")
+                self.jobs.append_log(
+                    job.job_id, f"Target project root: {job.project_root}"
+                )
+                ensure_computer_use_enabled(
+                    self.context,
+                    umo=getattr(event, "unified_msg_origin", None) if event else None,
+                )
+                await self.runtime.ensure_ready()
                 prompt = self._build_skill_execution_prompt(job)
                 subagent_dispatcher = UnderstandAnythingSubAgentDispatcher(
                     self.context,
@@ -416,9 +421,8 @@ class UnderstandAnythingRunner:
                             | set(status.get("stale_roles", []))
                             | set(status.get("unloaded_roles", []))
                         )
-                        blocked_text = (
-                            ", ".join(blocked_roles)
-                            or str(status.get("error") or "unknown")
+                        blocked_text = ", ".join(blocked_roles) or str(
+                            status.get("error") or "unknown"
                         )
                         raise RuntimeError(
                             "Understand Anything SubAgents are not ready. "
@@ -489,7 +493,9 @@ class UnderstandAnythingRunner:
         skill_dir = PLUGIN_SKILLS_ROOT / job.kind
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.is_file():
-            raise FileNotFoundError(f"Bundled Understand Anything skill not found: {skill_md}")
+            raise FileNotFoundError(
+                f"Bundled Understand Anything skill not found: {skill_md}"
+            )
 
         agent_files = sorted(AGENT_PROMPTS_ROOT.glob("*.md"))
         agent_index = "\n".join(f"- {path.name}: {path}" for path in agent_files)
@@ -544,16 +550,19 @@ class UnderstandAnythingRunner:
         repo_url: str | None,
         ref: str | None,
         parsed_path: str | None,
+        github_proxy: str | None,
     ) -> GitHubRepoCheckout | None:
         candidate = (repo_url or "").strip()
         if candidate:
-            return self.github.resolve(candidate, ref)
+            return self.github.resolve(candidate, ref, github_proxy)
         if not parsed_path:
             return None
         if GitHubRepoManager.looks_like_github_url(parsed_path):
-            return self.github.resolve(parsed_path, ref)
+            return self.github.resolve(parsed_path, ref, github_proxy)
         if GitHubRepoManager.is_http_url(parsed_path):
-            raise GitHubRepoError("Only public https://github.com repository URLs are supported.")
+            raise GitHubRepoError(
+                "Only public https://github.com repository URLs are supported."
+            )
         return None
 
     def _github_checkout_from_registry(
@@ -562,6 +571,7 @@ class UnderstandAnythingRunner:
         project_id: str | None,
         project_name: str | None,
         project_ref: str | None,
+        github_proxy: str | None = None,
     ) -> GitHubRepoCheckout | None:
         if not (project_id or project_name or project_ref):
             return None
@@ -576,6 +586,7 @@ class UnderstandAnythingRunner:
         source = record.source if isinstance(record.source, dict) else {}
         if source.get("type") != "github":
             return None
+        selected_proxy = github_proxy or self._source_github_proxy(source)
         owner = str(source.get("owner") or "")
         repo = str(source.get("repo") or "")
         if owner and repo:
@@ -584,11 +595,12 @@ class UnderstandAnythingRunner:
                 repo=repo,
                 ref=str(source.get("ref")) if source.get("ref") else None,
                 subpath=str(source.get("subpath")) if source.get("subpath") else None,
+                github_proxy=selected_proxy,
             )
         target_url = str(source.get("target_url") or source.get("repo_url") or "")
         if not target_url:
             return None
-        return self.github.resolve(target_url)
+        return self.github.resolve(target_url, github_proxy=selected_proxy)
 
     @staticmethod
     def _github_source_payload(checkout: GitHubRepoCheckout | None) -> dict[str, Any]:
@@ -601,6 +613,7 @@ class UnderstandAnythingRunner:
             "repo_url": checkout.repo_url,
             "target_url": checkout.target_url,
             "clone_url": checkout.clone_url,
+            "github_proxy": checkout.github_proxy,
             "ref": checkout.ref,
             "subpath": checkout.subpath,
             "cache_path": str(checkout.worktree_path),
@@ -617,7 +630,11 @@ class UnderstandAnythingRunner:
         has_target_url = bool(source.get("target_url"))
         repo_url = str(source.get("target_url") or source.get("repo_url") or "")
         ref = None if has_target_url else source.get("ref")
-        checkout = await self.github.resolve_remote(repo_url, str(ref) if ref else None)
+        checkout = await self.github.resolve_remote(
+            repo_url,
+            str(ref) if ref else None,
+            self._source_github_proxy(source),
+        )
         self.jobs.append_log(
             job.job_id,
             f"Preparing GitHub repository {checkout.display_name}"
@@ -634,9 +651,13 @@ class UnderstandAnythingRunner:
             job.args.get("flags") if isinstance(job.args.get("flags"), list) else [],
         )
         job.args["source"] = self._github_source_payload(checkout)
-        self.jobs.append_log(job.job_id, f"GitHub repository ready: {checkout.worktree_path}")
+        self.jobs.append_log(
+            job.job_id, f"GitHub repository ready: {checkout.worktree_path}"
+        )
         if checkout.subpath:
-            self.jobs.append_log(job.job_id, f"GitHub analysis subpath ready: {analysis_root}")
+            self.jobs.append_log(
+                job.job_id, f"GitHub analysis subpath ready: {analysis_root}"
+            )
         self.registry.register(
             analysis_root,
             job_id=job.job_id,
@@ -668,6 +689,7 @@ class UnderstandAnythingRunner:
             checkout = self.github.resolve(
                 target_url,
                 None if source.get("target_url") else ref,
+                self._source_github_proxy(source),
             )
             removed = self.github.remove_cache(checkout)
         except Exception as exc:
@@ -678,7 +700,9 @@ class UnderstandAnythingRunner:
                 pass
             return
         if removed:
-            self.jobs.append_log(job.job_id, "GitHub clone cache cleaned; artifacts retained.")
+            self.jobs.append_log(
+                job.job_id, "GitHub clone cache cleaned; artifacts retained."
+            )
 
     def _github_cache_in_use_by_other_job(
         self,
@@ -703,6 +727,11 @@ class UnderstandAnythingRunner:
             if Path(str(other_cache_path)).resolve(strict=False) == current:
                 return True
         return False
+
+    @staticmethod
+    def _source_github_proxy(source: dict[str, Any]) -> str | None:
+        proxy = source.get("github_proxy")
+        return str(proxy).strip() if proxy else None
 
     @staticmethod
     def _job_source_aliases(job: JobSnapshot) -> list[str] | None:
@@ -794,7 +823,9 @@ class UnderstandAnythingRunner:
         return None
 
     def _discover_auto_update_projects(self) -> None:
-        candidates = set(self.security.allowed_roots)
+        candidates = {
+            Path(record.path) for record in self.registry.list() if record.auto_update
+        }
         for root in list(candidates):
             if root.is_dir():
                 candidates.update(
@@ -860,7 +891,9 @@ class UnderstandAnythingRunner:
             return False
         previous_commit = meta.get("gitCommitHash") if isinstance(meta, dict) else None
         current_commit = UnderstandAnythingRunner._git_head(project_root)
-        return bool(previous_commit and current_commit and previous_commit != current_commit)
+        return bool(
+            previous_commit and current_commit and previous_commit != current_commit
+        )
 
     @staticmethod
     def _git_head(project_root: Path) -> str | None:
@@ -877,12 +910,16 @@ class UnderstandAnythingRunner:
     @staticmethod
     def _synthetic_event(job: JobSnapshot) -> AstrMessageEvent:
         message = AstrBotMessage()
-        text = f"/{SKILL_COMMANDS.get(job.kind, job.kind)} {job.args.get('raw_args', '')}"
+        text = (
+            f"/{SKILL_COMMANDS.get(job.kind, job.kind)} {job.args.get('raw_args', '')}"
+        )
         message.type = MessageType.FRIEND_MESSAGE
         message.self_id = PLUGIN_NAME
         message.session_id = f"dashboard:{job.job_id}"
         message.message_id = job.job_id
-        message.sender = MessageMember(user_id="dashboard", nickname="AstrBot Dashboard")
+        message.sender = MessageMember(
+            user_id="dashboard", nickname="AstrBot Dashboard"
+        )
         message.message = [Plain(text=text)]
         message.message_str = text
         message.raw_message = {"source": "plugin-page", "job_id": job.job_id}

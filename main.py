@@ -257,7 +257,9 @@ class UnderstandAnythingPlugin(Star):
                     return message[len(prefix) :].strip()
         return event.message_str.strip()
 
-    def _first_path_arg(self, event: AstrMessageEvent, *command_names: str) -> str | None:
+    def _first_path_arg(
+        self, event: AstrMessageEvent, *command_names: str
+    ) -> str | None:
         raw_args = self._args(event, *command_names)
         return self._first_path_token(raw_args)
 
@@ -285,7 +287,9 @@ class UnderstandAnythingPlugin(Star):
 
     @staticmethod
     def _project_selector_from_args(raw_args: str) -> tuple[str | None, str | None]:
-        project_ref, remaining = UnderstandAnythingPlugin._parse_project_option(raw_args)
+        project_ref, remaining = UnderstandAnythingPlugin._parse_project_option(
+            raw_args
+        )
         return project_ref, UnderstandAnythingPlugin._first_path_token(remaining)
 
     @staticmethod

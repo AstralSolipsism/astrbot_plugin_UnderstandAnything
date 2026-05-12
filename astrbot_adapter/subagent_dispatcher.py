@@ -198,7 +198,9 @@ class UnderstandAnythingSubAgentDispatcher:
                 },
             )
             output = self._output_state(expected_output_path)
-            status = "ok" if not output["path"] or output["exists"] else "missing_output"
+            status = (
+                "ok" if not output["path"] or output["exists"] else "missing_output"
+            )
             self._log(f"SubAgent finished: {label} status={status}")
             return {
                 "role": role,

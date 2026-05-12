@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 
 class PathSecurityError(ValueError):
@@ -16,8 +16,6 @@ class PathSecurity:
         implicit_roots: Iterable[str | Path] | None = None,
     ) -> None:
         roots = [Path(root).expanduser() for root in allowed_roots or [] if str(root)]
-        if not roots:
-            roots = [Path.cwd()]
         self.allowed_roots = [root.resolve(strict=False) for root in roots]
         self.implicit_roots = [
             Path(root).expanduser().resolve(strict=False)
@@ -68,6 +66,8 @@ class PathSecurity:
         return value
 
     def _is_under_allowed_root(self, path: Path) -> bool:
+        if not self.allowed_roots:
+            return True
         return any(
             self._is_relative_to(path, root)
             for root in [*self.allowed_roots, *self.implicit_roots]

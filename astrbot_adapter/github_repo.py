@@ -10,6 +10,14 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from .constants import PLUGIN_NAME, PLUGIN_ROOT
+from .runtime_tools import detect_tool
+
+GITHUB_PROXY_PRESETS = (
+    "https://edgeone.gh-proxy.com",
+    "https://hk.gh-proxy.com",
+    "https://gh-proxy.com",
+    "https://gh.llkk.cc",
+)
 
 
 class GitHubRepoError(ValueError):
@@ -30,6 +38,7 @@ class GitHubRepoCheckout:
     repo_url: str
     target_url: str
     clone_url: str
+    github_proxy: str | None
     ref: str | None
     subpath: str | None
     worktree_path: Path
@@ -83,7 +92,11 @@ class GitHubRepoManager:
         cache_root: str | Path | None = None,
         artifact_root: str | Path | None = None,
     ) -> None:
-        self.git_bin = git_bin or "git"
+        if git_bin and git_bin != "git":
+            self.git_bin = git_bin
+        else:
+            detected_git = detect_tool("git", "UA_GIT_BIN")
+            self.git_bin = detected_git.path or detected_git.command
         self.cache_root = Path(cache_root) if cache_root else self.default_cache_root()
         self.cache_root = self.cache_root.expanduser().resolve(strict=False)
         self.artifact_root = (
@@ -98,10 +111,7 @@ class GitHubRepoManager:
             from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
             return (
-                Path(get_astrbot_plugin_data_path())
-                / PLUGIN_NAME
-                / "repos"
-                / "github"
+                Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME / "repos" / "github"
             )
         except Exception:
             return PLUGIN_ROOT / ".plugin_data" / "repos" / "github"
@@ -130,10 +140,15 @@ class GitHubRepoManager:
         text = (value or "").strip().lower()
         return text.startswith(("https://github.com/", "http://github.com/"))
 
-    def resolve(self, repo_url: str, ref: str | None = None) -> GitHubRepoCheckout:
+    def resolve(
+        self,
+        repo_url: str,
+        ref: str | None = None,
+        github_proxy: str | None = None,
+    ) -> GitHubRepoCheckout:
         parts = self.parse_repo_url(repo_url)
         selected_ref, subpath = self._resolve_tree_parts_sync(parts.tree_parts, ref)
-        return self._checkout_from_parts(parts, selected_ref, subpath)
+        return self._checkout_from_parts(parts, selected_ref, subpath, github_proxy)
 
     def checkout_from_metadata(
         self,
@@ -142,6 +157,7 @@ class GitHubRepoManager:
         repo: str,
         ref: str | None = None,
         subpath: str | None = None,
+        github_proxy: str | None = None,
     ) -> GitHubRepoCheckout:
         self._validate_owner_repo(owner, repo)
         selected_ref = self._normalize_ref(ref)
@@ -150,12 +166,14 @@ class GitHubRepoManager:
             GitHubRepoUrlParts(owner=owner, repo=repo, tree_parts=()),
             selected_ref,
             normalized_subpath,
+            github_proxy,
         )
 
     async def resolve_remote(
         self,
         repo_url: str,
         ref: str | None = None,
+        github_proxy: str | None = None,
     ) -> GitHubRepoCheckout:
         parts = self.parse_repo_url(repo_url)
         selected_ref = self._normalize_ref(ref)
@@ -163,18 +181,24 @@ class GitHubRepoManager:
         if selected_ref:
             subpath = self._subpath_from_tree_parts(parts.tree_parts[1:])
         elif parts.tree_parts:
-            selected_ref, subpath = await self._resolve_tree_parts_remote(parts)
-        return self._checkout_from_parts(parts, selected_ref, subpath)
+            selected_ref, subpath = await self._resolve_tree_parts_remote(
+                parts,
+                github_proxy,
+            )
+        return self._checkout_from_parts(parts, selected_ref, subpath, github_proxy)
 
     def _checkout_from_parts(
         self,
         parts: GitHubRepoUrlParts,
         selected_ref: str | None,
         subpath: str | None,
+        github_proxy: str | None = None,
     ) -> GitHubRepoCheckout:
         owner = parts.owner
         repo = parts.repo
-        clone_url = f"https://github.com/{owner}/{repo}.git"
+        normalized_proxy = self.normalize_github_proxy(github_proxy)
+        direct_clone_url = f"https://github.com/{owner}/{repo}.git"
+        clone_url = self.apply_github_proxy(direct_clone_url, normalized_proxy)
         normalized_url = f"https://github.com/{owner}/{repo}"
         cache_key = self._cache_key(owner, repo, selected_ref)
         source_key = self._source_key(owner, repo, selected_ref, subpath)
@@ -189,6 +213,7 @@ class GitHubRepoManager:
             repo_url=normalized_url,
             target_url=target_url,
             clone_url=clone_url,
+            github_proxy=normalized_proxy,
             ref=selected_ref,
             subpath=subpath,
             worktree_path=self._worktree_path(owner, repo, selected_ref),
@@ -196,6 +221,28 @@ class GitHubRepoManager:
             cache_key=cache_key,
             source_key=source_key,
         )
+
+    @staticmethod
+    def github_proxy_presets() -> tuple[str, ...]:
+        return GITHUB_PROXY_PRESETS
+
+    @staticmethod
+    def normalize_github_proxy(value: str | None) -> str | None:
+        proxy = (value or "").strip().rstrip("/")
+        if not proxy:
+            return None
+        allowed = {item.rstrip("/") for item in GITHUB_PROXY_PRESETS}
+        if proxy not in allowed:
+            raise GitHubRepoError(
+                "Unsupported GitHub proxy. Choose one of the bundled AstrBot "
+                "GitHub proxy presets."
+            )
+        return proxy
+
+    @classmethod
+    def apply_github_proxy(cls, clone_url: str, github_proxy: str | None) -> str:
+        proxy = cls.normalize_github_proxy(github_proxy)
+        return f"{proxy}/{clone_url}" if proxy else clone_url
 
     @classmethod
     def parse_repo_url(cls, repo_url: str) -> GitHubRepoUrlParts:
@@ -206,7 +253,9 @@ class GitHubRepoManager:
         if parts.scheme != "https":
             raise GitHubRepoError("Only public https://github.com URLs are supported.")
         if parts.username or parts.password:
-            raise GitHubRepoError("GitHub URLs with embedded credentials are not supported.")
+            raise GitHubRepoError(
+                "GitHub URLs with embedded credentials are not supported."
+            )
         if parts.netloc.lower() != "github.com":
             raise GitHubRepoError("Only github.com repository URLs are supported.")
 
@@ -224,7 +273,9 @@ class GitHubRepoManager:
         tree_parts: tuple[str, ...] = ()
         if len(path_parts) > 2:
             if path_parts[2] != "tree":
-                raise GitHubRepoError("Only /tree/<ref> GitHub repository URLs are supported.")
+                raise GitHubRepoError(
+                    "Only /tree/<ref> GitHub repository URLs are supported."
+                )
             tree_parts = tuple(path_parts[3:])
             if not tree_parts:
                 raise GitHubRepoError("GitHub tree URL is missing a ref.")
@@ -236,12 +287,16 @@ class GitHubRepoManager:
         async with lock:
             path = checkout.worktree_path
             if path.exists() and not (path / ".git").is_dir():
-                raise GitHubRepoError(f"GitHub cache path exists but is not a git repo: {path}")
+                raise GitHubRepoError(
+                    f"GitHub cache path exists but is not a git repo: {path}"
+                )
             if not (path / ".git").is_dir():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 await self._run_git(["clone", checkout.clone_url, str(path)])
             else:
-                await self._run_git(["-C", str(path), "remote", "set-url", "origin", checkout.clone_url])
+                await self._run_git(
+                    ["-C", str(path), "remote", "set-url", "origin", checkout.clone_url]
+                )
                 await self._run_git(["-C", str(path), "fetch", "--prune", "origin"])
 
             await self._checkout_ref(path, checkout.ref)
@@ -252,7 +307,9 @@ class GitHubRepoManager:
         try:
             path.relative_to(self.cache_root)
         except ValueError as exc:
-            raise GitHubRepoError("GitHub cache cleanup path escaped cache root.") from exc
+            raise GitHubRepoError(
+                "GitHub cache cleanup path escaped cache root."
+            ) from exc
         if not path.exists():
             return False
         if not (path / ".git").exists():
@@ -276,31 +333,65 @@ class GitHubRepoManager:
     async def _checkout_ref(self, path: Path, ref: str | None) -> None:
         if ref:
             remote_ref = f"refs/remotes/origin/{ref}^{{commit}}"
-            if (await self._run_git(["-C", str(path), "rev-parse", "--verify", remote_ref], check=False)).returncode == 0:
-                await self._run_git(["-C", str(path), "checkout", "--force", "--detach", f"origin/{ref}"])
+            if (
+                await self._run_git(
+                    ["-C", str(path), "rev-parse", "--verify", remote_ref], check=False
+                )
+            ).returncode == 0:
+                await self._run_git(
+                    [
+                        "-C",
+                        str(path),
+                        "checkout",
+                        "--force",
+                        "--detach",
+                        f"origin/{ref}",
+                    ]
+                )
                 return
 
             local_ref = f"{ref}^{{commit}}"
-            if (await self._run_git(["-C", str(path), "rev-parse", "--verify", local_ref], check=False)).returncode == 0:
-                await self._run_git(["-C", str(path), "checkout", "--force", "--detach", ref])
+            if (
+                await self._run_git(
+                    ["-C", str(path), "rev-parse", "--verify", local_ref], check=False
+                )
+            ).returncode == 0:
+                await self._run_git(
+                    ["-C", str(path), "checkout", "--force", "--detach", ref]
+                )
                 return
 
             await self._run_git(["-C", str(path), "fetch", "origin", ref])
-            await self._run_git(["-C", str(path), "checkout", "--force", "--detach", "FETCH_HEAD"])
+            await self._run_git(
+                ["-C", str(path), "checkout", "--force", "--detach", "FETCH_HEAD"]
+            )
             return
 
         result = await self._run_git(
-            ["-C", str(path), "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+            [
+                "-C",
+                str(path),
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
             check=False,
         )
         target = result.stdout.strip() if result.returncode == 0 else "HEAD"
-        await self._run_git(["-C", str(path), "checkout", "--force", "--detach", target])
+        await self._run_git(
+            ["-C", str(path), "checkout", "--force", "--detach", target]
+        )
 
     async def _resolve_tree_parts_remote(
         self,
         parts: GitHubRepoUrlParts,
+        github_proxy: str | None,
     ) -> tuple[str, str | None]:
-        clone_url = f"https://github.com/{parts.owner}/{parts.repo}.git"
+        clone_url = self.apply_github_proxy(
+            f"https://github.com/{parts.owner}/{parts.repo}.git",
+            github_proxy,
+        )
         known_refs = await self._list_remote_ref_names(clone_url)
         for size in range(len(parts.tree_parts), 0, -1):
             candidate = "/".join(parts.tree_parts[:size])
@@ -350,7 +441,9 @@ class GitHubRepoManager:
             detail = (result.stderr or result.stdout).strip()
             if len(detail) > 800:
                 detail = detail[:800] + "..."
-            raise GitHubRepoError(detail or f"git exited with status {result.returncode}")
+            raise GitHubRepoError(
+                detail or f"git exited with status {result.returncode}"
+            )
         return result
 
     def _worktree_path(self, owner: str, repo: str, ref: str | None) -> Path:
@@ -365,7 +458,9 @@ class GitHubRepoManager:
         try:
             path.relative_to(self.cache_root)
         except ValueError as exc:
-            raise GitHubRepoError("Resolved GitHub cache path escaped cache root.") from exc
+            raise GitHubRepoError(
+                "Resolved GitHub cache path escaped cache root."
+            ) from exc
         return path
 
     def _artifact_path(self, owner: str, repo: str, source_key: str) -> Path:
@@ -378,7 +473,9 @@ class GitHubRepoManager:
         try:
             path.relative_to(self.artifact_root)
         except ValueError as exc:
-            raise GitHubRepoError("Resolved GitHub artifact path escaped artifact root.") from exc
+            raise GitHubRepoError(
+                "Resolved GitHub artifact path escaped artifact root."
+            ) from exc
         return path
 
     def _validate_analysis_root(self, checkout: GitHubRepoCheckout) -> Path:
@@ -387,7 +484,9 @@ class GitHubRepoManager:
         try:
             analysis_root.relative_to(worktree_root)
         except ValueError as exc:
-            raise GitHubRepoError("GitHub analysis subpath escaped repository root.") from exc
+            raise GitHubRepoError(
+                "GitHub analysis subpath escaped repository root."
+            ) from exc
         if checkout.subpath and not analysis_root.is_dir():
             raise GitHubRepoError(
                 f"GitHub repository subpath does not exist: {checkout.subpath}",

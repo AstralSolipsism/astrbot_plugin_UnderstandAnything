@@ -33,9 +33,7 @@ class ProjectRecord:
             project_id=str(payload.get("project_id") or ""),
             name=str(payload.get("name") or ""),
             aliases=[
-                str(alias)
-                for alias in payload.get("aliases", [])
-                if str(alias).strip()
+                str(alias) for alias in payload.get("aliases", []) if str(alias).strip()
             ],
             path=str(payload.get("path") or ""),
             graph_root=str(payload.get("graph_root") or ""),

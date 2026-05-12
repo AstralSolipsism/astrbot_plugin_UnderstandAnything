@@ -24,7 +24,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // skills/understand/ -> plugin root is two dirs up
 const pluginRoot = resolve(__dirname, '../..');
-const require = createRequire(resolve(pluginRoot, 'package.json'));
+const runtimeRoot = resolve(pluginRoot, 'understand-anything');
+const require = createRequire(resolve(runtimeRoot, 'package.json'));
 
 // ---------------------------------------------------------------------------
 // Resolve @understand-anything/core
@@ -38,7 +39,7 @@ try {
   core = await import(pathToFileURL(require.resolve('@understand-anything/core')).href);
 } catch {
   // Fallback: direct path for installed plugin cache layouts
-  core = await import(pathToFileURL(resolve(pluginRoot, 'packages/core/dist/index.js')).href);
+  core = await import(pathToFileURL(resolve(runtimeRoot, 'packages/core/dist/index.js')).href);
 }
 
 const { TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers } = core;
