@@ -24,6 +24,13 @@ import {
   buildAnalysisJobPayload,
   looksLikeGitHubTarget,
 } from "../utils/analysisRequest";
+import {
+  isActiveJob,
+  jobForProject,
+  projectAnalysisTarget,
+  recentActivity,
+  selectRecoverableJob,
+} from "../utils/jobTracking";
 import { getStorageItem, removeStorageItem, setStorageItem } from "../utils/safeBrowser";
 
 interface AstrBotWorkspaceProps {
@@ -32,6 +39,7 @@ interface AstrBotWorkspaceProps {
 }
 
 type LoadState = "loading" | "ready" | "error";
+type ConfirmationAction = "continue" | "cancel" | "update";
 
 function isJobSnapshot(value: unknown): value is JobSnapshot {
   return Boolean(
@@ -206,6 +214,7 @@ export default function AstrBotWorkspace({
   const [subagents, setSubagents] = useState<SubAgentSetupStatus | null>(null);
   const [subagentError, setSubagentError] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [jobs, setJobs] = useState<JobSnapshot[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [error, setError] = useState<string | null>(null);
   const [projectTarget, setProjectTarget] = useState("");
@@ -226,11 +235,20 @@ export default function AstrBotWorkspace({
     readSubAgentGuideDismissed,
   );
   const [currentJob, setCurrentJob] = useState<JobSnapshot | null>(null);
+  const [showJobLogs, setShowJobLogs] = useState(false);
+  const [confirmationContent, setConfirmationContent] = useState("");
+  const [confirmingAction, setConfirmingAction] = useState<ConfirmationAction | null>(null);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [openedFinishedJobId, setOpenedFinishedJobId] = useState<string | null>(
     null,
   );
   const currentJobId = currentJob?.job_id;
   const currentJobStatus = currentJob?.status;
+  const currentConfirmation = currentJob?.confirmation ?? null;
+  const confirmationSummary = currentConfirmation?.summary;
+  const confirmationDetectedDirs = confirmationSummary?.detected_dirs ?? [];
+  const confirmationGitignorePatterns = confirmationSummary?.gitignore_patterns ?? [];
+  const confirmationTestPatterns = confirmationSummary?.test_file_patterns ?? [];
   const computerUse = status?.astrbot?.computer_use;
   const defaultComputerUse = computerUse?.default_config ?? computerUse;
   const computerUseConfigs = computerUse?.configs?.length
@@ -251,12 +269,17 @@ export default function AstrBotWorkspace({
     setError(null);
     setSubagentError(null);
     try {
-      const [nextStatus, projectPayload] = await Promise.all([
+      const [nextStatus, projectPayload, jobPayload] = await Promise.all([
         pluginGet<PluginStatus>(bridge, "status"),
         pluginGet<{ projects: ProjectSummary[] }>(bridge, "projects"),
+        pluginGet<{ jobs: JobSnapshot[] }>(bridge, "jobs"),
       ]);
       setStatus(nextStatus);
       setProjects(projectPayload.projects);
+      setJobs(jobPayload.jobs);
+      setCurrentJob((existingJob) =>
+        selectRecoverableJob(jobPayload.jobs, existingJob),
+      );
 
       try {
         const subagentPayload = await pluginGetOptional<SubAgentSetupStatus>(
@@ -294,6 +317,10 @@ export default function AstrBotWorkspace({
   }, [loadWorkspace]);
 
   useEffect(() => {
+    setConfirmationContent(currentConfirmation?.content ?? "");
+  }, [currentJobId, currentConfirmation?.content]);
+
+  useEffect(() => {
     if (
       !currentJobId ||
       !currentJobStatus ||
@@ -310,6 +337,10 @@ export default function AstrBotWorkspace({
     const updateJob = (value: unknown) => {
       if (!cancelled && isJobSnapshot(value)) {
         setCurrentJob(value);
+        setJobs((previousJobs) => [
+          value,
+          ...previousJobs.filter((job) => job.job_id !== value.job_id),
+        ]);
       }
     };
 
@@ -507,9 +538,11 @@ export default function AstrBotWorkspace({
     }
   };
 
-  const startAnalysis = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const trimmedTarget = projectTarget.trim();
+  const startAnalysisForTarget = async (
+    target: string,
+    nextAutoUpdate = autoUpdate,
+  ) => {
+    const trimmedTarget = target.trim();
     if (!trimmedTarget) {
       setError(t("workspace.projectTargetRequired", "Project target is required."));
       return;
@@ -548,23 +581,122 @@ export default function AstrBotWorkspace({
     setStarting(true);
     setError(null);
     try {
+      setProjectTarget(trimmedTarget);
       const job = await pluginPost<JobSnapshot>(
         bridge,
         "jobs/start",
         buildAnalysisJobPayload({
           target: trimmedTarget,
           fullAnalysis,
-          autoUpdate,
+          autoUpdate: nextAutoUpdate,
           githubProxy,
         }),
       );
       setCurrentJob(job);
+      setShowJobLogs(false);
+      setJobs((previousJobs) => [
+        job,
+        ...previousJobs.filter((item) => item.job_id !== job.job_id),
+      ]);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : String(startError));
     } finally {
       setStarting(false);
     }
   };
+
+  const startAnalysis = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await startAnalysisForTarget(projectTarget);
+  };
+
+  const restartProject = async (project: ProjectSummary) => {
+    const target = projectAnalysisTarget(project);
+    if (!target) {
+      setError(t("workspace.projectTargetRequired", "Project target is required."));
+      return;
+    }
+    await startAnalysisForTarget(target, Boolean(project.auto_update));
+  };
+
+  const [projectPendingDelete, setProjectPendingDelete] = useState<ProjectSummary | null>(null);
+
+  const deleteProject = async (project: ProjectSummary) => {
+    if (isActiveJob(jobForProject(project, jobs))) {
+      setError(
+        t(
+          "workspace.deleteBlockedActiveJob",
+          "Project analysis is still running. Wait for the job to finish before deleting it.",
+        ),
+      );
+      return;
+    }
+    setProjectPendingDelete(project);
+  };
+
+  const confirmDeleteProject = async () => {
+    const project = projectPendingDelete;
+    if (!project) return;
+    if (isActiveJob(jobForProject(project, jobs))) {
+      setProjectPendingDelete(null);
+      setError(
+        t(
+          "workspace.deleteBlockedActiveJob",
+          "Project analysis is still running. Wait for the job to finish before deleting it.",
+        ),
+      );
+      return;
+    }
+    setDeletingProjectId(project.project_id);
+    setError(null);
+    try {
+      await pluginPost<{ project: ProjectSummary; graph_deleted: boolean }>(
+        bridge,
+        "projects/delete",
+        { project_id: project.project_id },
+      );
+      setProjects((previousProjects) =>
+        previousProjects.filter((item) => item.project_id !== project.project_id),
+      );
+      setJobs((previousJobs) =>
+        previousJobs.filter((job) => job.args.project_id !== project.project_id),
+      );
+      if (currentJob && currentJob.args.project_id === project.project_id) {
+        setCurrentJob(null);
+      }
+      setProjectPendingDelete(null);
+    } catch (deleteError) {
+      setError(errorMessage(deleteError));
+    } finally {
+      setDeletingProjectId(null);
+    }
+  };
+
+  const submitJobConfirmation = async (action: ConfirmationAction) => {
+    if (!currentJob) return;
+    setConfirmingAction(action);
+    setError(null);
+    try {
+      const nextJob = await pluginPost<JobSnapshot>(
+        bridge,
+        `jobs/${currentJob.job_id}/confirm`,
+        {
+          action,
+          content: action === "cancel" ? undefined : confirmationContent,
+        },
+      );
+      setCurrentJob(nextJob);
+      setJobs((previousJobs) => [
+        nextJob,
+        ...previousJobs.filter((job) => job.job_id !== nextJob.job_id),
+      ]);
+    } catch (confirmationError) {
+      setError(errorMessage(confirmationError));
+    } finally {
+      setConfirmingAction(null);
+    }
+  };
+
   const analysisTargetReady = Boolean(projectTarget.trim());
   const analyzingGithubTarget = looksLikeGitHubTarget(projectTarget);
   const gitReady =
@@ -780,11 +912,11 @@ export default function AstrBotWorkspace({
               </Panel>
 
               {currentJob && (
-                <Panel className="p-4">
+                <Panel className="p-4 sm:p-5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h2 className="font-heading text-lg text-text-primary">
-                        {t("workspace.currentJob", "Current job")}
+                        {t("workspace.analysisTracking", "Analysis Tracking")}
                       </h2>
                       <div className="mt-1 truncate font-mono text-xs text-text-muted">
                         {currentJob.project_root}
@@ -794,17 +926,166 @@ export default function AstrBotWorkspace({
                       {currentJob.status}
                     </span>
                   </div>
-                  <div className="mt-3 text-sm font-semibold text-text-primary">
-                    {currentJob.kind}
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="font-semibold text-text-primary">
+                        {currentJob.progress?.label || currentJob.kind}
+                      </span>
+                      <span className="font-mono text-xs text-text-muted">
+                        {Math.round(currentJob.progress?.percent ?? 0)}%
+                      </span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-root">
+                      <div
+                        className="h-full rounded-full bg-accent transition-[width]"
+                        style={{ width: `${Math.round(currentJob.progress?.percent ?? 0)}%` }}
+                      />
+                    </div>
+                  </div>
+                  {currentJob.progress?.steps?.length ? (
+                    <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                      {currentJob.progress.steps.map((step) => (
+                        <div
+                          key={step.phase}
+                          className={`rounded-md border px-3 py-2 text-xs ${
+                            step.status === "complete"
+                              ? "border-green-400/20 bg-green-400/10 text-green-200"
+                              : step.status === "active"
+                                ? "border-accent/40 bg-accent/10 text-accent"
+                                : step.status === "failed" || step.status === "cancelled"
+                                  ? "border-red-700 bg-red-900/30 text-red-200"
+                                  : "border-border-subtle bg-elevated text-text-muted"
+                          }`}
+                        >
+                          <div className="font-semibold">{step.label}</div>
+                          <div className="mt-1 font-mono uppercase tracking-wider">
+                            {step.status}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {currentJob.status === "waiting_confirmation" && currentConfirmation && (
+                    <div className="mt-4 rounded-lg border border-accent/30 bg-accent/10 p-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold text-text-primary">
+                            {t("workspace.confirmIgnoreTitle", "Confirm scan scope")}
+                          </h3>
+                          <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                            {t(
+                              "workspace.confirmIgnoreDescription",
+                              "Review the generated .understandignore rules before the agent workflow starts.",
+                            )}
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-root px-2 py-1 text-[11px] font-semibold text-accent">
+                          {confirmationSummary?.generated
+                            ? t("workspace.generatedIgnoreRules", "Generated")
+                            : t("workspace.existingIgnoreRules", "Existing")}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+                        <div className="rounded-md bg-root/70 px-3 py-2">
+                          <div className="font-semibold text-text-primary">
+                            {t("workspace.detectedDirectories", "Detected directories")}
+                          </div>
+                          <div className="mt-1 text-text-muted">
+                            {confirmationDetectedDirs.length
+                              ? confirmationDetectedDirs.join(", ")
+                              : t("common.none", "None")}
+                          </div>
+                        </div>
+                        <div className="rounded-md bg-root/70 px-3 py-2">
+                          <div className="font-semibold text-text-primary">
+                            {t("workspace.gitignoreSuggestions", ".gitignore suggestions")}
+                          </div>
+                          <div className="mt-1 text-text-muted">
+                            {confirmationGitignorePatterns.length
+                              ? confirmationGitignorePatterns.join(", ")
+                              : t("common.none", "None")}
+                          </div>
+                        </div>
+                        <div className="rounded-md bg-root/70 px-3 py-2">
+                          <div className="font-semibold text-text-primary">
+                            {t("workspace.testFilePatterns", "Test file patterns")}
+                          </div>
+                          <div className="mt-1 text-text-muted">
+                            {confirmationTestPatterns.length
+                              ? confirmationTestPatterns.join(", ")
+                              : t("common.none", "None")}
+                          </div>
+                        </div>
+                      </div>
+                      <label className="mt-3 block">
+                        <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
+                          {t("workspace.ignoreRules", ".understandignore rules")}
+                        </span>
+                        <textarea
+                          value={confirmationContent}
+                          onChange={(event) => setConfirmationContent(event.target.value)}
+                          rows={10}
+                          className="w-full rounded-md border border-border-subtle bg-root px-3 py-2 font-mono text-xs leading-relaxed text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        />
+                      </label>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void submitJobConfirmation("update")}
+                          disabled={Boolean(confirmingAction)}
+                          className="rounded-md border border-border-medium bg-root px-3 py-2 text-xs font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        >
+                          {confirmingAction === "update"
+                            ? t("workspace.updatingIgnoreRules", "Updating")
+                            : t("workspace.updateIgnoreRules", "Update rules")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void submitJobConfirmation("continue")}
+                          disabled={Boolean(confirmingAction)}
+                          className="rounded-md bg-accent px-3 py-2 text-xs font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        >
+                          {confirmingAction === "continue"
+                            ? t("workspace.confirmingIgnoreRules", "Confirming")
+                            : t("workspace.continueAnalysis", "Continue analysis")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void submitJobConfirmation("cancel")}
+                          disabled={Boolean(confirmingAction)}
+                          className="rounded-md border border-red-700/60 bg-red-900/20 px-3 py-2 text-xs font-semibold text-red-200 transition-colors hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+                        >
+                          {confirmingAction === "cancel"
+                            ? t("workspace.cancellingAnalysis", "Cancelling")
+                            : t("workspace.cancelAnalysis", "Cancel analysis")}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-2 text-sm text-text-secondary">
+                    {recentActivity(currentJob)}
                   </div>
                   {currentJob.error && (
                     <div className="mt-2 text-sm text-red-200">{currentJob.error}</div>
                   )}
                   {currentJob.logs.length > 0 && (
-                    <div className="mt-3 max-h-[220px] overflow-auto rounded-md bg-root p-2 font-mono text-xs text-text-secondary">
-                      {currentJob.logs.map((line, index) => (
-                        <div key={`${line}-${index}`}>{line}</div>
-                      ))}
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={() => setShowJobLogs((value) => !value)}
+                        className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-xs font-semibold text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      >
+                        {showJobLogs
+                          ? t("workspace.hideRawLogs", "Hide raw logs")
+                          : t("workspace.showRawLogs", "Show raw logs")}
+                      </button>
+                      {showJobLogs && (
+                        <div className="mt-2 max-h-[220px] overflow-auto rounded-md bg-root p-2 font-mono text-xs text-text-secondary">
+                          {currentJob.logs.map((line, index) => (
+                            <div key={`${line}-${index}`}>{line}</div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </Panel>
@@ -829,39 +1110,158 @@ export default function AstrBotWorkspace({
                   </div>
                 ) : (
                   <div className="grid gap-2 md:grid-cols-2">
-                    {projects.map((project) => (
-                      <button
-                        type="button"
-                        key={project.project_id}
-                        onClick={() => onOpenProject(projectParamsFromProject(project))}
-                        className="w-full rounded-md border border-border-subtle bg-elevated p-3 text-left transition-colors hover:border-border-medium hover:bg-accent/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold text-text-primary">
-                              {project.name}
-                            </div>
-                            {githubAlias(project) && (
-                              <div className="mt-1 truncate text-xs font-semibold text-accent">
-                                {githubAlias(project)}
+                    {projects.map((project) => {
+                      const projectJob = jobForProject(project, jobs);
+                      const projectActive = isActiveJob(projectJob);
+                      const projectJobStatus = projectJob?.status ?? "";
+                      const restartTarget = projectAnalysisTarget(project);
+                      const restartGitReady =
+                        !looksLikeGitHubTarget(restartTarget) ||
+                        runtimeReadiness?.github_analysis_ready !== false;
+                      const canRestartProject =
+                        Boolean(restartTarget) &&
+                        !starting &&
+                        !subagentError &&
+                        subagentsReady &&
+                        computerUseReady &&
+                        localRuntimeReady &&
+                        restartGitReady;
+                      const deleting = deletingProjectId === project.project_id;
+                      return (
+                        <div
+                          key={project.project_id}
+                          className="rounded-md border border-border-subtle bg-elevated p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-semibold text-text-primary">
+                                {project.name}
                               </div>
-                            )}
-                            <div className="mt-1 truncate font-mono text-xs text-text-muted">
-                              {project.path}
+                              {githubAlias(project) && (
+                                <div className="mt-1 truncate text-xs font-semibold text-accent">
+                                  {githubAlias(project)}
+                                </div>
+                              )}
+                              <div className="mt-1 truncate font-mono text-xs text-text-muted">
+                                {project.path}
+                              </div>
                             </div>
+                            {projectJob && (
+                              <span
+                                className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold ${
+                                  projectActive
+                                    ? "bg-accent/10 text-accent"
+                                    : projectJobStatus === "failed"
+                                      ? "bg-red-900/40 text-red-200"
+                                      : "bg-root text-text-muted"
+                                }`}
+                              >
+                                {projectJobStatus}
+                              </span>
+                            )}
                           </div>
-                          <span className="shrink-0 rounded-full bg-accent/10 px-2 py-1 text-[11px] font-semibold text-accent">
-                            {t("common.open", "Open")}
-                          </span>
+                          <div className="mt-2 text-xs text-text-muted">
+                            {formatDate(project.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
+                          </div>
+                          {projectJob && (
+                            <div className="mt-2 truncate rounded-md bg-root px-2 py-1.5 text-xs text-text-secondary">
+                              {recentActivity(projectJob)}
+                            </div>
+                          )}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => onOpenProject(projectParamsFromProject(project))}
+                              className="rounded-md bg-accent px-3 py-2 text-xs font-semibold text-root transition-[filter,opacity] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                            >
+                              {t("common.open", "Open")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void restartProject(project)}
+                              disabled={!canRestartProject}
+                              className="rounded-md border border-border-medium bg-root px-3 py-2 text-xs font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                            >
+                              {t("workspace.reanalyzeProject", "Reanalyze")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteProject(project)}
+                              disabled={deleting || projectActive}
+                              className="rounded-md border border-red-700/60 bg-red-900/20 px-3 py-2 text-xs font-semibold text-red-200 transition-colors hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+                            >
+                              {deleting
+                                ? t("workspace.deletingProject", "Deleting")
+                                : t("workspace.deleteProject", "Delete")}
+                            </button>
+                          </div>
                         </div>
-                        <div className="mt-2 text-xs text-text-muted">
-                          {formatDate(project.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
-                        </div>
-                      </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </Panel>
+
+              {projectPendingDelete && (
+                <div
+                  className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+                  role="presentation"
+                  onMouseDown={(event) => {
+                    if (event.currentTarget === event.target && !deletingProjectId) {
+                      setProjectPendingDelete(null);
+                    }
+                  }}
+                >
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="delete-project-title"
+                    className="w-full max-w-md rounded-xl border border-red-700/50 bg-elevated p-5 shadow-2xl shadow-black/50"
+                    onMouseDown={(event) => event.stopPropagation()}
+                  >
+                    <div className="text-xs font-semibold uppercase tracking-wider text-red-200">
+                      {t("workspace.deleteProject", "Delete")}
+                    </div>
+                    <h3 id="delete-project-title" className="mt-2 font-heading text-xl text-text-primary">
+                      {t("workspace.deleteProjectTitle", "Delete project graph?")}
+                    </h3>
+                    <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+                      {t(
+                        "workspace.deleteProjectConfirm",
+                        "Delete this project's Understand Anything graph data? Source files will not be deleted.",
+                      )}
+                    </p>
+                    <div className="mt-4 rounded-md border border-border-subtle bg-root p-3">
+                      <div className="truncate text-sm font-semibold text-text-primary">
+                        {projectPendingDelete.name}
+                      </div>
+                      <div className="mt-1 truncate font-mono text-xs text-text-muted">
+                        {projectPendingDelete.path}
+                      </div>
+                    </div>
+                    <div className="mt-5 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setProjectPendingDelete(null)}
+                        disabled={Boolean(deletingProjectId)}
+                        className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      >
+                        {t("common.cancel", "Cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void confirmDeleteProject()}
+                        disabled={Boolean(deletingProjectId)}
+                        className="rounded-md border border-red-700/60 bg-red-900/40 px-3 py-2 text-sm font-semibold text-red-200 transition-colors hover:bg-red-900/60 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+                      >
+                        {deletingProjectId
+                          ? t("workspace.deletingProject", "Deleting")
+                          : t("workspace.deleteProject", "Delete")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </main>
 
             <aside className="space-y-4 xl:sticky xl:top-5 xl:self-start">

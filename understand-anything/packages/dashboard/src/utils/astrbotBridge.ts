@@ -37,6 +37,20 @@ export interface ProjectSummary {
   auto_update?: boolean;
 }
 
+export interface JobProgressStep {
+  phase: string;
+  label: string;
+  status: "pending" | "active" | "complete" | "failed" | "cancelled" | string;
+}
+
+export interface JobProgress {
+  phase: string;
+  label: string;
+  percent: number;
+  steps: JobProgressStep[];
+  updated_at: number;
+}
+
 export interface AstrBotComputerUseConfigStatus {
   id: string;
   name: string;
@@ -198,12 +212,39 @@ export interface JobSnapshot {
   kind: string;
   project_root: string;
   args: Record<string, unknown>;
-  status: "queued" | "running" | "finished" | "failed" | "cancelled";
+  status:
+    | "queued"
+    | "running"
+    | "waiting_confirmation"
+    | "finished"
+    | "failed"
+    | "cancelled";
   logs: string[];
+  progress?: JobProgress;
+  confirmation?: JobConfirmation | null;
   result?: Record<string, unknown> | null;
   error?: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface JobConfirmationSummary {
+  generated?: boolean;
+  gitignore_patterns?: string[];
+  detected_dirs?: string[];
+  test_file_patterns?: string[];
+  [key: string]: unknown;
+}
+
+export interface JobConfirmation {
+  kind: "understandignore" | string;
+  project_root: string;
+  graph_root: string;
+  ignore_path: string;
+  content: string;
+  summary?: JobConfirmationSummary;
+  instructions?: string;
+  expires_at?: number;
 }
 
 export interface AstrBotWindow extends Window {
