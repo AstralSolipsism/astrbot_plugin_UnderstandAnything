@@ -20,6 +20,11 @@ from astrbot_adapter.github_repo import (
     GitHubRepoError,
     GitHubRepoManager,
 )
+from astrbot_adapter.ignore_review import (
+    apply_confirmation_reply,
+    build_ignore_confirmation,
+    parse_confirmation_reply,
+)
 from astrbot_adapter.job_request import format_job_args, parse_job_args
 from astrbot_adapter.job_store import JobStatus, JobStore
 from astrbot_adapter.path_security import PathSecurity, PathSecurityError
@@ -246,6 +251,7 @@ def test_job_store_tracks_lifecycle() -> None:
 
     job = jobs.create("understand", Path("D:/project"), {"full": True})
     jobs.append_log(job.job_id, "started")
+    jobs.set_progress(job.job_id, "agent", "Running workflow.", 55)
     jobs.mark_running(job.job_id)
     jobs.mark_finished(job.job_id, {"graph": "knowledge-graph.json"})
 
@@ -254,6 +260,29 @@ def test_job_store_tracks_lifecycle() -> None:
     assert snapshot.status is JobStatus.FINISHED
     assert snapshot.logs == ["started"]
     assert snapshot.result == {"graph": "knowledge-graph.json"}
+    assert snapshot.progress.phase == "complete"
+    assert snapshot.to_dict()["progress"]["percent"] == 100
+
+
+def test_job_store_tracks_structured_progress_and_cancellation() -> None:
+    jobs = JobStore()
+
+    job = jobs.create("understand", Path("D:/project"), {"project_id": "p1"})
+    assert job.progress.phase == "queued"
+    assert job.progress.steps[0]["status"] == "active"
+
+    jobs.set_progress(job.job_id, "runtime", "Preparing runtime.", 30)
+    snapshot = jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.progress.phase == "runtime"
+    assert snapshot.progress.steps[0]["status"] == "complete"
+    assert snapshot.progress.steps[3]["status"] == "active"
+
+    jobs.mark_cancelled(job.job_id)
+    snapshot = jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.CANCELLED
+    assert snapshot.progress.phase == "cancelled"
 
 
 def test_project_registry_registers_and_resolves_by_id_name_alias(
@@ -278,6 +307,11 @@ def test_project_registry_registers_and_resolves_by_id_name_alias(
     updated = registry.register(project, job_id="job-2", auto_update=True)
     assert updated.last_job_id == "job-2"
     assert updated.auto_update is True
+
+    deleted = registry.delete(updated.project_id)
+    assert deleted is not None
+    assert deleted.project_id == updated.project_id
+    assert registry.get(project_id=updated.project_id) is None
 
 
 def test_project_registry_records_separate_source_and_graph_root(
@@ -354,6 +388,131 @@ def test_structured_job_request_keeps_path_with_spaces(tmp_path: Path) -> None:
     assert "Project With Spaces" in raw_args
     assert parsed.path == str(project.resolve())
     assert parsed.flags == ["--full"]
+
+
+def test_runner_prompt_delegates_understandignore_confirmation_to_host(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    graph_root = project / ".understand-anything"
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "raw_args": str(project),
+            "project_path": str(project),
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+        },
+    )
+
+    prompt = runner._build_skill_execution_prompt(job)
+
+    assert "host adapter handles `.understandignore` confirmation" in prompt
+    assert "non-interactive AstrBot host run" not in prompt
+    assert "Do not pause for `.understandignore` review" not in prompt
+
+
+def test_ignore_review_generates_confirmation_from_project_scan(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".gitignore").write_text(
+        "node_modules/\ncustom-cache/\n.env\n",
+        encoding="utf-8",
+    )
+    (project / "tests").mkdir()
+    src = project / "src"
+    src.mkdir()
+    (src / "app.test.ts").write_text("test('demo', () => {})", encoding="utf-8")
+    graph_root = tmp_path / "graph" / ".understand-anything"
+
+    confirmation = build_ignore_confirmation(project, graph_root, timeout_seconds=60)
+
+    content = (graph_root / ".understandignore").read_text(encoding="utf-8")
+    assert confirmation["kind"] == "understandignore"
+    assert confirmation["summary"]["generated"] is True
+    assert "custom-cache/" in confirmation["summary"]["gitignore_patterns"]
+    assert "node_modules/" not in confirmation["summary"]["gitignore_patterns"]
+    assert "tests" in confirmation["summary"]["detected_dirs"]
+    assert "*.test.*" in confirmation["summary"]["test_file_patterns"]
+    assert "custom-cache/" in content
+    assert "tests/" in content
+
+
+def test_ignore_review_existing_understandignore_still_requires_confirmation(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    graph_root = tmp_path / "graph" / ".understand-anything"
+    project.mkdir()
+    graph_root.mkdir(parents=True)
+    (graph_root / ".understandignore").write_text("docs/\n", encoding="utf-8")
+
+    confirmation = build_ignore_confirmation(project, graph_root)
+
+    assert confirmation["summary"]["generated"] is False
+    assert confirmation["content"] == "docs/\n"
+
+
+def test_ignore_confirmation_reply_parser_updates_rules(tmp_path: Path) -> None:
+    graph_root = tmp_path / ".understand-anything"
+    graph_root.mkdir()
+    (graph_root / ".understandignore").write_text("dist/\n", encoding="utf-8")
+
+    assert parse_confirmation_reply("继续")[0] == "continue"
+    assert parse_confirmation_reply("cancel")[0] == "cancel"
+    assert parse_confirmation_reply("排除 tests/, docs/") == (
+        "update",
+        ["tests/", "docs/"],
+    )
+    assert parse_confirmation_reply("包含 docs/") == ("update", ["!docs/"])
+
+    action, content = apply_confirmation_reply(graph_root, "排除 tests/")
+
+    assert action == "update"
+    assert "dist/" in content
+    assert "tests/" in content
+
+
+@pytest.mark.asyncio
+async def test_runner_cancels_understandignore_confirmation_on_timeout(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "raw_args": str(project),
+            "project_path": str(project),
+            "graph_root": str(project / ".understand-anything"),
+            "source": {"type": "local"},
+        },
+    )
+
+    confirmed = await runner._confirm_understandignore(
+        job,
+        event=None,
+        timeout_seconds=0.01,
+    )
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert confirmed is False
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.CANCELLED
+    assert "timed out" in (snapshot.error or "")
 
 
 def test_job_request_parses_github_ref_without_treating_it_as_flag() -> None:
@@ -917,6 +1076,239 @@ async def test_web_api_start_job_maps_single_target_to_runner(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_web_api_lists_jobs_with_project_and_status_filters(
+    tmp_path: Path,
+) -> None:
+    jobs = JobStore()
+    first = jobs.create("understand", tmp_path / "first", {"project_id": "p1"})
+    jobs.mark_running(first.job_id)
+    jobs.set_progress(first.job_id, "agent", "Running workflow.", 55)
+    second = jobs.create("understand", tmp_path / "second", {"project_id": "p2"})
+    jobs.mark_finished(second.job_id, {"message": "done"})
+    runner = SimpleNamespace(
+        config={},
+        registry=ProjectRegistry(tmp_path / "projects.json"),
+        jobs=jobs,
+    )
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/jobs?project_id=p1&status=running",
+    ):
+        response = await api.jobs()
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert len(payload["data"]["jobs"]) == 1
+    assert payload["data"]["jobs"][0]["job_id"] == first.job_id
+    assert payload["data"]["jobs"][0]["progress"]["phase"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_web_api_confirms_dashboard_understandignore_job(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    graph_root = project / ".understand-anything"
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "raw_args": str(project),
+            "project_path": str(project),
+            "graph_root": str(graph_root),
+            "project_id": "p1",
+            "source": {"type": "local"},
+        },
+    )
+    runner.jobs.mark_waiting_confirmation(
+        job.job_id,
+        build_ignore_confirmation(project, graph_root),
+    )
+    runner._confirmation_futures[job.job_id] = asyncio.get_running_loop().create_future()
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        f"/astrbot_plugin_UnderstandAnything/jobs/{job.job_id}/confirm",
+        method="POST",
+        json={"action": "update", "content": "tests/\n"},
+    ):
+        response = await api.confirm_job(job.job_id)
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["status"] == "waiting_confirmation"
+    assert payload["data"]["confirmation"]["content"] == "tests/\n"
+
+    async with app.test_request_context(
+        f"/astrbot_plugin_UnderstandAnything/jobs/{job.job_id}/confirm",
+        method="POST",
+        json={"action": "continue", "content": "tests/\n"},
+    ):
+        response = await api.confirm_job(job.job_id)
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["status"] == "queued"
+    assert runner._confirmation_futures[job.job_id].done()
+
+    cancel_job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "raw_args": str(project),
+            "project_path": str(project),
+            "graph_root": str(graph_root),
+            "project_id": "p1",
+            "source": {"type": "local"},
+        },
+    )
+    runner.jobs.mark_waiting_confirmation(
+        cancel_job.job_id,
+        build_ignore_confirmation(project, graph_root),
+    )
+    runner._confirmation_futures[cancel_job.job_id] = (
+        asyncio.get_running_loop().create_future()
+    )
+
+    async with app.test_request_context(
+        f"/astrbot_plugin_UnderstandAnything/jobs/{cancel_job.job_id}/confirm",
+        method="POST",
+        json={"action": "cancel"},
+    ):
+        response = await api.confirm_job(cancel_job.job_id)
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["status"] == "cancelled"
+    assert runner._confirmation_futures[cancel_job.job_id].done()
+
+
+@pytest.mark.asyncio
+async def test_web_api_delete_project_removes_registry_and_graph_not_source(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "project"
+    graph_root = source_root / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    (graph_root / "knowledge-graph.json").write_text(
+        '{"project": {"name": "Demo"}}',
+        encoding="utf-8",
+    )
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(source_root)
+    runner = SimpleNamespace(config={}, registry=registry, jobs=JobStore())
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/projects/delete",
+        method="POST",
+        json={"project_id": record.project_id},
+    ):
+        response = await api.delete_project()
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["graph_deleted"] is True
+    assert source_root.exists()
+    assert not graph_root.exists()
+    assert registry.get(project_id=record.project_id) is None
+
+
+@pytest.mark.asyncio
+async def test_web_api_delete_project_keeps_registry_when_graph_root_is_unsafe(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "project"
+    source_root.mkdir()
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(source_root, graph_root=source_root)
+    runner = SimpleNamespace(config={}, registry=registry, jobs=JobStore())
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/projects/delete",
+        method="POST",
+        json={"project_id": record.project_id},
+    ):
+        response, status_code = await api.delete_project()
+
+    payload = await response.get_json()
+    assert status_code == 400
+    assert payload["status"] == "error"
+    assert source_root.exists()
+    assert registry.get(project_id=record.project_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_web_api_delete_project_removes_registry_when_graph_is_missing(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "project"
+    source_root.mkdir()
+    graph_root = source_root / ".understand-anything"
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(source_root)
+    runner = SimpleNamespace(config={}, registry=registry, jobs=JobStore())
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/projects/delete",
+        method="POST",
+        json={"project_id": record.project_id},
+    ):
+        response = await api.delete_project()
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["graph_deleted"] is False
+    assert not graph_root.exists()
+    assert registry.get(project_id=record.project_id) is None
+
+
+@pytest.mark.asyncio
+async def test_web_api_delete_project_rejects_active_jobs(tmp_path: Path) -> None:
+    source_root = tmp_path / "project"
+    graph_root = source_root / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(source_root)
+    jobs = JobStore()
+    active = jobs.create("understand", source_root, {"project_id": record.project_id})
+    jobs.mark_waiting_confirmation(
+        active.job_id,
+        build_ignore_confirmation(source_root, graph_root),
+    )
+    runner = SimpleNamespace(config={}, registry=registry, jobs=jobs)
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/projects/delete",
+        method="POST",
+        json={"project_id": record.project_id},
+    ):
+        response, status_code = await api.delete_project()
+
+    payload = await response.get_json()
+    assert status_code == 400
+    assert "still running" in payload["message"]
+    assert graph_root.exists()
+    assert registry.get(project_id=record.project_id) is not None
+
+
+@pytest.mark.asyncio
 async def test_web_api_runtime_repair_delegates_to_plugin_runtime(
     tmp_path: Path,
 ) -> None:
@@ -1127,6 +1519,7 @@ def test_web_api_status_summarizes_config_without_provider_secret(
     assert "/astrbot_plugin_UnderstandAnything/status" in routes
     assert "/astrbot_plugin_UnderstandAnything/runtime/repair" in routes
     assert "/astrbot_plugin_UnderstandAnything/subagents/providers" in routes
+    assert "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/confirm" in routes
     assert payload["plugin"]["name"] == "astrbot_plugin_UnderstandAnything"
     assert payload["config"]["provider_configured"] is True
     assert "node_bin" not in payload["config"]
@@ -1454,7 +1847,16 @@ async def test_runner_fails_graph_job_when_required_graph_is_missing(
         },
     )
 
-    await runner._run_skill_job(job, event=None)
+    task = asyncio.create_task(runner._run_skill_job(job, event=None))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        snapshot = runner.jobs.get(job.job_id)
+        if snapshot and snapshot.status is JobStatus.WAITING_CONFIRMATION:
+            break
+    else:
+        pytest.fail("Job did not enter .understandignore confirmation.")
+    runner.confirm_job(job.job_id, action="continue", source="test")
+    await task
 
     snapshot = runner.jobs.get(job.job_id)
     assert snapshot is not None

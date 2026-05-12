@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from quart import Response as QuartResponse
@@ -15,6 +17,7 @@ from .computer_use import computer_use_status
 from .constants import (
     DASHBOARD_PAGE_ROOT,
     DASHBOARD_SOURCE_ROOT,
+    GRAPH_DIR_NAME,
     GRAPH_FILES,
     PLUGIN_DISPLAY_NAME,
     PLUGIN_NAME,
@@ -72,6 +75,12 @@ class UnderstandAnythingWebApi:
                 "List chat providers for UA SubAgent registration",
             ),
             (f"{prefix}/projects", self.projects, ["GET"], "List registered projects"),
+            (
+                f"{prefix}/projects/delete",
+                self.delete_project,
+                ["POST"],
+                "Delete registered project graph data",
+            ),
             (f"{prefix}/graph", self.graph, ["GET"], "Read knowledge graph"),
             (f"{prefix}/meta", self.meta, ["GET"], "Read analysis metadata"),
             (
@@ -92,8 +101,15 @@ class UnderstandAnythingWebApi:
                 ["GET"],
                 "Read graph source file",
             ),
+            (f"{prefix}/jobs", self.jobs, ["GET"], "List jobs"),
             (f"{prefix}/jobs/start", self.start_job, ["POST"], "Start job"),
             (f"{prefix}/jobs/<job_id>", self.get_job, ["GET"], "Get job"),
+            (
+                f"{prefix}/jobs/<job_id>/confirm",
+                self.confirm_job,
+                ["POST"],
+                "Confirm job scan scope",
+            ),
             (
                 f"{prefix}/jobs/<job_id>/events",
                 self.job_events,
@@ -252,6 +268,80 @@ class UnderstandAnythingWebApi:
                 },
             }
         )
+
+    async def delete_project(self):
+        try:
+            body = await self._json_body()
+            project_id = self._string_or_none(body.get("project_id"))
+            if not project_id:
+                raise ValueError("Missing project_id.")
+            record = self.runner.registry.get(project_id=project_id)
+            if record is None:
+                return jsonify({"status": "error", "message": "Project not found"}), 404
+            active_job = self._active_project_job(project_id)
+            if active_job is not None:
+                raise ValueError(
+                    "Project analysis is still running. Wait for the job to finish before deleting it."
+                )
+            graph_root = self._safe_project_graph_root(record.to_dict())
+            graph_deleted = False
+            if graph_root.exists():
+                shutil.rmtree(graph_root)
+                graph_deleted = True
+            deleted = self.runner.registry.delete(project_id)
+            return jsonify(
+                {
+                    "status": "ok",
+                    "data": {
+                        "project": deleted.to_dict() if deleted else record.to_dict(),
+                        "graph_deleted": graph_deleted,
+                    },
+                }
+            )
+        except Exception as exc:
+            return self._error(exc)
+
+    async def jobs(self):
+        project_id = self._string_or_none(request.args.get("project_id"))
+        status_filter = {
+            item.strip()
+            for item in str(request.args.get("status") or "").split(",")
+            if item.strip()
+        }
+        try:
+            limit = max(1, min(100, int(request.args.get("limit") or 50)))
+        except ValueError:
+            limit = 50
+        jobs = self.runner.jobs.list()
+        if project_id:
+            jobs = [
+                job
+                for job in jobs
+                if str(job.args.get("project_id") or "") == project_id
+            ]
+        if status_filter:
+            jobs = [job for job in jobs if job.status.value in status_filter]
+        return jsonify(
+            {
+                "status": "ok",
+                "data": {"jobs": [job.to_dict() for job in jobs[:limit]]},
+            }
+        )
+
+    async def confirm_job(self, job_id: str):
+        try:
+            body = await self._json_body()
+            action = str(body.get("action") or "").strip()
+            content = body.get("content")
+            job = self.runner.confirm_job(
+                job_id,
+                action=action,
+                content=str(content) if content is not None else None,
+                source="dashboard",
+            )
+            return jsonify({"status": "ok", "data": job.to_dict()})
+        except Exception as exc:
+            return self._error(exc)
 
     async def file_content(self):
         try:
@@ -479,6 +569,34 @@ class UnderstandAnythingWebApi:
             "exists": path.exists(),
             "is_dir": path.is_dir(),
         }
+
+    def _active_project_job(self, project_id: str):
+        for job in self.runner.jobs.list():
+            if str(job.args.get("project_id") or "") != project_id:
+                continue
+            if job.status in {
+                JobStatus.QUEUED,
+                JobStatus.RUNNING,
+                JobStatus.WAITING_CONFIRMATION,
+            }:
+                return job
+        return None
+
+    @staticmethod
+    def _safe_project_graph_root(record: dict[str, Any]) -> Path:
+        graph_root = Path(str(record.get("graph_root") or "")).resolve(strict=False)
+        source_root = Path(str(record.get("path") or "")).resolve(strict=False)
+        if not str(graph_root):
+            raise ValueError("Project graph root is missing.")
+        if graph_root.name != GRAPH_DIR_NAME:
+            raise ValueError(
+                "Refusing to delete a path that is not a UA graph directory."
+            )
+        if graph_root == source_root:
+            raise ValueError("Refusing to delete the project source directory.")
+        if graph_root.exists() and not graph_root.is_dir():
+            raise ValueError("Project graph root is not a directory.")
+        return graph_root
 
     def _provider_options_payload(self) -> dict[str, Any]:
         providers = self._chat_provider_summaries()

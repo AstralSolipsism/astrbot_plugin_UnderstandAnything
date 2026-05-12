@@ -23,8 +23,14 @@ from .constants import (
     SKILL_COMMANDS,
 )
 from .github_repo import GitHubRepoCheckout, GitHubRepoError, GitHubRepoManager
+from .ignore_review import (
+    apply_confirmation_reply,
+    build_ignore_confirmation,
+    parse_confirmation_reply,
+    write_ignore_content,
+)
 from .job_request import format_job_args, parse_job_args, split_args
-from .job_store import JobSnapshot, JobStore
+from .job_store import JobSnapshot, JobStatus, JobStore
 from .llm_dispatcher import LLMDispatcher, read_prompt_file
 from .path_security import PathSecurity
 from .project_registry import ProjectRegistry, ProjectRegistryError
@@ -77,6 +83,7 @@ class UnderstandAnythingRunner:
             max_concurrent_jobs = 1
         self._job_semaphore = asyncio.Semaphore(max(1, max_concurrent_jobs))
         self._tasks: dict[str, asyncio.Task] = {}
+        self._confirmation_futures: dict[str, asyncio.Future[str]] = {}
         self._auto_update_task: asyncio.Task | None = None
         self._auto_update_projects: set[Path] = set()
         self.registry = ProjectRegistry(Path(registry_path) if registry_path else None)
@@ -392,20 +399,36 @@ class UnderstandAnythingRunner:
     ) -> None:
         agent_event = event or self._synthetic_event(job)
         try:
+            self.jobs.mark_running(job.job_id)
+            self.jobs.set_progress(
+                job.job_id,
+                "source",
+                "Preparing project source.",
+                15,
+            )
+            self.jobs.append_log(
+                job.job_id,
+                f"Starting {job.kind} job.",
+            )
+            await self._prepare_job_source(job)
+            self.jobs.append_log(job.job_id, f"Target project root: {job.project_root}")
+            self._ensure_graph_root_defaults(job)
+            if job.kind == "understand":
+                confirmed = await self._confirm_understandignore(job, event)
+                if not confirmed:
+                    return
+
             async with self._job_semaphore:
                 self.jobs.mark_running(job.job_id)
-                self.jobs.append_log(
-                    job.job_id,
-                    f"Starting {job.kind} job.",
-                )
-                await self._prepare_job_source(job)
-                self.jobs.append_log(
-                    job.job_id, f"Target project root: {job.project_root}"
-                )
-                self._ensure_graph_root_defaults(job)
                 ensure_computer_use_enabled(
                     self.context,
                     umo=getattr(event, "unified_msg_origin", None) if event else None,
+                )
+                self.jobs.set_progress(
+                    job.job_id,
+                    "runtime",
+                    "Preparing bundled runtime.",
+                    30,
                 )
                 await self.runtime.ensure_ready()
                 prompt = self._build_skill_execution_prompt(job)
@@ -438,6 +461,12 @@ class UnderstandAnythingRunner:
                             f"Blocked roles: {blocked_text}",
                         )
                     subagent_dispatcher.ensure_ready()
+                self.jobs.set_progress(
+                    job.job_id,
+                    "agent",
+                    "Running Understand Anything agent workflow.",
+                    55,
+                )
                 result = await self.dispatcher.run_with_local_tools(
                     event=agent_event,
                     prompt=prompt,
@@ -458,6 +487,12 @@ class UnderstandAnythingRunner:
                     extra_tools=subagent_dispatcher.tool_set(),
                 )
                 self.jobs.append_log(job.job_id, "Agent workflow finished.")
+                self.jobs.set_progress(
+                    job.job_id,
+                    "validate",
+                    "Validating generated graph outputs.",
+                    85,
+                )
                 self._validate_required_outputs(job)
                 self.jobs.mark_finished(job.job_id, {"message": result})
                 self.registry.register(
@@ -483,7 +518,7 @@ class UnderstandAnythingRunner:
                         ),
                     )
         except asyncio.CancelledError:
-            self.jobs.mark_failed(job.job_id, "Job cancelled.")
+            self.jobs.mark_cancelled(job.job_id)
             raise
         except Exception as exc:
             logger.error("Understand Anything job failed: %s", exc)
@@ -537,13 +572,199 @@ class UnderstandAnythingRunner:
             "Use `$PROJECT_ROOT` only for reading source files and git state.\n"
             "- Write graph files, meta, fingerprints, config, intermediate, and "
             "tmp outputs under `$UA_GRAPH_ROOT`.\n"
+            "- The AstrBot host adapter handles `.understandignore` confirmation "
+            "before this prompt is executed. Do not ask for another confirmation "
+            "inside the skill workflow.\n"
             "- Preserve Understand Anything JSON schema and Dashboard compatibility.\n"
         )
+
+    async def _confirm_understandignore(
+        self,
+        job: JobSnapshot,
+        event: AstrMessageEvent | None,
+        timeout_seconds: int = 600,
+    ) -> bool:
+        graph_root = self._job_graph_root(job)
+        confirmation = build_ignore_confirmation(
+            job.project_root,
+            graph_root,
+            timeout_seconds=timeout_seconds,
+        )
+        self.jobs.mark_waiting_confirmation(job.job_id, confirmation)
+        self.jobs.append_log(job.job_id, "Waiting for .understandignore confirmation.")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._confirmation_futures[job.job_id] = future
+        try:
+            if event is not None:
+                await self._wait_for_message_confirmation(job, event, timeout_seconds)
+            else:
+                await self._wait_for_dashboard_confirmation(job, timeout_seconds)
+        except TimeoutError:
+            self.jobs.mark_cancelled(
+                job.job_id, "Understand ignore confirmation timed out."
+            )
+            return False
+        finally:
+            self._confirmation_futures.pop(job.job_id, None)
+
+        snapshot = self.jobs.get(job.job_id)
+        if snapshot is None or snapshot.status is not JobStatus.QUEUED:
+            return False
+        return True
+
+    async def _wait_for_dashboard_confirmation(
+        self,
+        job: JobSnapshot,
+        timeout_seconds: int,
+    ) -> None:
+        future = self._confirmation_futures[job.job_id]
+        await asyncio.wait_for(future, timeout_seconds)
+
+    async def _wait_for_message_confirmation(
+        self,
+        job: JobSnapshot,
+        event: AstrMessageEvent,
+        timeout_seconds: int,
+    ) -> None:
+        from astrbot.core.utils.session_waiter import SessionController, session_waiter
+
+        @session_waiter(timeout_seconds)
+        async def waiter(
+            controller: SessionController,
+            reply_event: AstrMessageEvent,
+        ) -> None:
+            action, _payload = parse_confirmation_reply(reply_event.message_str)
+            snapshot = self.confirm_job_from_message(
+                job.job_id,
+                reply_event.message_str,
+                source="conversation",
+            )
+            if action == "update":
+                await reply_event.send(
+                    MessageChain().message(
+                        self._confirmation_message(job)
+                        + "\n\nRules updated. Reply `继续`/`continue` to proceed or add more patterns.",
+                    ),
+                )
+                controller.keep(timeout_seconds, reset_timeout=True)
+                reply_event.stop_event()
+                return
+            if snapshot.status is JobStatus.CANCELLED:
+                await reply_event.send(
+                    MessageChain().message("Understand Anything analysis cancelled.")
+                )
+            else:
+                await reply_event.send(
+                    MessageChain().message("Confirmed. Continuing analysis.")
+                )
+            controller.stop()
+            reply_event.stop_event()
+
+        waiter_task = asyncio.create_task(waiter(event))
+        await asyncio.sleep(0)
+        await event.send(
+            MessageChain().message(self._confirmation_message(job)),
+        )
+        await waiter_task
+
+    def _confirmation_message(self, job: JobSnapshot) -> str:
+        snapshot = self.jobs.get(job.job_id)
+        confirmation = snapshot.confirmation if snapshot else None
+        if not confirmation:
+            return "Confirm Understand Anything scan scope."
+        summary = confirmation.get("summary", {})
+        detected_dirs = ", ".join(summary.get("detected_dirs", [])) or "none"
+        gitignore_count = len(summary.get("gitignore_patterns", []))
+        rules = str(confirmation.get("content") or "").strip() or "# empty"
+        if len(rules) > 3500:
+            rules = rules[:3500].rstrip() + "\n# ... truncated ..."
+        return (
+            "Understand Anything scan scope needs confirmation.\n"
+            f"Project: {confirmation.get('project_root')}\n"
+            f"Graph root: {confirmation.get('graph_root')}\n"
+            f"Detected optional directories: {detected_dirs}\n"
+            f"Extra .gitignore suggestions: {gitignore_count}\n\n"
+            "Current .understandignore:\n"
+            "```gitignore\n"
+            f"{rules}\n"
+            "```\n\n"
+            "Reply `继续`/`continue` to use the current .understandignore, "
+            "`取消`/`cancel` to stop, `排除 tests/ docs/` to add exclusions, "
+            "or `包含 dist/` to force include a path."
+        )
+
+    def confirm_job(
+        self,
+        job_id: str,
+        *,
+        action: str,
+        content: str | None = None,
+        source: str = "dashboard",
+    ) -> JobSnapshot:
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise KeyError(f"Unknown job id: {job_id}")
+        if job.status is not JobStatus.WAITING_CONFIRMATION or not job.confirmation:
+            raise ValueError("Job is not waiting for confirmation.")
+        graph_root = self._job_graph_root(job)
+        normalized = str(action or "").strip().casefold()
+        if normalized == "update":
+            if content is None:
+                raise ValueError("Missing confirmation content.")
+            updated = write_ignore_content(graph_root, content)
+            confirmation = build_ignore_confirmation(job.project_root, graph_root)
+            confirmation["content"] = updated
+            confirmation["source"] = source
+            self.jobs.mark_waiting_confirmation(job_id, confirmation)
+            self.jobs.append_log(job_id, f".understandignore updated from {source}.")
+            return self.jobs._require(job_id)
+        if normalized == "cancel":
+            self.jobs.mark_cancelled(
+                job_id, "User cancelled .understandignore confirmation."
+            )
+            self._resolve_confirmation(job_id, "cancel")
+            return self.jobs._require(job_id)
+        if normalized == "continue":
+            if content is not None:
+                write_ignore_content(graph_root, content)
+            self.jobs.clear_confirmation(job_id)
+            self.jobs.mark_queued(job_id)
+            self.jobs.append_log(job_id, f".understandignore confirmed from {source}.")
+            self._resolve_confirmation(job_id, "continue")
+            return self.jobs._require(job_id)
+        raise ValueError(f"Unsupported confirmation action: {action}")
+
+    def confirm_job_from_message(
+        self,
+        job_id: str,
+        message: str,
+        *,
+        source: str,
+    ) -> JobSnapshot:
+        action, content = apply_confirmation_reply(
+            self._job_graph_root(self.jobs._require(job_id)), message
+        )
+        if action == "update":
+            confirmation = build_ignore_confirmation(
+                self.jobs._require(job_id).project_root,
+                self._job_graph_root(self.jobs._require(job_id)),
+            )
+            confirmation["content"] = content
+            confirmation["source"] = source
+            self.jobs.mark_waiting_confirmation(job_id, confirmation)
+            self.jobs.append_log(job_id, f".understandignore updated from {source}.")
+            return self.jobs._require(job_id)
+        return self.confirm_job(job_id, action=action, source=source)
+
+    def _resolve_confirmation(self, job_id: str, value: str) -> None:
+        future = self._confirmation_futures.get(job_id)
+        if future is not None and not future.done():
+            future.set_result(value)
 
     def _ensure_graph_root_defaults(self, job: JobSnapshot) -> None:
         graph_root = self._job_graph_root(job)
         graph_root.mkdir(parents=True, exist_ok=True)
-        (graph_root / ".understandignore").touch(exist_ok=True)
 
     def _validate_required_outputs(self, job: JobSnapshot) -> None:
         required = REQUIRED_GRAPH_OUTPUTS_BY_JOB.get(job.kind, ())

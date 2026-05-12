@@ -276,6 +276,13 @@ class ProjectRegistry:
             return records[0] if len(records) == 1 else None
         return self._find(ref)
 
+    def delete(self, project_id: str) -> ProjectRecord | None:
+        self._load()
+        record = self._records.pop(project_id, None)
+        if record is not None:
+            self._save()
+        return record
+
     def _available_projects_text(self) -> str:
         records = self.list()
         if not records:
