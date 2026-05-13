@@ -1,4 +1,5 @@
 import type { KnowledgeGraph, GraphNode, GraphEdge, Layer } from "@understand-anything/core";
+import { type PromptLanguageOptions } from "./language-options.js";
 export interface ExplainContext {
     projectName: string;
     path: string;
@@ -16,5 +17,5 @@ export declare function buildExplainContext(graph: KnowledgeGraph, path: string)
 /**
  * Format the explain context as a structured prompt for LLM consumption.
  */
-export declare function formatExplainPrompt(ctx: ExplainContext): string;
+export declare function formatExplainPrompt(ctx: ExplainContext, options?: PromptLanguageOptions): string;
 //# sourceMappingURL=explain-builder.d.ts.map

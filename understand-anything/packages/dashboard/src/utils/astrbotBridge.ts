@@ -418,5 +418,10 @@ export async function pluginPost<T>(
   if (!bridge.apiPost) {
     throw new Error("AstrBot Plugin Page POST bridge is unavailable.");
   }
-  return unwrapPluginPayload(await bridge.apiPost(endpoint, body)) as T;
+  const locale = bridge.getLocale?.();
+  const payload =
+    locale && (!body || typeof body.locale !== "string" || !body.locale.trim())
+      ? { ...(body || {}), locale }
+      : body;
+  return unwrapPluginPayload(await bridge.apiPost(endpoint, payload)) as T;
 }

@@ -1,7 +1,8 @@
 import type { KnowledgeGraph } from "@understand-anything/core";
+import { type PromptLanguageOptions } from "./language-options.js";
 /**
  * Generate a structured onboarding guide from the knowledge graph.
  * Output is standalone markdown suitable for a README, wiki, or docs.
  */
-export declare function buildOnboardingGuide(graph: KnowledgeGraph): string;
+export declare function buildOnboardingGuide(graph: KnowledgeGraph, options?: PromptLanguageOptions): string;
 //# sourceMappingURL=onboard-builder.d.ts.map

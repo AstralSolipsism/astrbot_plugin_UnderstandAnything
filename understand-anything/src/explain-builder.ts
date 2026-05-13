@@ -4,6 +4,7 @@ import type {
   GraphEdge,
   Layer,
 } from "@understand-anything/core";
+import { addLanguageDirective, type PromptLanguageOptions } from "./language-options.js";
 
 export interface ExplainContext {
   projectName: string;
@@ -105,18 +106,25 @@ export function buildExplainContext(
 /**
  * Format the explain context as a structured prompt for LLM consumption.
  */
-export function formatExplainPrompt(ctx: ExplainContext): string {
+export function formatExplainPrompt(
+  ctx: ExplainContext,
+  options?: PromptLanguageOptions,
+): string {
   if (!ctx.targetNode) {
-    return [
+    const lines = [
       `# Component Not Found`,
       ``,
       `The path "${ctx.path}" was not found in the knowledge graph for ${ctx.projectName}.`,
       ``,
+    ];
+    addLanguageDirective(lines, options);
+    lines.push(
       `Possible reasons:`,
       `- The file hasn't been analyzed yet — try running /understand first`,
       `- The path may be different in the graph — check the exact file path`,
       `- The file may have been deleted or renamed since the last analysis`,
-    ].join("\n");
+    );
+    return lines.join("\n");
   }
 
   const { targetNode, childNodes, connectedNodes, relevantEdges, layer } = ctx;
@@ -136,6 +144,7 @@ export function formatExplainPrompt(ctx: ExplainContext): string {
   lines.push("");
   lines.push(`**Summary:** ${targetNode.summary}`);
   lines.push("");
+  addLanguageDirective(lines, options);
 
   if (layer) {
     lines.push(`## Architectural Layer: ${layer.name}`);

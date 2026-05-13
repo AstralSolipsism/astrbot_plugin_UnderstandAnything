@@ -4,6 +4,7 @@ import type {
   GraphEdge,
   Layer,
 } from "@understand-anything/core";
+import { addLanguageDirective, type PromptLanguageOptions } from "./language-options.js";
 
 export interface DiffContext {
   projectName: string;
@@ -90,11 +91,15 @@ export function buildDiffContext(
 /**
  * Format the diff analysis as structured markdown for LLM or human consumption.
  */
-export function formatDiffAnalysis(ctx: DiffContext): string {
+export function formatDiffAnalysis(
+  ctx: DiffContext,
+  options?: PromptLanguageOptions,
+): string {
   const lines: string[] = [];
 
   lines.push(`# Diff Analysis: ${ctx.projectName}`);
   lines.push("");
+  addLanguageDirective(lines, options);
 
   lines.push("## Changed Components");
   lines.push("");

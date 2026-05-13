@@ -10,6 +10,7 @@ describe("analysis job request payloads", () => {
         fullAnalysis: true,
         autoUpdate: false,
         githubProxy: "https://gh.llkk.cc",
+        locale: "zh-CN",
       }),
     ).toEqual({
       action: "understand",
@@ -17,6 +18,7 @@ describe("analysis job request payloads", () => {
       full: true,
       auto_update: false,
       github_proxy: "https://gh.llkk.cc",
+      locale: "zh-CN",
     });
   });
 

@@ -1,4 +1,5 @@
 import type { KnowledgeGraph, GraphNode, GraphEdge, Layer } from "@understand-anything/core";
+import { type PromptLanguageOptions } from "./language-options.js";
 export interface DiffContext {
     projectName: string;
     changedFiles: string[];
@@ -16,5 +17,5 @@ export declare function buildDiffContext(graph: KnowledgeGraph, changedFiles: st
 /**
  * Format the diff analysis as structured markdown for LLM or human consumption.
  */
-export declare function formatDiffAnalysis(ctx: DiffContext): string;
+export declare function formatDiffAnalysis(ctx: DiffContext, options?: PromptLanguageOptions): string;
 //# sourceMappingURL=diff-analyzer.d.ts.map

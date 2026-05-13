@@ -1,3 +1,4 @@
+import { addLanguageDirective } from "./language-options.js";
 /**
  * Map a list of changed file paths to knowledge graph nodes and
  * identify the ripple effect (affected nodes, layers, edges).
@@ -57,10 +58,11 @@ export function buildDiffContext(graph, changedFiles) {
 /**
  * Format the diff analysis as structured markdown for LLM or human consumption.
  */
-export function formatDiffAnalysis(ctx) {
+export function formatDiffAnalysis(ctx, options) {
     const lines = [];
     lines.push(`# Diff Analysis: ${ctx.projectName}`);
     lines.push("");
+    addLanguageDirective(lines, options);
     lines.push("## Changed Components");
     lines.push("");
     if (ctx.changedNodes.length === 0) {

@@ -1,8 +1,9 @@
+import { addLanguageDirective } from "./language-options.js";
 /**
  * Generate a structured onboarding guide from the knowledge graph.
  * Output is standalone markdown suitable for a README, wiki, or docs.
  */
-export function buildOnboardingGuide(graph) {
+export function buildOnboardingGuide(graph, options) {
     const { project, nodes, edges, layers, tour } = graph;
     const lines = [];
     // --- Project Overview ---
@@ -17,6 +18,7 @@ export function buildOnboardingGuide(graph) {
     lines.push(`| **Components** | ${nodes.length} nodes, ${edges.length} relationships |`);
     lines.push(`| **Last Analyzed** | ${project.analyzedAt} |`);
     lines.push("");
+    addLanguageDirective(lines, options);
     // --- Architecture ---
     if (layers.length > 0) {
         lines.push("## Architecture");

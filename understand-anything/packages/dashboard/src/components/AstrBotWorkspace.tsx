@@ -209,7 +209,7 @@ export default function AstrBotWorkspace({
   bridge,
   onOpenProject,
 }: AstrBotWorkspaceProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const [status, setStatus] = useState<PluginStatus | null>(null);
   const [subagents, setSubagents] = useState<SubAgentSetupStatus | null>(null);
   const [subagentError, setSubagentError] = useState<string | null>(null);
@@ -590,6 +590,7 @@ export default function AstrBotWorkspace({
           fullAnalysis,
           autoUpdate: nextAutoUpdate,
           githubProxy,
+          locale,
         }),
       );
       setCurrentJob(job);

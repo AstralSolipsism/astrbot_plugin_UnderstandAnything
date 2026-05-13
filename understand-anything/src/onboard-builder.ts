@@ -1,10 +1,14 @@
 import type { KnowledgeGraph } from "@understand-anything/core";
+import { addLanguageDirective, type PromptLanguageOptions } from "./language-options.js";
 
 /**
  * Generate a structured onboarding guide from the knowledge graph.
  * Output is standalone markdown suitable for a README, wiki, or docs.
  */
-export function buildOnboardingGuide(graph: KnowledgeGraph): string {
+export function buildOnboardingGuide(
+  graph: KnowledgeGraph,
+  options?: PromptLanguageOptions,
+): string {
   const { project, nodes, edges, layers, tour } = graph;
   const lines: string[] = [];
 
@@ -20,6 +24,7 @@ export function buildOnboardingGuide(graph: KnowledgeGraph): string {
   lines.push(`| **Components** | ${nodes.length} nodes, ${edges.length} relationships |`);
   lines.push(`| **Last Analyzed** | ${project.analyzedAt} |`);
   lines.push("");
+  addLanguageDirective(lines, options);
 
   // --- Architecture ---
   if (layers.length > 0) {

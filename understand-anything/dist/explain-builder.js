@@ -1,3 +1,4 @@
+import { addLanguageDirective } from "./language-options.js";
 /**
  * Build a context for explaining a specific file or function.
  * Supports file paths ("src/auth.ts") and path:function ("src/auth.ts:login").
@@ -65,18 +66,17 @@ export function buildExplainContext(graph, path) {
 /**
  * Format the explain context as a structured prompt for LLM consumption.
  */
-export function formatExplainPrompt(ctx) {
+export function formatExplainPrompt(ctx, options) {
     if (!ctx.targetNode) {
-        return [
+        const lines = [
             `# Component Not Found`,
             ``,
             `The path "${ctx.path}" was not found in the knowledge graph for ${ctx.projectName}.`,
             ``,
-            `Possible reasons:`,
-            `- The file hasn't been analyzed yet — try running /understand first`,
-            `- The path may be different in the graph — check the exact file path`,
-            `- The file may have been deleted or renamed since the last analysis`,
-        ].join("\n");
+        ];
+        addLanguageDirective(lines, options);
+        lines.push(`Possible reasons:`, `- The file hasn't been analyzed yet — try running /understand first`, `- The path may be different in the graph — check the exact file path`, `- The file may have been deleted or renamed since the last analysis`);
+        return lines.join("\n");
     }
     const { targetNode, childNodes, connectedNodes, relevantEdges, layer } = ctx;
     const lines = [];
@@ -90,6 +90,7 @@ export function formatExplainPrompt(ctx) {
     lines.push("");
     lines.push(`**Summary:** ${targetNode.summary}`);
     lines.push("");
+    addLanguageDirective(lines, options);
     if (layer) {
         lines.push(`## Architectural Layer: ${layer.name}`);
         lines.push(layer.description);

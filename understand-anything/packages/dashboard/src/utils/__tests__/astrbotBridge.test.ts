@@ -8,9 +8,11 @@ import {
   isComputerUseReady,
   isPluginRouteMissingError,
   pluginGetOptional,
+  pluginPost,
   projectParamsFromProject,
   projectParamsFromSearch,
   unwrapPluginPayload,
+  type AstrBotPluginPageBridge,
 } from "../astrbotBridge";
 
 describe("AstrBot bridge helpers", () => {
@@ -90,6 +92,40 @@ describe("AstrBot bridge helpers", () => {
         blocking_reason: "",
       }),
     ).toBe(true);
+  });
+
+  it("adds the current bridge locale to plugin POST bodies", async () => {
+    let submittedBody: Record<string, unknown> | undefined;
+    const bridge: AstrBotPluginPageBridge = {
+      ready: async () => undefined,
+      apiGet: async () => ({ status: "ok", data: {} }),
+      getLocale: () => "zh-CN",
+      apiPost: async (_endpoint, body) => {
+        submittedBody = body;
+        return { status: "ok", data: { answer: "ok" } };
+      },
+    };
+
+    await pluginPost(bridge, "chat", { query: "hello" });
+
+    expect(submittedBody).toEqual({ query: "hello", locale: "zh-CN" });
+  });
+
+  it("preserves an explicit plugin POST locale", async () => {
+    let submittedBody: Record<string, unknown> | undefined;
+    const bridge: AstrBotPluginPageBridge = {
+      ready: async () => undefined,
+      apiGet: async () => ({ status: "ok", data: {} }),
+      getLocale: () => "zh-CN",
+      apiPost: async (_endpoint, body) => {
+        submittedBody = body;
+        return { status: "ok", data: { answer: "ok" } };
+      },
+    };
+
+    await pluginPost(bridge, "chat", { query: "hello", locale: "en-US" });
+
+    expect(submittedBody).toEqual({ query: "hello", locale: "en-US" });
   });
 
   it("uses default Computer Use config for dashboard readiness and lists disabled configs", () => {
