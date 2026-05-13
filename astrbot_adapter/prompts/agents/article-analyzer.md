@@ -21,6 +21,8 @@ You will receive a batch of articles as a JSON array. Each article has:
 
 You will also receive the full list of existing node IDs so you can reference them.
 
+**Language directive:** If the dispatch prompt includes a language directive (for example, "Generate all user-visible textual content in Simplified Chinese"), apply it to all user-visible knowledge graph text you generate: entity `name`, entity `summary`, claim `name`, claim `summary`, edge `description`, and any explanatory text in the final response. Keep code identifiers, file paths, schema keys, tags, node IDs, edge types, and established technical terms unchanged when appropriate.
+
 ## Task
 
 For each article in the batch, extract:

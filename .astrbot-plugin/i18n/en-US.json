@@ -13,6 +13,10 @@
       "description": "Clean GitHub clone cache after analysis",
       "hint": "When enabled, only the cloned source cache is removed after a GitHub analysis job. Graph artifacts are kept in plugin data."
     },
+    "github_command_timeout_seconds": {
+      "description": "GitHub source command timeout in seconds",
+      "hint": "Limits each git ls-remote, clone, fetch, and checkout command during GitHub source preparation. Increase only for very large repositories or slow networks."
+    },
     "max_concurrent_jobs": {
       "description": "Maximum concurrent analysis jobs",
       "hint": "Large analyses can consume model tokens and CPU. Keep this low unless the host has enough resources."
@@ -28,6 +32,16 @@
     "subagent_provider_id": {
       "description": "AstrBot chat provider ID for Understand Anything SubAgents",
       "hint": "Leave empty to reuse provider_id, then the current session provider."
+    },
+    "output_locale": {
+      "description": "Output language for generated Understand Anything content",
+      "hint": "Auto follows the WebUI/API locale when available, then the chat message language, then Simplified Chinese.",
+      "labels": [
+        "Follow WebUI / chat language",
+        "Simplified Chinese",
+        "English",
+        "Russian"
+      ]
     },
     "auto_build": {
       "description": "Automatically repair missing bundled runtime dependencies",

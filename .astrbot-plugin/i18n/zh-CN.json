@@ -13,6 +13,10 @@
       "description": "分析后清理 GitHub clone 缓存",
       "hint": "启用后，GitHub 分析任务结束只删除克隆的源码缓存，图谱产物会保留在插件数据目录。"
     },
+    "github_command_timeout_seconds": {
+      "description": "GitHub 源码命令超时（秒）",
+      "hint": "限制 GitHub 源码准备阶段每个 git ls-remote、clone、fetch 和 checkout 命令的耗时。仅在仓库很大或网络很慢时调高。"
+    },
     "max_concurrent_jobs": {
       "description": "最大并发分析任务数",
       "hint": "大型分析会消耗模型 token 和 CPU。除非主机资源充足，否则建议保持较低数值。"
@@ -28,6 +32,16 @@
     "subagent_provider_id": {
       "description": "Understand Anything SubAgents 使用的 AstrBot 聊天 Provider ID",
       "hint": "留空则复用 provider_id，再退回当前会话 Provider。"
+    },
+    "output_locale": {
+      "description": "Understand Anything 生成内容的输出语言",
+      "hint": "自动模式优先跟随 WebUI/API 语言，其次跟随聊天消息语言，最后回退到简体中文。",
+      "labels": [
+        "跟随 WebUI / 聊天语言",
+        "简体中文",
+        "英文",
+        "俄文"
+      ]
     },
     "auto_build": {
       "description": "自动修复缺失的内置运行依赖",

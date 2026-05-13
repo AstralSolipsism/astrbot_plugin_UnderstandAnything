@@ -56,6 +56,54 @@ def test_plugin_main_uses_package_relative_adapter_imports() -> None:
     assert "from .astrbot_adapter" in source
 
 
+def test_main_plugin_exposes_understand_command_group() -> None:
+    source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert '@filter.command_group("understand")' in source
+    assert '@filter.command("understand")' not in source
+    assert '@filter.command("understand-' not in source
+    assert 'alias={"understand_' not in source
+    assert 'self._args(event, "understand-' not in source
+    assert "UNDERSTAND_GROUP_SUBCOMMANDS" not in source
+    assert "_is_understand_group_subcommand" not in source
+    assert '@understand_commands.command("analyze")' in source
+    assert '@understand_commands.command("status")' in source
+    assert '@understand_commands.command("dashboard")' in source
+    assert '@understand_commands.command("chat")' in source
+    assert '@understand_commands.command("diff")' in source
+    assert '@understand_commands.command("domain")' in source
+    assert '@understand_commands.command("explain")' in source
+    assert '@understand_commands.command("knowledge")' in source
+    assert '@understand_commands.command("onboard")' in source
+
+
+def test_main_plugin_llm_tools_explain_background_analysis_contract() -> None:
+    source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert '@filter.llm_tool(name="ua_start_project_analysis")' in source
+    assert '@filter.llm_tool(name="ua_start_github_analysis")' in source
+    assert 'github_proxy: str = ""' in source
+    assert "bundled proxy preset" in source
+    assert "github_proxy=github_proxy or None" in source
+    assert '@filter.llm_tool(name="ua_get_analysis_status")' in source
+    assert '@filter.llm_tool(name="ua_ask_graph")' in source
+    assert '@filter.llm_tool(name="ua_analyze_project")' not in source
+    assert '@filter.llm_tool(name="ua_analyze_github_repo")' not in source
+    assert '@filter.llm_tool(name="ua_search_graph")' not in source
+    assert '@filter.llm_tool(name="ua_chat_with_graph")' not in source
+    assert "background" in source
+    assert "30 minutes or longer" in source
+    assert "/understand status" in source
+    assert "Do not assume" in source
+    assert "format_job_status(job_id or None)" in source
+
+
+def test_main_plugin_has_single_llm_graph_question_tool() -> None:
+    source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert source.count("return await self.runner.chat(") == 1
+
+
 def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
     source_html = (
         PLUGIN_ROOT / "understand-anything" / "packages" / "dashboard" / "index.html"
@@ -285,6 +333,86 @@ def test_job_store_tracks_structured_progress_and_cancellation() -> None:
     assert snapshot.progress.phase == "cancelled"
 
 
+def test_runner_formats_compact_chat_job_status(tmp_path: Path) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        tmp_path / "project",
+        {"project_id": "project-1", "raw_args": "D:/repo"},
+    )
+    runner.jobs.mark_running(job.job_id)
+    runner.jobs.set_progress(
+        job.job_id,
+        "agent",
+        "Running Understand Anything agent workflow.",
+        55,
+    )
+    runner.jobs.append_log(job.job_id, "SubAgent started: file-analyzer:0")
+    runner.jobs.append_log(job.job_id, "SubAgent finished: file-analyzer:0 status=ok")
+
+    message = runner.format_job_status(job.job_id)
+
+    assert f"Job: {job.job_id}" in message
+    assert "Status: running" in message
+    assert "Progress: 55%" in message
+    assert "Running Understand Anything agent workflow." in message
+    assert "SubAgent started" not in message
+    assert "SubAgent finished" not in message
+
+
+def test_runner_formats_latest_active_job_when_status_id_omitted(
+    tmp_path: Path,
+) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    finished = runner.jobs.create("understand", tmp_path / "old", {})
+    runner.jobs.mark_finished(finished.job_id, {"message": "done"})
+    active = runner.jobs.create("understand", tmp_path / "active", {})
+    runner.jobs.mark_running(active.job_id)
+
+    message = runner.format_job_status()
+
+    assert f"Job: {active.job_id}" in message
+    assert f"Job: {finished.job_id}" not in message
+
+
+def test_runner_formats_github_failure_with_retry_hint(tmp_path: Path) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    repo_url = "https://github.com/AstralSolipsism/demo"
+    job = runner.jobs.create(
+        "understand",
+        tmp_path / "github-cache",
+        {
+            "source": {
+                "type": "github",
+                "target_url": repo_url,
+                "repo_url": repo_url,
+            },
+        },
+    )
+    runner.jobs.mark_failed(
+        job.job_id,
+        "fatal: unable to access repo: Recv failure: Connection was reset",
+    )
+    runner.jobs.append_log(job.job_id, "SubAgent started: file-analyzer:0")
+
+    message = runner.format_job_status(job.job_id)
+
+    assert "Error: fatal: unable to access repo" in message
+    assert "Next: Retry later" in message
+    assert "--github-proxy https://gh.llkk.cc" in message
+    assert repo_url in message
+    assert "SubAgent started" not in message
+
+
 def test_project_registry_registers_and_resolves_by_id_name_alias(
     tmp_path: Path,
 ) -> None:
@@ -408,6 +536,7 @@ def test_runner_prompt_delegates_understandignore_confirmation_to_host(
             "raw_args": str(project),
             "project_path": str(project),
             "graph_root": str(graph_root),
+            "locale": "zh-CN",
             "source": {"type": "local"},
         },
     )
@@ -417,6 +546,34 @@ def test_runner_prompt_delegates_understandignore_confirmation_to_host(
     assert "host adapter handles `.understandignore` confirmation" in prompt
     assert "non-interactive AstrBot host run" not in prompt
     assert "Do not pause for `.understandignore` review" not in prompt
+    assert "Generate all user-visible textual content in Simplified Chinese" in prompt
+    assert "Keep code identifiers, file paths, schema keys, tags" in prompt
+
+
+def test_runner_output_locale_config_overrides_job_locale(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={"output_locale": "en-US"},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "raw_args": str(project),
+            "project_path": str(project),
+            "graph_root": str(project / ".understand-anything"),
+            "locale": "zh-CN",
+            "source": {"type": "local"},
+        },
+    )
+
+    prompt = runner._build_skill_execution_prompt(job)
+
+    assert "Generate all user-visible textual content in English" in prompt
+    assert "Simplified Chinese" not in prompt
 
 
 def test_ignore_review_generates_confirmation_from_project_scan(tmp_path: Path) -> None:
@@ -523,6 +680,51 @@ def test_job_request_parses_github_ref_without_treating_it_as_flag() -> None:
     assert parsed.path == "https://github.com/AstralSolipsism/demo"
     assert parsed.git_ref == "main"
     assert parsed.flags == ["--full"]
+
+
+def test_job_request_parses_github_proxy_without_treating_it_as_flag() -> None:
+    parsed = parse_job_args(
+        "https://github.com/AstralSolipsism/demo "
+        "--github-proxy https://gh.llkk.cc --full",
+    )
+    equals_parsed = parse_job_args(
+        "https://github.com/AstralSolipsism/demo "
+        "--github-proxy=https://hk.gh-proxy.com",
+    )
+
+    assert parsed.path == "https://github.com/AstralSolipsism/demo"
+    assert parsed.github_proxy == "https://gh.llkk.cc"
+    assert parsed.flags == ["--full"]
+    assert equals_parsed.github_proxy == "https://hk.gh-proxy.com"
+
+
+@pytest.mark.asyncio
+async def test_runner_start_job_uses_github_proxy_from_raw_args(
+    tmp_path: Path,
+) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.github = GitHubRepoManager(
+        cache_root=tmp_path / "cache",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        raw_args=(
+            "https://github.com/AstralSolipsism/demo "
+            "--github-proxy https://gh.llkk.cc"
+        ),
+        start_task=False,
+    )
+
+    source = job.args["source"]
+    assert source["github_proxy"] == "https://gh.llkk.cc"
+    assert source["clone_url"] == (
+        "https://gh.llkk.cc/https://github.com/AstralSolipsism/demo.git"
+    )
 
 
 def test_github_repo_url_parser_accepts_public_repo_forms(tmp_path: Path) -> None:
@@ -733,6 +935,123 @@ async def test_github_repo_manager_reports_clone_failure(tmp_path: Path) -> None
 
     with pytest.raises(GitHubRepoError, match="clone failed"):
         await manager.prepare(checkout)
+
+
+@pytest.mark.asyncio
+async def test_github_repo_manager_reports_command_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SlowProcess:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.killed = False
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(60)
+            return b"", b""
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            return self.returncode or -9
+
+    process = SlowProcess()
+
+    async def fake_create_subprocess_exec(*_command, **_kwargs):
+        return process
+
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    manager = GitHubRepoManager(
+        git_bin="git-test",
+        cache_root=tmp_path,
+        artifact_root=tmp_path / "artifacts",
+        git_timeout_seconds=0.01,
+    )
+
+    with pytest.raises(GitHubRepoError, match="timed out after"):
+        await manager._run_git(["clone", "https://github.com/owner/repo.git", "repo"])
+
+    assert process.killed is True
+
+
+@pytest.mark.asyncio
+async def test_github_repo_manager_reports_prepare_progress(tmp_path: Path) -> None:
+    manager = _FakeGitHubRepoManager(tmp_path)
+    checkout = manager.resolve("https://github.com/AstralSolipsism/demo")
+    messages: list[str] = []
+
+    await manager.prepare(checkout, progress=messages.append)
+
+    assert messages == [
+        "Cloning GitHub repository AstralSolipsism/demo.",
+        "Checking out GitHub repository AstralSolipsism/demo.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_github_repo_manager_awaits_async_prepare_progress(
+    tmp_path: Path,
+) -> None:
+    manager = _FakeGitHubRepoManager(tmp_path)
+    checkout = manager.resolve("https://github.com/AstralSolipsism/demo")
+    messages: list[str] = []
+
+    async def progress(message: str) -> None:
+        await asyncio.sleep(0)
+        messages.append(message)
+
+    await manager.prepare(checkout, progress=progress)
+
+    assert messages == [
+        "Cloning GitHub repository AstralSolipsism/demo.",
+        "Checking out GitHub repository AstralSolipsism/demo.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_sends_chat_progress_and_friendly_github_failure(
+    tmp_path: Path,
+) -> None:
+    messages: list[str] = []
+
+    async def send(message):
+        messages.append(message.get_plain_text())
+
+    event = SimpleNamespace(
+        unified_msg_origin="chat-origin",
+        send=send,
+    )
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.github = _FakeGitHubRepoManager(tmp_path / "github-cache", fail_clone=True)
+
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstralSolipsism/demo",
+        event=event,  # type: ignore[arg-type]
+    )
+    await runner._tasks[job.job_id]
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FAILED
+    assert any("Cloning GitHub repository AstralSolipsism/demo." in item for item in messages)
+    failure_message = messages[-1]
+    assert "Understand Anything job failed" in failure_message
+    assert f"Job: {job.job_id}" in failure_message
+    assert f"/understand status {job.job_id}" in failure_message
+    assert "--github-proxy https://gh.llkk.cc" in failure_message
+    assert "clone failed" in failure_message
 
 
 @pytest.mark.asyncio
@@ -1047,7 +1366,9 @@ async def test_web_api_start_job_maps_single_target_to_runner(tmp_path: Path) ->
             "target": "https://github.com/AstralSolipsism/demo/tree/main/packages/app",
             "full": True,
             "github_proxy": "https://gh.llkk.cc",
+            "locale": "ru-RU",
         },
+        headers={"Accept-Language": "zh-CN"},
     ):
         response = await api.start_job()
 
@@ -1059,6 +1380,7 @@ async def test_web_api_start_job_maps_single_target_to_runner(tmp_path: Path) ->
     assert runner.calls[-1]["project_path"] is None
     assert runner.calls[-1]["flags"] == ["--full"]
     assert runner.calls[-1]["github_proxy"] == "https://gh.llkk.cc"
+    assert runner.calls[-1]["locale"] == "ru-RU"
 
     async with app.test_request_context(
         "/astrbot_plugin_UnderstandAnything/jobs/start",
@@ -1067,12 +1389,89 @@ async def test_web_api_start_job_maps_single_target_to_runner(tmp_path: Path) ->
             "action": "understand",
             "target": str(tmp_path),
         },
+        headers={"Accept-Language": "zh-CN,zh;q=0.9"},
     ):
         response = await api.start_job()
 
     assert (await response.get_json())["status"] == "ok"
     assert runner.calls[-1]["repo_url"] is None
     assert runner.calls[-1]["project_path"] == str(tmp_path)
+    assert runner.calls[-1]["locale"] == "zh-CN"
+
+
+@pytest.mark.asyncio
+async def test_web_api_chat_explain_diff_and_onboard_pass_locale(
+    tmp_path: Path,
+) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def chat(self, **kwargs):
+            self.calls.append({"method": "chat", **kwargs})
+            return "chat answer"
+
+        async def explain(self, **kwargs):
+            self.calls.append({"method": "explain", **kwargs})
+            return "explain answer"
+
+        async def diff(self, **kwargs):
+            self.calls.append({"method": "diff", **kwargs})
+            return "diff answer"
+
+        async def onboard(self, **kwargs):
+            self.calls.append({"method": "onboard", **kwargs})
+            return "onboard markdown"
+
+    runner = DummyRunner()
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/chat",
+        method="POST",
+        json={"query": "what changed?", "locale": "ru-RU"},
+        headers={"Accept-Language": "zh-CN"},
+    ):
+        response = await api.chat()
+    assert (await response.get_json())["data"]["answer"] == "chat answer"
+    assert runner.calls[-1]["method"] == "chat"
+    assert runner.calls[-1]["locale"] == "ru-RU"
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/explain",
+        method="POST",
+        json={"target": "src/app.py"},
+        headers={"Accept-Language": "zh-CN"},
+    ):
+        response = await api.explain()
+    assert (await response.get_json())["data"]["answer"] == "explain answer"
+    assert runner.calls[-1]["method"] == "explain"
+    assert runner.calls[-1]["locale"] == "zh-CN"
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/diff",
+        method="POST",
+        json={"changed_files": ["src/app.py"], "locale": "en-US"},
+        headers={"Accept-Language": "ru-RU"},
+    ):
+        response = await api.diff()
+    assert (await response.get_json())["data"]["answer"] == "diff answer"
+    assert runner.calls[-1]["method"] == "diff"
+    assert runner.calls[-1]["locale"] == "en-US"
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/onboard",
+        method="POST",
+        json={},
+        headers={"Accept-Language": "ru-RU"},
+    ):
+        response = await api.onboard()
+    assert (await response.get_json())["data"]["markdown"] == "onboard markdown"
+    assert runner.calls[-1]["method"] == "onboard"
+    assert runner.calls[-1]["locale"] == "ru-RU"
 
 
 @pytest.mark.asyncio
@@ -1502,6 +1901,7 @@ def test_web_api_status_summarizes_config_without_provider_secret(
             "max_parallel_article_agents": 2,
             "default_write_mode": "project",
             "cleanup_github_cache_after_analysis": True,
+            "github_command_timeout_seconds": 42,
         }
         security = PathSecurity([tmp_path])
         runtime = SimpleNamespace(
@@ -1529,6 +1929,7 @@ def test_web_api_status_summarizes_config_without_provider_secret(
     assert payload["runtime"]["tools"]["node"]["supported"] is True
     assert payload["runtime"]["tools"]["git"]["available"] is True
     assert payload["config"]["cleanup_github_cache_after_analysis"] is True
+    assert payload["config"]["github_command_timeout_seconds"] == 42
     assert "allowed_roots" not in payload["config"]
     assert payload["config"]["subagent_provider_configured"] is True
     assert payload["config"]["max_parallel_file_agents"] == 4
@@ -1916,6 +2317,15 @@ def test_conf_schema_exposes_subagent_parallelism_controls() -> None:
     assert schema["max_parallel_article_agents"]["default"] == 3
     assert schema["subagent_provider_id"]["_special"] == "select_provider"
     assert schema["cleanup_github_cache_after_analysis"]["default"] is False
+    assert schema["github_command_timeout_seconds"]["default"] == 300
+    assert schema["output_locale"]["default"] == "auto"
+    assert schema["output_locale"]["options"] == ["auto", "zh-CN", "en-US", "ru-RU"]
+    assert schema["output_locale"]["labels"] == [
+        "Follow WebUI / chat language",
+        "Simplified Chinese",
+        "English",
+        "Russian",
+    ]
 
 
 def test_plugin_i18n_covers_config_page_and_dashboard_ui() -> None:
@@ -1976,6 +2386,24 @@ def test_skill_prompts_require_internal_subagent_tools() -> None:
     assert "UA_GRAPH_ROOT" in domain
     assert "$PROJECT_ROOT/.understand-anything/intermediate" not in understand
     assert "$PROJECT_ROOT/.understand-anything/intermediate" not in domain
+
+
+def test_agent_prompts_include_language_directives() -> None:
+    required_agents = [
+        "project-scanner",
+        "file-analyzer",
+        "architecture-analyzer",
+        "tour-builder",
+        "domain-analyzer",
+        "article-analyzer",
+    ]
+
+    for agent_name in required_agents:
+        prompt = (
+            PLUGIN_ROOT / "astrbot_adapter" / "prompts" / "agents" / f"{agent_name}.md"
+        ).read_text(encoding="utf-8")
+        assert "**Language directive:**" in prompt
+        assert "Generate all user-visible textual content" in prompt
 
 
 class _NoToolManager:
@@ -2223,6 +2651,86 @@ class _RegistryContext(_DummyContext):
         if umo in self.config_by_umo:
             return self.config_by_umo[umo]
         return self.config
+
+
+@pytest.mark.asyncio
+async def test_runner_llm_actions_include_language_directive(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    graph_root = project / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    graph = {
+        "project": {"name": "Demo", "languages": ["python"]},
+        "nodes": [],
+        "edges": [],
+        "layers": [],
+    }
+    (graph_root / "knowledge-graph.json").write_text(
+        json.dumps(graph),
+        encoding="utf-8",
+    )
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def run_action(self, action: str, payload: dict[str, object]):
+            self.calls.append((action, payload))
+            if action == "diff_markdown":
+                return {
+                    "markdown": "diff prompt",
+                    "changedNodeIds": [],
+                    "affectedNodeIds": [],
+                    "unmappedFiles": [],
+                }
+            if action == "onboard_markdown":
+                return {"markdown": "onboard markdown"}
+            return {"markdown": f"{action} prompt"}
+
+    class Dispatcher:
+        def __init__(self) -> None:
+            self.system_prompts: list[str] = []
+
+        async def generate(self, *, prompt, event=None, system_prompt=""):
+            self.system_prompts.append(system_prompt)
+            return system_prompt
+
+    runtime = Runtime()
+    dispatcher = Dispatcher()
+    runner = UnderstandAnythingRunner(
+        context=_DummyContext(providers=[_DummyProvider("provider")]),  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.runtime = runtime  # type: ignore[assignment]
+    runner.dispatcher = dispatcher  # type: ignore[assignment]
+
+    await runner.chat(query="What does this do?", project_path=project, locale="zh-CN")
+    await runner.explain(target="src/app.py", project_path=project, locale="zh-CN")
+    await runner.diff(
+        project_path=project,
+        changed_files=["src/app.py"],
+        locale="zh-CN",
+    )
+    onboard = await runner.onboard(project_path=project, locale="zh-CN")
+
+    assert onboard == "onboard markdown"
+    assert [call[0] for call in runtime.calls] == [
+        "chat_prompt",
+        "explain_prompt",
+        "diff_markdown",
+        "onboard_markdown",
+    ]
+    for _action, payload in runtime.calls:
+        assert payload["targetLanguage"] == "Simplified Chinese"
+        assert "Keep code identifiers" in str(payload["languageDirective"])
+    assert len(dispatcher.system_prompts) == 3
+    for system_prompt in dispatcher.system_prompts:
+        assert "Generate all user-visible textual content in Simplified Chinese" in (
+            system_prompt
+        )
+        assert "Keep code identifiers, file paths, schema keys, tags" in system_prompt
 
 
 def _dummy_event():

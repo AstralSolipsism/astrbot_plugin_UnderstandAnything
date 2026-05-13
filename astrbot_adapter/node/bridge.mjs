@@ -20,18 +20,21 @@ function write(payload) {
 
 switch (action) {
   case "chat_prompt": {
-    write({ markdown: skill.buildChatPrompt(payload.graph, payload.query) });
+    write({ markdown: skill.buildChatPrompt(payload.graph, payload.query, payload) });
     break;
   }
   case "explain_prompt": {
     const ctx = skill.buildExplainContext(payload.graph, payload.path);
-    write({ markdown: skill.formatExplainPrompt(ctx), found: Boolean(ctx.targetNode) });
+    write({
+      markdown: skill.formatExplainPrompt(ctx, payload),
+      found: Boolean(ctx.targetNode),
+    });
     break;
   }
   case "diff_markdown": {
     const ctx = skill.buildDiffContext(payload.graph, payload.changedFiles ?? []);
     write({
-      markdown: skill.formatDiffAnalysis(ctx),
+      markdown: skill.formatDiffAnalysis(ctx, payload),
       changedNodeIds: ctx.changedNodes.map((node) => node.id),
       affectedNodeIds: ctx.affectedNodes.map((node) => node.id),
       unmappedFiles: ctx.unmappedFiles,
@@ -39,7 +42,7 @@ switch (action) {
     break;
   }
   case "onboard_markdown": {
-    write({ markdown: skill.buildOnboardingGuide(payload.graph) });
+    write({ markdown: skill.buildOnboardingGuide(payload.graph, payload) });
     break;
   }
   case "chat_context": {

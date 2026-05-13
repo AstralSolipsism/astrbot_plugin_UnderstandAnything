@@ -32,31 +32,41 @@ class UnderstandAnythingPlugin(Star):
         await self.runner.terminate()
         logger.info("Understand Anything plugin terminated.")
 
-    @filter.command("understand")
-    async def understand(self, event: AstrMessageEvent):
+    @filter.command_group("understand")
+    def understand_commands(self):
+        """Understand Anything command group."""
+        pass
+
+    @understand_commands.command("analyze")
+    async def understand_analyze(self, event: AstrMessageEvent):
         """Analyze a project and generate an Understand Anything graph."""
         job = await self.runner.start_skill_job(
             skill_name="understand",
-            raw_args=self._args(event, "understand"),
+            raw_args=self._args(event, "understand analyze"),
             event=event,
         )
-        yield event.plain_result(
-            f"Understand Anything analysis started. Job: {job.job_id}",
-        )
+        yield event.plain_result(self._format_job_started_message(job.job_id))
 
-    @filter.command("understand-dashboard", alias={"understand_dashboard"})
-    async def understand_dashboard(self, event: AstrMessageEvent):
+    @understand_commands.command("status")
+    async def understand_status(self, event: AstrMessageEvent):
+        """Show compact progress for an Understand Anything job."""
+        raw_args = self._args(event, "understand status")
+        job_id = self._first_path_token(raw_args)
+        yield event.plain_result(self.runner.format_job_status(job_id))
+
+    @understand_commands.command("dashboard")
+    async def understand_dashboard_group(self, event: AstrMessageEvent):
         """Open the bundled Understand Anything Dashboard page."""
         yield event.plain_result(
             "Open the AstrBot WebUI plugin detail page and launch the "
             "`dashboard` Page for this plugin.",
         )
 
-    @filter.command("understand-chat", alias={"understand_chat"})
-    async def understand_chat(self, event: AstrMessageEvent):
+    @understand_commands.command("chat")
+    async def understand_chat_group(self, event: AstrMessageEvent):
         """Ask a question using the current project's knowledge graph."""
         project_ref, query = self._parse_project_option(
-            self._args(event, "understand-chat", "understand_chat"),
+            self._args(event, "understand chat"),
         )
         answer = await self.runner.chat(
             query=query,
@@ -65,11 +75,11 @@ class UnderstandAnythingPlugin(Star):
         )
         yield event.plain_result(answer)
 
-    @filter.command("understand-diff", alias={"understand_diff"})
-    async def understand_diff(self, event: AstrMessageEvent):
+    @understand_commands.command("diff")
+    async def understand_diff_group(self, event: AstrMessageEvent):
         """Analyze current git changes against the knowledge graph."""
         project_ref, project_path = self._project_selector_from_args(
-            self._args(event, "understand-diff", "understand_diff"),
+            self._args(event, "understand diff"),
         )
         answer = await self.runner.diff(
             project_path=project_path,
@@ -78,23 +88,23 @@ class UnderstandAnythingPlugin(Star):
         )
         yield event.plain_result(answer)
 
-    @filter.command("understand-domain", alias={"understand_domain"})
-    async def understand_domain(self, event: AstrMessageEvent):
+    @understand_commands.command("domain")
+    async def understand_domain_group(self, event: AstrMessageEvent):
         """Extract business domain graph information."""
         job = await self.runner.start_skill_job(
             skill_name="understand-domain",
-            raw_args=self._args(event, "understand-domain", "understand_domain"),
+            raw_args=self._args(event, "understand domain"),
             event=event,
         )
         yield event.plain_result(
-            f"Understand Anything domain analysis started. Job: {job.job_id}",
+            self._format_job_started_message(job.job_id, job_label="domain analysis"),
         )
 
-    @filter.command("understand-explain", alias={"understand_explain"})
-    async def understand_explain(self, event: AstrMessageEvent):
+    @understand_commands.command("explain")
+    async def understand_explain_group(self, event: AstrMessageEvent):
         """Explain a specific file, function, class, or module."""
         project_ref, target = self._parse_project_option(
-            self._args(event, "understand-explain", "understand_explain"),
+            self._args(event, "understand explain"),
         )
         answer = await self.runner.explain(
             target=target,
@@ -103,33 +113,47 @@ class UnderstandAnythingPlugin(Star):
         )
         yield event.plain_result(answer)
 
-    @filter.command("understand-knowledge", alias={"understand_knowledge"})
-    async def understand_knowledge(self, event: AstrMessageEvent):
+    @understand_commands.command("knowledge")
+    async def understand_knowledge_group(self, event: AstrMessageEvent):
         """Analyze a Karpathy-pattern wiki knowledge base."""
         job = await self.runner.start_skill_job(
             skill_name="understand-knowledge",
-            raw_args=self._args(event, "understand-knowledge", "understand_knowledge"),
+            raw_args=self._args(event, "understand knowledge"),
             event=event,
         )
         yield event.plain_result(
-            f"Understand Anything knowledge analysis started. Job: {job.job_id}",
+            self._format_job_started_message(
+                job.job_id,
+                job_label="knowledge analysis",
+            ),
         )
 
-    @filter.command("understand-onboard", alias={"understand_onboard"})
-    async def understand_onboard(self, event: AstrMessageEvent):
+    @understand_commands.command("onboard")
+    async def understand_onboard_group(self, event: AstrMessageEvent):
         """Generate an onboarding guide from the knowledge graph."""
         project_ref, project_path = self._project_selector_from_args(
-            self._args(event, "understand-onboard", "understand_onboard"),
+            self._args(event, "understand onboard"),
         )
         markdown = await self.runner.onboard(
             project_path=project_path,
             project_ref=project_ref,
+            event=event,
         )
         yield event.plain_result(markdown)
 
-    @filter.llm_tool(name="ua_analyze_project")
-    async def ua_analyze_project(self, event: AstrMessageEvent, project_path: str):
-        """Analyze a project with Understand Anything.
+    @filter.llm_tool(name="ua_start_project_analysis")
+    async def ua_start_project_analysis(
+        self,
+        event: AstrMessageEvent,
+        project_path: str,
+    ):
+        """Start a background Understand Anything analysis job for a local project.
+
+        Use this when the user asks to analyze a local repository or project.
+        This tool returns after scheduling the job; the analysis keeps running in
+        the background and can take 30 minutes or longer for large repositories.
+        Do not assume the graph is ready until the job status is finished.
+        Tell the user the returned job id and how to check progress.
 
         Args:
             project_path(string): Project directory to analyze.
@@ -139,38 +163,70 @@ class UnderstandAnythingPlugin(Star):
             project_path=project_path,
             event=event,
         )
-        return f"Started Understand Anything analysis job {job.job_id}."
+        return self._format_job_started_message(job.job_id)
 
-    @filter.llm_tool(name="ua_analyze_github_repo")
-    async def ua_analyze_github_repo(
+    @filter.llm_tool(name="ua_start_github_analysis")
+    async def ua_start_github_analysis(
         self,
         event: AstrMessageEvent,
         repo_url: str,
         ref: str = "",
+        github_proxy: str = "",
     ):
-        """Analyze a public GitHub repository with Understand Anything.
+        """Start a background Understand Anything analysis job for a GitHub repo.
+
+        Use this when the user asks to analyze a public GitHub repository.
+        This tool returns after scheduling the job; source preparation and graph
+        analysis keep running in the background and can take 30 minutes or longer
+        for large repositories. Do not assume the graph is ready until the job
+        status is finished. Tell the user the returned job id and how to check
+        progress.
 
         Args:
             repo_url(string): Public https://github.com/owner/repo URL.
                 May include /tree/<ref>/<path>.
             ref(string): Optional legacy branch, tag, or commit-ish ref override.
+            github_proxy(string): Optional bundled proxy preset URL for GitHub
+                network failures. Leave empty for direct GitHub access.
         """
         job = await self.runner.start_skill_job(
             skill_name="understand",
             repo_url=repo_url,
             ref=ref or None,
+            github_proxy=github_proxy or None,
             event=event,
         )
-        return f"Started Understand Anything GitHub analysis job {job.job_id}."
+        return self._format_job_started_message(job.job_id)
 
-    @filter.llm_tool(name="ua_search_graph")
-    async def ua_search_graph(
+    @filter.llm_tool(name="ua_get_analysis_status")
+    async def ua_get_analysis_status(
+        self,
+        event: AstrMessageEvent,
+        job_id: str = "",
+    ):
+        """Get compact progress for an Understand Anything background job.
+
+        Use this after starting an analysis job or when the user asks whether an
+        analysis is still running. The response is a concise status summary and
+        does not include raw job logs.
+
+        Args:
+            job_id(string): Optional job id. If empty, show the latest job.
+        """
+        return self.runner.format_job_status(job_id or None)
+
+    @filter.llm_tool(name="ua_ask_graph")
+    async def ua_ask_graph(
         self,
         event: AstrMessageEvent,
         query: str,
         project: str = "",
     ):
-        """Search the current Understand Anything graph.
+        """Answer a question using a finished Understand Anything graph.
+
+        Use this only after the relevant analysis job status is finished. It is
+        for questions about a project's generated knowledge graph, not for
+        starting a new analysis.
 
         Args:
             query(string): Natural language query.
@@ -189,7 +245,9 @@ class UnderstandAnythingPlugin(Star):
         target: str,
         project: str = "",
     ):
-        """Explain a component from the current Understand Anything graph.
+        """Explain a component from a finished Understand Anything graph.
+
+        Use this only after the relevant analysis job status is finished.
 
         Args:
             target(string): File path or file path plus symbol.
@@ -201,28 +259,11 @@ class UnderstandAnythingPlugin(Star):
             event=event,
         )
 
-    @filter.llm_tool(name="ua_chat_with_graph")
-    async def ua_chat_with_graph(
-        self,
-        event: AstrMessageEvent,
-        query: str,
-        project: str = "",
-    ):
-        """Answer a question using the current Understand Anything graph.
-
-        Args:
-            query(string): User question about the project.
-            project(string): Optional project name, id, alias, or path.
-        """
-        return await self.runner.chat(
-            query=query,
-            project_ref=project or None,
-            event=event,
-        )
-
     @filter.llm_tool(name="ua_analyze_diff")
     async def ua_analyze_diff(self, event: AstrMessageEvent, project_path: str):
-        """Analyze git diff impact using the Understand Anything graph.
+        """Analyze git diff impact using a finished Understand Anything graph.
+
+        Use this only after the relevant analysis job status is finished.
 
         Args:
             project_path(string): Project directory containing the graph.
@@ -231,7 +272,9 @@ class UnderstandAnythingPlugin(Star):
 
     @filter.llm_tool(name="ua_generate_onboarding")
     async def ua_generate_onboarding(self, event: AstrMessageEvent, project_path: str):
-        """Generate onboarding markdown from the Understand Anything graph.
+        """Generate onboarding markdown from a finished Understand Anything graph.
+
+        Use this only after the relevant analysis job status is finished.
 
         Args:
             project_path(string): Project directory containing the graph.
@@ -244,6 +287,20 @@ class UnderstandAnythingPlugin(Star):
         return (
             f"Open AstrBot WebUI, go to plugin `{PLUGIN_NAME}`, then open "
             "the `dashboard` Page."
+        )
+
+    @staticmethod
+    def _format_job_started_message(
+        job_id: str,
+        *,
+        job_label: str = "analysis",
+    ) -> str:
+        return (
+            f"Started background Understand Anything {job_label} job {job_id}. "
+            "Large repositories can take 30 minutes or longer. "
+            f"Check progress with `/understand status {job_id}`. "
+            "The graph is not ready until the job status is finished; this chat "
+            "will be notified when the job finishes or fails."
         )
 
     @staticmethod

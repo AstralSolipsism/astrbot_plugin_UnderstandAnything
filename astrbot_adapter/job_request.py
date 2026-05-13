@@ -11,6 +11,7 @@ class ParsedJobArgs:
     path: str | None
     project_ref: str | None
     git_ref: str | None
+    github_proxy: str | None
     flags: list[str]
 
 
@@ -19,6 +20,7 @@ def parse_job_args(raw_args: str) -> ParsedJobArgs:
     flags: list[str] = []
     project_ref: str | None = None
     git_ref: str | None = None
+    github_proxy: str | None = None
     path_token: str | None = None
     index = 0
     while index < len(tokens):
@@ -43,6 +45,16 @@ def parse_job_args(raw_args: str) -> ParsedJobArgs:
             git_ref = token.split("=", 1)[1].strip()
             index += 1
             continue
+        if token == "--github-proxy":
+            if index + 1 >= len(tokens):
+                raise ValueError("Missing value for --github-proxy.")
+            github_proxy = tokens[index + 1]
+            index += 2
+            continue
+        if token.startswith("--github-proxy="):
+            github_proxy = token.split("=", 1)[1].strip()
+            index += 1
+            continue
         if token.startswith("--"):
             flags.append(token)
         elif path_token is None:
@@ -52,6 +64,7 @@ def parse_job_args(raw_args: str) -> ParsedJobArgs:
         path=path_token,
         project_ref=project_ref,
         git_ref=git_ref,
+        github_proxy=github_proxy,
         flags=flags,
     )
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import inspect
 import re
 import shutil
 import subprocess
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -18,6 +21,8 @@ GITHUB_PROXY_PRESETS = (
     "https://gh-proxy.com",
     "https://gh.llkk.cc",
 )
+DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS = 300
+GitProgressCallback = Callable[[str], Awaitable[None] | None]
 
 
 class GitHubRepoError(ValueError):
@@ -91,6 +96,7 @@ class GitHubRepoManager:
         git_bin: str = "git",
         cache_root: str | Path | None = None,
         artifact_root: str | Path | None = None,
+        git_timeout_seconds: int | float | None = None,
     ) -> None:
         if git_bin and git_bin != "git":
             self.git_bin = git_bin
@@ -103,6 +109,14 @@ class GitHubRepoManager:
             Path(artifact_root) if artifact_root else self.default_artifact_root()
         )
         self.artifact_root = self.artifact_root.expanduser().resolve(strict=False)
+        self.git_timeout_seconds = max(
+            0.001,
+            float(
+                git_timeout_seconds
+                if git_timeout_seconds is not None
+                else DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS
+            ),
+        )
         self._locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
@@ -282,23 +296,43 @@ class GitHubRepoManager:
             cls._validate_tree_parts(tree_parts)
         return GitHubRepoUrlParts(owner=owner, repo=repo, tree_parts=tree_parts)
 
-    async def prepare(self, checkout: GitHubRepoCheckout) -> Path:
+    async def prepare(
+        self,
+        checkout: GitHubRepoCheckout,
+        progress: GitProgressCallback | None = None,
+    ) -> Path:
         lock = self._locks.setdefault(checkout.cache_key, asyncio.Lock())
         async with lock:
             path = checkout.worktree_path
             if path.exists() and not (path / ".git").is_dir():
                 raise GitHubRepoError(
                     f"GitHub cache path exists but is not a git repo: {path}"
-                )
+            )
             if not (path / ".git").is_dir():
                 path.parent.mkdir(parents=True, exist_ok=True)
+                await self._notify_progress(
+                    progress,
+                    f"Cloning GitHub repository {checkout.display_name}.",
+                )
                 await self._run_git(["clone", checkout.clone_url, str(path)])
             else:
+                await self._notify_progress(
+                    progress,
+                    f"Refreshing cached GitHub repository {checkout.display_name}.",
+                )
                 await self._run_git(
                     ["-C", str(path), "remote", "set-url", "origin", checkout.clone_url]
                 )
+                await self._notify_progress(
+                    progress,
+                    f"Fetching latest changes for {checkout.display_name}.",
+                )
                 await self._run_git(["-C", str(path), "fetch", "--prune", "origin"])
 
+            await self._notify_progress(
+                progress,
+                f"Checking out GitHub repository {checkout.display_name}.",
+            )
             await self._checkout_ref(path, checkout.ref)
             return self._validate_analysis_root(checkout)
 
@@ -428,7 +462,21 @@ class GitHubRepoManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout_bytes, stderr_bytes = await proc.communicate()
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=self.git_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            command = self._format_git_command(args)
+            raise GitHubRepoError(
+                "GitHub source preparation timed out after "
+                f"{self.git_timeout_seconds:.0f}s while running: {command}. "
+                "Check the network connection, choose a GitHub proxy, or retry later."
+            ) from exc
         except OSError as exc:
             raise GitHubRepoError(f"Failed to execute git: {exc}") from exc
 
@@ -445,6 +493,20 @@ class GitHubRepoManager:
                 detail or f"git exited with status {result.returncode}"
             )
         return result
+
+    def _format_git_command(self, args: list[str]) -> str:
+        return " ".join([self.git_bin, *args])
+
+    @staticmethod
+    async def _notify_progress(
+        progress: GitProgressCallback | None,
+        message: str,
+    ) -> None:
+        if progress is None:
+            return
+        result = progress(message)
+        if inspect.isawaitable(result):
+            await result
 
     def _worktree_path(self, owner: str, repo: str, ref: str | None) -> Path:
         owner_dir = self._safe_path_part(owner)

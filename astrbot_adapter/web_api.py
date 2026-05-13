@@ -23,7 +23,7 @@ from .constants import (
     PLUGIN_NAME,
     UNDERSTAND_ANYTHING_ROOT,
 )
-from .github_repo import GITHUB_PROXY_PRESETS
+from .github_repo import DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS, GITHUB_PROXY_PRESETS
 from .job_store import JobStatus
 from .path_security import PathSecurityError
 from .runner import UnderstandAnythingRunner
@@ -164,11 +164,16 @@ class UnderstandAnythingWebApi:
                 "cleanup_github_cache_after_analysis": bool(
                     config.get("cleanup_github_cache_after_analysis", False),
                 ),
+                "github_command_timeout_seconds": self._int_config(
+                    config.get("github_command_timeout_seconds"),
+                    DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS,
+                ),
                 "auto_build": auto_repair_enabled,
                 "auto_update_poll_interval": self._int_config(
                     config.get("auto_update_poll_interval"),
                     0,
                 ),
+                "output_locale": str(config.get("output_locale") or "auto"),
                 "max_concurrent_jobs": self._int_config(
                     config.get("max_concurrent_jobs"),
                     1,
@@ -381,6 +386,7 @@ class UnderstandAnythingWebApi:
                     skill_name=action,
                     raw_args=explicit_args.strip(),
                     event=None,
+                    locale=self._request_locale(body),
                 )
             else:
                 target = self._string_or_none(body.get("target"))
@@ -401,6 +407,7 @@ class UnderstandAnythingWebApi:
                     repo_url=repo_url,
                     ref=self._string_or_none(body.get("ref")),
                     github_proxy=self._string_or_none(body.get("github_proxy")),
+                    locale=self._request_locale(body),
                     **project_ref,
                 )
             return jsonify({"status": "ok", "data": job.to_dict()})
@@ -444,6 +451,7 @@ class UnderstandAnythingWebApi:
             body = await self._json_body()
             answer = await self.runner.chat(
                 query=str(body.get("query") or ""),
+                locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
             return jsonify({"status": "ok", "data": {"answer": answer}})
@@ -455,6 +463,7 @@ class UnderstandAnythingWebApi:
             body = await self._json_body()
             answer = await self.runner.explain(
                 target=str(body.get("target") or body.get("path") or ""),
+                locale=self._request_locale(body),
                 **self._body_project_ref(body, allow_path_alias=False),
             )
             return jsonify({"status": "ok", "data": {"answer": answer}})
@@ -471,6 +480,7 @@ class UnderstandAnythingWebApi:
                     if isinstance(item, str)
                 ]
                 or None,
+                locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
             return jsonify({"status": "ok", "data": {"answer": answer}})
@@ -481,6 +491,7 @@ class UnderstandAnythingWebApi:
         try:
             body = await self._json_body()
             markdown = await self.runner.onboard(
+                locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
             return jsonify({"status": "ok", "data": {"markdown": markdown}})
@@ -500,6 +511,16 @@ class UnderstandAnythingWebApi:
     async def _json_body(self) -> dict[str, Any]:
         body = await request.get_json(silent=True)
         return body if isinstance(body, dict) else {}
+
+    @staticmethod
+    def _request_locale(body: dict[str, Any] | None = None) -> str | None:
+        if body and isinstance(body.get("locale"), str):
+            locale = str(body.get("locale") or "").strip()
+            if locale:
+                return locale
+        header = request.headers.get("Accept-Language", "").strip()
+        locale = header.split(",", 1)[0].split(";", 1)[0].strip()
+        return locale or None
 
     def _query_project_ref(self, *, allow_path_alias: bool = True) -> dict[str, Any]:
         project_path = request.args.get("project_path")

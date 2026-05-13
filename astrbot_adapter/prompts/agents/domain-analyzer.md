@@ -25,6 +25,8 @@ The AstrBot skill runner will tell you which option applies and provide the cont
 
 Analyze the provided context and produce a domain graph JSON file.
 
+**Language directive:** If the dispatch prompt includes a language directive (for example, "Generate all user-visible textual content in Simplified Chinese"), apply it to all user-visible domain graph text: project `description`, node `name`, node `summary`, `domainMeta` text values, edge `description`, and any explanatory text in the final response. Keep code identifiers, file paths, schema keys, tags, node IDs, edge types, and established technical terms unchanged when appropriate.
+
 ## Three-Level Hierarchy
 
 1. **Business Domain** — High-level business areas (e.g., "Order Management", "User Authentication", "Payment Processing")

@@ -12,6 +12,12 @@
     "default": false,
     "hint": "When enabled, only the cloned source cache is removed after a GitHub analysis job. Graph artifacts are kept in plugin data."
   },
+  "github_command_timeout_seconds": {
+    "description": "GitHub source command timeout in seconds",
+    "type": "int",
+    "default": 300,
+    "hint": "Limits each git ls-remote, clone, fetch, and checkout command during GitHub source preparation. Increase only for very large repositories or slow networks."
+  },
   "max_concurrent_jobs": {
     "description": "Maximum concurrent analysis jobs",
     "type": "int",
@@ -36,6 +42,19 @@
     "default": "",
     "hint": "Leave empty to reuse provider_id, then the current session provider.",
     "_special": "select_provider"
+  },
+  "output_locale": {
+    "description": "Output language for generated Understand Anything content",
+    "type": "string",
+    "default": "auto",
+    "options": ["auto", "zh-CN", "en-US", "ru-RU"],
+    "labels": [
+      "Follow WebUI / chat language",
+      "Simplified Chinese",
+      "English",
+      "Russian"
+    ],
+    "hint": "Auto follows the WebUI/API locale when available, then the chat message language, then Simplified Chinese."
   },
   "auto_build": {
     "description": "Automatically repair missing bundled runtime dependencies",

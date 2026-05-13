@@ -25,20 +25,19 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 
 ## 命令
 
-- `/understand [path|https://github.com/owner/repo[/tree/<branch-or-tag>[/sub/path]]] [--full|--auto-update|--no-auto-update|--review]`
-- `/understand-dashboard [path]`
-- `/understand-chat [--project <name|id|alias>] <query>`
-- `/understand-diff [--project <name|id|alias>|path]`
-- `/understand-domain [path] [--full]`
-- `/understand-explain [--project <name|id|alias>] <file-path[:symbol]>`
-- `/understand-knowledge <wiki-directory>`
-- `/understand-onboard [--project <name|id|alias>|path]`
-
-所有连字符命令都有 underscore alias，例如 `/understand_dashboard`。
+- `/understand analyze [path|https://github.com/owner/repo[/tree/<branch-or-tag>[/sub/path]]] [--full|--auto-update|--no-auto-update|--review]`
+- `/understand status [job_id]`
+- `/understand dashboard [path]`
+- `/understand chat [--project <name|id|alias>] <query>`
+- `/understand diff [--project <name|id|alias>|path]`
+- `/understand domain [path] [--full]`
+- `/understand explain [--project <name|id|alias>] <file-path[:symbol]>`
+- `/understand knowledge <wiki-directory>`
+- `/understand onboard [--project <name|id|alias>|path]`
 
 ## 项目空间
 
-`/understand` 成功启动分析时会把目标项目登记到 AstrBot 插件数据目录：
+`/understand analyze` 成功启动分析时会把目标项目登记到 AstrBot 插件数据目录：
 `data/plugin_data/astrbot_plugin_UnderstandAnything/projects.json`。
 
 登记记录包含 `project_id`、`name`、`aliases`、`path`、`graph_root`、
