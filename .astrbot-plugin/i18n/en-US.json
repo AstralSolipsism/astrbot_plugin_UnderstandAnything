@@ -35,7 +35,7 @@
     },
     "output_locale": {
       "description": "Output language for generated Understand Anything content",
-      "hint": "Auto follows the WebUI/API locale when available, then the chat message language, then Simplified Chinese.",
+      "hint": "Auto follows the WebUI/API locale when available, then the chat message language after ignoring commands, URLs, and code identifiers, then Simplified Chinese.",
       "labels": [
         "Follow WebUI / chat language",
         "Simplified Chinese",

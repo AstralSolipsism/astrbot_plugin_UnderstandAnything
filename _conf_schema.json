@@ -54,7 +54,7 @@
       "English",
       "Russian"
     ],
-    "hint": "Auto follows the WebUI/API locale when available, then the chat message language, then Simplified Chinese."
+    "hint": "Auto follows the WebUI/API locale when available, then the chat message language after ignoring commands, URLs, and code identifiers, then Simplified Chinese."
   },
   "auto_build": {
     "description": "Automatically repair missing bundled runtime dependencies",
