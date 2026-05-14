@@ -67,6 +67,21 @@ describe("dashboard i18n", () => {
     );
   });
 
+  it("describes the GitHub proxy empty option as automatic fallback mode", () => {
+    expect(translateLocal("zh-CN", "workspace.githubProxyDirect", "")).toBe(
+      "自动：先直连，失败后使用代理"
+    );
+    expect(translateLocal("en-US", "workspace.githubProxyDirect", "")).toBe(
+      "Automatic: direct, then proxies"
+    );
+    expect(
+      translateLocal("zh-CN", "workspace.githubProxyDescription", "")
+    ).toContain("自动切换内置代理预设");
+    expect(translateLocal("zh-CN", "workspace.githubProxyDirect", "")).not.toBe(
+      "直连 GitHub"
+    );
+  });
+
   it("localizes Computer Use setup guidance without unsupported routes", () => {
     const guidance = [
       translateLocal("zh-CN", "workspace.computerUseDisabledTitle", ""),

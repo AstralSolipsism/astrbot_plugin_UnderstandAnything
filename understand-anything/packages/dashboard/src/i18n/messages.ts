@@ -198,9 +198,9 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             projectTargetPlaceholder:
               "https://github.com/owner/repo/tree/main/packages/app or D:\\path\\to\\project...",
             githubProxy: "Git clone proxy",
-            githubProxyDirect: "Direct GitHub",
+            githubProxyDirect: "Automatic: direct, then proxies",
             githubProxyDescription:
-              "Uses AstrBot's bundled GitHub proxy presets for git clone and fetch.",
+              "Direct GitHub is tried first. If it fails with a network error, AstrBot falls back to bundled proxy presets.",
             fullAnalysis: "Full analysis",
             autoUpdate: "Auto update",
             starting: "Starting",
@@ -746,9 +746,9 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             projectTargetPlaceholder:
               "https://github.com/owner/repo/tree/main/packages/app 或 D:\\path\\to\\project...",
             githubProxy: "Git clone 代理",
-            githubProxyDirect: "直连 GitHub",
+            githubProxyDirect: "自动：先直连，失败后使用代理",
             githubProxyDescription:
-              "使用 AstrBot 内置维护的 GitHub 代理预设执行 git clone 和 fetch。",
+              "优先直连 GitHub；如果出现网络错误，AstrBot 会自动切换内置代理预设。",
             fullAnalysis: "完整分析",
             autoUpdate: "自动更新",
             starting: "启动中",
@@ -1296,9 +1296,9 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             projectTargetPlaceholder:
               "https://github.com/owner/repo/tree/main/packages/app или D:\\path\\to\\project...",
             githubProxy: "Git clone proxy",
-            githubProxyDirect: "Direct GitHub",
+            githubProxyDirect: "Automatic: direct, then proxies",
             githubProxyDescription:
-              "Uses AstrBot's bundled GitHub proxy presets for git clone and fetch.",
+              "Direct GitHub is tried first. If it fails with a network error, AstrBot falls back to bundled proxy presets.",
             fullAnalysis: "Полный анализ",
             autoUpdate: "Автообновление",
             starting: "Запуск",

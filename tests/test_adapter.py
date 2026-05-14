@@ -856,6 +856,9 @@ class _FakeGitHubRepoManager(GitHubRepoManager):
         cache_root: Path,
         *,
         fail_clone: bool = False,
+        clone_failures_by_url: dict[str, str] | None = None,
+        fetch_failures_by_url: dict[str, str] | None = None,
+        ls_remote_failures_by_url: dict[str, str] | None = None,
         remote_refs: list[str] | None = None,
         create_subpath: str | None = None,
         create_files: dict[str, str] | None = None,
@@ -865,23 +868,45 @@ class _FakeGitHubRepoManager(GitHubRepoManager):
             artifact_root=cache_root.parent / "github-artifacts",
         )
         self.fail_clone = fail_clone
+        self.clone_failures_by_url = clone_failures_by_url or {}
+        self.fetch_failures_by_url = fetch_failures_by_url or {}
+        self.ls_remote_failures_by_url = ls_remote_failures_by_url or {}
         self.remote_refs = remote_refs or ["main"]
         self.create_subpath = create_subpath
         self.create_files = create_files or {}
         self.calls: list[list[str]] = []
+        self.origin_url = ""
 
     async def _run_git(
-        self, args: list[str], *, check: bool = True
+        self,
+        args: list[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float | None = None,
     ) -> GitCommandResult:
+        del timeout_seconds
         self.calls.append(args)
         if args[0] == "ls-remote":
+            clone_url = args[-1]
+            if message := self.ls_remote_failures_by_url.get(clone_url):
+                raise GitHubRepoError(message)
             stdout = "".join(
                 f"abc123\trefs/heads/{remote_ref}\n" for remote_ref in self.remote_refs
             )
             return GitCommandResult(0, stdout, "")
         if args[0] == "clone":
+            clone_url = args[1]
+            target_path = Path(args[-1])
             if self.fail_clone:
                 raise GitHubRepoError("clone failed")
+            if message := self.clone_failures_by_url.get(clone_url):
+                target_path.mkdir(parents=True, exist_ok=True)
+                (target_path / "partial-clone-marker.txt").write_text(
+                    "partial",
+                    encoding="utf-8",
+                )
+                raise GitHubRepoError(message)
+            self.origin_url = clone_url
             Path(args[-1], ".git").mkdir(parents=True)
             if self.create_subpath:
                 Path(args[-1], self.create_subpath).mkdir(parents=True)
@@ -889,6 +914,13 @@ class _FakeGitHubRepoManager(GitHubRepoManager):
                 file_path = Path(args[-1], relative_path)
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_bytes(content.encode("utf-8"))
+            return GitCommandResult(0, "", "")
+        if "remote" in args and "set-url" in args:
+            self.origin_url = args[-1]
+            return GitCommandResult(0, "", "")
+        if "fetch" in args:
+            if message := self.fetch_failures_by_url.get(self.origin_url):
+                raise GitHubRepoError(message)
             return GitCommandResult(0, "", "")
         if "symbolic-ref" in args:
             return GitCommandResult(0, "origin/main\n", "")
@@ -945,6 +977,104 @@ async def test_github_repo_manager_returns_analysis_subpath_after_prepare(
 
 
 @pytest.mark.asyncio
+async def test_github_repo_manager_resolve_remote_falls_back_after_direct_reset(
+    tmp_path: Path,
+) -> None:
+    direct_url = "https://github.com/AstralSolipsism/demo.git"
+    proxy_url = f"https://edgeone.gh-proxy.com/{direct_url}"
+    manager = _FakeGitHubRepoManager(
+        tmp_path,
+        remote_refs=["feature/x"],
+        ls_remote_failures_by_url={
+            direct_url: (
+                "fatal: unable to access 'https://github.com/AstralSolipsism/demo.git/': "
+                "Recv failure: Connection was reset"
+            ),
+        },
+    )
+
+    checkout = await manager.resolve_remote(
+        "https://github.com/AstralSolipsism/demo/tree/feature/x/packages/app",
+    )
+
+    ls_remote_urls = [call[-1] for call in manager.calls if call[0] == "ls-remote"]
+    assert ls_remote_urls[:2] == [direct_url, proxy_url]
+    assert checkout.github_proxy == "https://edgeone.gh-proxy.com"
+    assert checkout.ref == "feature/x"
+    assert checkout.subpath == "packages/app"
+
+
+@pytest.mark.asyncio
+async def test_github_repo_manager_prepare_falls_back_after_clone_reset(
+    tmp_path: Path,
+) -> None:
+    direct_url = "https://github.com/AstralSolipsism/demo.git"
+    proxy_url = f"https://edgeone.gh-proxy.com/{direct_url}"
+    manager = _FakeGitHubRepoManager(
+        tmp_path,
+        clone_failures_by_url={
+            direct_url: (
+                "fatal: unable to access 'https://github.com/AstralSolipsism/demo.git/': "
+                "Recv failure: Connection was reset"
+            ),
+        },
+    )
+    checkout = manager.resolve("https://github.com/AstralSolipsism/demo")
+
+    result = await manager.prepare_with_checkout(checkout)
+
+    clone_urls = [call[1] for call in manager.calls if call[0] == "clone"]
+    assert clone_urls[:2] == [direct_url, proxy_url]
+    assert result.checkout.github_proxy == "https://edgeone.gh-proxy.com"
+    assert result.path == result.checkout.worktree_path
+    assert not (result.checkout.worktree_path / "partial-clone-marker.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_github_repo_manager_prepare_falls_back_after_fetch_reset(
+    tmp_path: Path,
+) -> None:
+    direct_url = "https://github.com/AstralSolipsism/demo.git"
+    proxy_url = f"https://edgeone.gh-proxy.com/{direct_url}"
+    manager = _FakeGitHubRepoManager(
+        tmp_path,
+        fetch_failures_by_url={
+            direct_url: (
+                "fatal: unable to access 'https://github.com/AstralSolipsism/demo.git/': "
+                "Recv failure: Connection was reset"
+            ),
+        },
+    )
+    checkout = manager.resolve("https://github.com/AstralSolipsism/demo")
+    (checkout.worktree_path / ".git").mkdir(parents=True)
+
+    result = await manager.prepare_with_checkout(checkout)
+
+    set_url_calls = [call for call in manager.calls if "set-url" in call]
+    assert [call[-1] for call in set_url_calls[:2]] == [direct_url, proxy_url]
+    assert result.checkout.github_proxy == "https://edgeone.gh-proxy.com"
+
+
+@pytest.mark.asyncio
+async def test_github_repo_manager_prepare_tries_explicit_proxy_first(
+    tmp_path: Path,
+) -> None:
+    direct_url = "https://github.com/AstralSolipsism/demo.git"
+    preferred_proxy_url = f"https://gh.llkk.cc/{direct_url}"
+    manager = _FakeGitHubRepoManager(tmp_path)
+    checkout = manager.resolve(
+        "https://github.com/AstralSolipsism/demo",
+        github_proxy="https://gh.llkk.cc",
+    )
+
+    result = await manager.prepare_with_checkout(checkout)
+
+    clone_urls = [call[1] for call in manager.calls if call[0] == "clone"]
+    assert clone_urls[0] == preferred_proxy_url
+    assert result.checkout.github_proxy == "https://gh.llkk.cc"
+
+
+@pytest.mark.asyncio
 async def test_github_repo_manager_rejects_missing_analysis_subpath(
     tmp_path: Path,
 ) -> None:
@@ -955,6 +1085,30 @@ async def test_github_repo_manager_rejects_missing_analysis_subpath(
 
     with pytest.raises(GitHubRepoError, match="subpath does not exist"):
         await manager.prepare(checkout)
+    clone_calls = [call for call in manager.calls if call[0] == "clone"]
+    assert len(clone_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_github_repo_manager_rejects_missing_ref_without_retry(
+    tmp_path: Path,
+) -> None:
+    direct_url = "https://github.com/AstralSolipsism/demo.git"
+    manager = _FakeGitHubRepoManager(
+        tmp_path,
+        fetch_failures_by_url={
+            direct_url: "fatal: couldn't find remote ref missing-branch",
+        },
+    )
+    checkout = manager.resolve(
+        "https://github.com/AstralSolipsism/demo",
+        ref="missing-branch",
+    )
+
+    with pytest.raises(GitHubRepoError, match="couldn't find remote ref"):
+        await manager.prepare(checkout)
+    clone_calls = [call for call in manager.calls if call[0] == "clone"]
+    assert len(clone_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -1020,6 +1174,7 @@ async def test_github_repo_manager_reports_prepare_progress(tmp_path: Path) -> N
     await manager.prepare(checkout, progress=messages.append)
 
     assert messages == [
+        "Trying direct GitHub for AstralSolipsism/demo.",
         "Cloning GitHub repository AstralSolipsism/demo.",
         "Checking out GitHub repository AstralSolipsism/demo.",
     ]
@@ -1040,6 +1195,7 @@ async def test_github_repo_manager_awaits_async_prepare_progress(
     await manager.prepare(checkout, progress=progress)
 
     assert messages == [
+        "Trying direct GitHub for AstralSolipsism/demo.",
         "Cloning GitHub repository AstralSolipsism/demo.",
         "Checking out GitHub repository AstralSolipsism/demo.",
     ]

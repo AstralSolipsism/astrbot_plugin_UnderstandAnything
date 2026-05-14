@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -22,6 +22,7 @@ GITHUB_PROXY_PRESETS = (
     "https://gh.llkk.cc",
 )
 DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS = 300
+DEFAULT_GIT_PROBE_TIMEOUT_SECONDS = 12
 GitProgressCallback = Callable[[str], Awaitable[None] | None]
 
 
@@ -34,6 +35,12 @@ class GitCommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubRepoPrepareResult:
+    path: Path
+    checkout: GitHubRepoCheckout
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +82,18 @@ class GitHubRepoCheckout:
     @property
     def graph_root(self) -> Path:
         return self.artifact_root / ".understand-anything"
+
+    def with_github_proxy(self, github_proxy: str | None) -> GitHubRepoCheckout:
+        normalized_proxy = GitHubRepoManager.normalize_github_proxy(github_proxy)
+        direct_clone_url = f"https://github.com/{self.owner}/{self.repo}.git"
+        return replace(
+            self,
+            clone_url=GitHubRepoManager.apply_github_proxy(
+                direct_clone_url,
+                normalized_proxy,
+            ),
+            github_proxy=normalized_proxy,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +207,7 @@ class GitHubRepoManager:
         repo_url: str,
         ref: str | None = None,
         github_proxy: str | None = None,
+        progress: GitProgressCallback | None = None,
     ) -> GitHubRepoCheckout:
         parts = self.parse_repo_url(repo_url)
         selected_ref = self._normalize_ref(ref)
@@ -195,9 +215,10 @@ class GitHubRepoManager:
         if selected_ref:
             subpath = self._subpath_from_tree_parts(parts.tree_parts[1:])
         elif parts.tree_parts:
-            selected_ref, subpath = await self._resolve_tree_parts_remote(
+            selected_ref, subpath, github_proxy = await self._resolve_tree_parts_remote(
                 parts,
                 github_proxy,
+                progress,
             )
         return self._checkout_from_parts(parts, selected_ref, subpath, github_proxy)
 
@@ -301,40 +322,106 @@ class GitHubRepoManager:
         checkout: GitHubRepoCheckout,
         progress: GitProgressCallback | None = None,
     ) -> Path:
+        return (await self.prepare_with_checkout(checkout, progress)).path
+
+    async def prepare_with_checkout(
+        self,
+        checkout: GitHubRepoCheckout,
+        progress: GitProgressCallback | None = None,
+    ) -> GitHubRepoPrepareResult:
         lock = self._locks.setdefault(checkout.cache_key, asyncio.Lock())
         async with lock:
             path = checkout.worktree_path
             if path.exists() and not (path / ".git").is_dir():
                 raise GitHubRepoError(
                     f"GitHub cache path exists but is not a git repo: {path}"
-            )
-            if not (path / ".git").is_dir():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                await self._notify_progress(
-                    progress,
-                    f"Cloning GitHub repository {checkout.display_name}.",
                 )
-                await self._run_git(["clone", checkout.clone_url, str(path)])
-            else:
-                await self._notify_progress(
-                    progress,
-                    f"Refreshing cached GitHub repository {checkout.display_name}.",
-                )
-                await self._run_git(
-                    ["-C", str(path), "remote", "set-url", "origin", checkout.clone_url]
-                )
-                await self._notify_progress(
-                    progress,
-                    f"Fetching latest changes for {checkout.display_name}.",
-                )
-                await self._run_git(["-C", str(path), "fetch", "--prune", "origin"])
+            errors: list[str] = []
+            for candidate in self._checkout_candidates(checkout):
+                try:
+                    await self._notify_progress(
+                        progress,
+                        f"Trying {self._route_label(candidate.github_proxy)} for "
+                        f"{candidate.display_name}.",
+                    )
+                    analysis_root = await self._prepare_with_route(
+                        candidate,
+                        progress,
+                    )
+                    if candidate.github_proxy != checkout.github_proxy:
+                        await self._notify_progress(
+                            progress,
+                            f"Using {self._route_label(candidate.github_proxy)} for "
+                            f"{candidate.display_name}.",
+                        )
+                    return GitHubRepoPrepareResult(
+                        path=analysis_root,
+                        checkout=candidate,
+                    )
+                except GitHubRepoError as exc:
+                    if not self._is_retryable_git_error(exc):
+                        raise
+                    errors.append(
+                        f"{self._route_label(candidate.github_proxy)}: {exc!s}"
+                    )
+                    await self._notify_progress(
+                        progress,
+                        f"{self._route_label(candidate.github_proxy)} failed: "
+                        f"{self._short_error(exc)}",
+                    )
+                    if not (path / ".git").is_dir():
+                        self._cleanup_incomplete_clone(candidate)
+                    continue
+            raise GitHubRepoError(self._format_exhausted_routes_error(errors))
 
+    async def _prepare_with_route(
+        self,
+        checkout: GitHubRepoCheckout,
+        progress: GitProgressCallback | None = None,
+    ) -> Path:
+        path = checkout.worktree_path
+        if not (path / ".git").is_dir():
+            path.parent.mkdir(parents=True, exist_ok=True)
             await self._notify_progress(
                 progress,
-                f"Checking out GitHub repository {checkout.display_name}.",
+                f"Cloning GitHub repository {checkout.display_name}.",
             )
-            await self._checkout_ref(path, checkout.ref)
-            return self._validate_analysis_root(checkout)
+            try:
+                await self._run_git(["clone", checkout.clone_url, str(path)])
+            except GitHubRepoError:
+                self._cleanup_incomplete_clone(checkout)
+                raise
+        else:
+            await self._notify_progress(
+                progress,
+                f"Refreshing cached GitHub repository {checkout.display_name}.",
+            )
+            await self._run_git(
+                ["-C", str(path), "remote", "set-url", "origin", checkout.clone_url]
+            )
+            await self._notify_progress(
+                progress,
+                f"Fetching latest changes for {checkout.display_name}.",
+            )
+            await self._run_git(["-C", str(path), "fetch", "--prune", "origin"])
+
+        await self._notify_progress(
+            progress,
+            f"Checking out GitHub repository {checkout.display_name}.",
+        )
+        await self._checkout_ref(path, checkout.ref)
+        return self._validate_analysis_root(checkout)
+
+    def _cleanup_incomplete_clone(self, checkout: GitHubRepoCheckout) -> None:
+        path = checkout.worktree_path.resolve(strict=False)
+        try:
+            path.relative_to(self.cache_root)
+        except ValueError as exc:
+            raise GitHubRepoError(
+                "GitHub cache cleanup path escaped cache root."
+            ) from exc
+        if path.exists() and not (path / ".git").is_dir():
+            shutil.rmtree(path, ignore_errors=True)
 
     def remove_cache(self, checkout: GitHubRepoCheckout) -> bool:
         path = checkout.worktree_path.resolve(strict=False)
@@ -421,20 +508,52 @@ class GitHubRepoManager:
         self,
         parts: GitHubRepoUrlParts,
         github_proxy: str | None,
-    ) -> tuple[str, str | None]:
-        clone_url = self.apply_github_proxy(
-            f"https://github.com/{parts.owner}/{parts.repo}.git",
-            github_proxy,
-        )
-        known_refs = await self._list_remote_ref_names(clone_url)
+        progress: GitProgressCallback | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        known_refs: set[str] | None = None
+        selected_proxy: str | None = None
+        errors: list[str] = []
+        for candidate_proxy in self._github_proxy_candidates(github_proxy):
+            clone_url = self.apply_github_proxy(
+                f"https://github.com/{parts.owner}/{parts.repo}.git",
+                candidate_proxy,
+            )
+            try:
+                await self._notify_progress(
+                    progress,
+                    f"Probing {self._route_label(candidate_proxy)} for "
+                    f"{parts.owner}/{parts.repo}.",
+                )
+                known_refs = await self._list_remote_ref_names(clone_url)
+                selected_proxy = candidate_proxy
+                break
+            except GitHubRepoError as exc:
+                if not self._is_retryable_git_error(exc):
+                    raise
+                errors.append(f"{self._route_label(candidate_proxy)}: {exc!s}")
+                await self._notify_progress(
+                    progress,
+                    f"{self._route_label(candidate_proxy)} failed: "
+                    f"{self._short_error(exc)}",
+                )
+        if known_refs is None:
+            raise GitHubRepoError(self._format_exhausted_routes_error(errors))
         for size in range(len(parts.tree_parts), 0, -1):
             candidate = "/".join(parts.tree_parts[:size])
             if candidate in known_refs:
-                return candidate, self._subpath_from_tree_parts(parts.tree_parts[size:])
-        return self._resolve_tree_parts_sync(parts.tree_parts, None)
+                return (
+                    candidate,
+                    self._subpath_from_tree_parts(parts.tree_parts[size:]),
+                    selected_proxy,
+                )
+        selected_ref, subpath = self._resolve_tree_parts_sync(parts.tree_parts, None)
+        return selected_ref, subpath, selected_proxy
 
     async def _list_remote_ref_names(self, clone_url: str) -> set[str]:
-        result = await self._run_git(["ls-remote", "--heads", "--tags", clone_url])
+        result = await self._run_git(
+            ["ls-remote", "--heads", "--tags", clone_url],
+            timeout_seconds=self._probe_timeout_seconds(),
+        )
         refs: set[str] = set()
         for line in result.stdout.splitlines():
             columns = line.split()
@@ -454,6 +573,7 @@ class GitHubRepoManager:
         args: list[str],
         *,
         check: bool = True,
+        timeout_seconds: float | None = None,
     ) -> GitCommandResult:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -464,7 +584,7 @@ class GitHubRepoManager:
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=self.git_timeout_seconds,
+                timeout=timeout_seconds or self.git_timeout_seconds,
             )
         except TimeoutError as exc:
             with contextlib.suppress(ProcessLookupError):
@@ -474,8 +594,8 @@ class GitHubRepoManager:
             command = self._format_git_command(args)
             raise GitHubRepoError(
                 "GitHub source preparation timed out after "
-                f"{self.git_timeout_seconds:.0f}s while running: {command}. "
-                "Check the network connection, choose a GitHub proxy, or retry later."
+                f"{(timeout_seconds or self.git_timeout_seconds):.0f}s while running: {command}. "
+                "Check the network connection or retry later."
             ) from exc
         except OSError as exc:
             raise GitHubRepoError(f"Failed to execute git: {exc}") from exc
@@ -493,6 +613,114 @@ class GitHubRepoManager:
                 detail or f"git exited with status {result.returncode}"
             )
         return result
+
+    def _probe_timeout_seconds(self) -> float:
+        return min(self.git_timeout_seconds, float(DEFAULT_GIT_PROBE_TIMEOUT_SECONDS))
+
+    def _checkout_candidates(
+        self,
+        checkout: GitHubRepoCheckout,
+    ) -> tuple[GitHubRepoCheckout, ...]:
+        return tuple(
+            checkout.with_github_proxy(proxy)
+            for proxy in self._github_proxy_candidates(checkout.github_proxy)
+        )
+
+    @classmethod
+    def _github_proxy_candidates(
+        cls,
+        preferred_proxy: str | None,
+    ) -> tuple[str | None, ...]:
+        preferred = cls.normalize_github_proxy(preferred_proxy)
+        candidates: list[str | None] = []
+
+        def add(proxy: str | None) -> None:
+            if proxy not in candidates:
+                candidates.append(proxy)
+
+        if preferred:
+            add(preferred)
+        add(None)
+        for proxy in GITHUB_PROXY_PRESETS:
+            add(proxy.rstrip("/"))
+        return tuple(candidates)
+
+    @staticmethod
+    def _route_label(github_proxy: str | None) -> str:
+        return f"GitHub proxy {github_proxy}" if github_proxy else "direct GitHub"
+
+    @classmethod
+    def _is_retryable_git_error(cls, exc: Exception) -> bool:
+        detail = str(exc).casefold()
+        if any(
+            marker in detail
+            for marker in (
+                "authentication failed",
+                "repository not found",
+                "not found",
+                "the requested url returned error: 400",
+                "the requested url returned error: 401",
+                "the requested url returned error: 403",
+                "the requested url returned error: 404",
+                "unsupported github",
+                "invalid github",
+                "subpath does not exist",
+                "escaped",
+            )
+        ):
+            return False
+        return any(
+            marker in detail
+            for marker in (
+                "connection was reset",
+                "recv failure",
+                "failed to connect",
+                "could not resolve host",
+                "could not resolve proxy",
+                "operation timed out",
+                "timed out",
+                "connection timed out",
+                "connection refused",
+                "network is unreachable",
+                "connection reset by peer",
+                "name or service not known",
+                "temporary failure in name resolution",
+                "proxy",
+                "ssl_connect",
+                "ssl error",
+                "tls",
+                "gnutls",
+                "http/2 stream",
+                "curl 28",
+                "curl 35",
+                "curl 56",
+                "rpc failed",
+                "early eof",
+                "the requested url returned error: 500",
+                "the requested url returned error: 502",
+                "the requested url returned error: 503",
+                "the requested url returned error: 504",
+            )
+        )
+
+    @staticmethod
+    def _short_error(exc: Exception) -> str:
+        detail = str(exc).strip().replace("\r", " ").replace("\n", " ")
+        if len(detail) > 180:
+            return detail[:180] + "..."
+        return detail or exc.__class__.__name__
+
+    @staticmethod
+    def _format_exhausted_routes_error(errors: list[str]) -> str:
+        if not errors:
+            return "GitHub source preparation failed before any retryable route was attempted."
+        joined = "; ".join(errors)
+        if len(joined) > 800:
+            joined = joined[:800] + "..."
+        return (
+            "GitHub source preparation failed after trying direct GitHub and bundled "
+            f"proxy presets: {joined}"
+        )
 
     def _format_git_command(self, args: list[str]) -> str:
         return " ".join([self.git_bin, *args])

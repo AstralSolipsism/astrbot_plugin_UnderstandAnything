@@ -102,6 +102,10 @@ Dashboard 保留参考项目 React 体验，只调整数据访问层：
 `data/plugin_data/astrbot_plugin_UnderstandAnything/repos/github/`。粘贴 GitHub
 `/tree/<branch-or-tag>/<sub/path>` 地址时，插件会自动解析分支或标签，并只分析该子目录。
 
+GitHub 访问默认使用自动模式：先直连 GitHub；如果 `ls-remote`、`clone` 或 `fetch`
+出现可重试网络错误，会依次切换内置代理预设。Dashboard 代理下拉框和
+`--github-proxy <preset>` 只表示“优先使用该预设”，失败后仍会继续尝试直连和其他内置预设。
+
 `auto_build` 表示是否允许插件在首次使用时自动修复缺失的内置运行依赖。关闭后，如果
 `understand-anything/node_modules` 或必要 `dist` 缺失，Dashboard 会提示手动执行“修复插件运行依赖”。
 

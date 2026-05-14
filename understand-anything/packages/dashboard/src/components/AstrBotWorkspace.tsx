@@ -818,7 +818,10 @@ export default function AstrBotWorkspace({
                         className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2.5 text-sm text-text-primary focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                       >
                         <option value="">
-                          {t("workspace.githubProxyDirect", "Direct GitHub")}
+                          {t(
+                            "workspace.githubProxyDirect",
+                            "Automatic: direct, then proxies",
+                          )}
                         </option>
                         {githubProxyPresets.map((proxy) => (
                           <option key={proxy} value={proxy}>
@@ -829,7 +832,7 @@ export default function AstrBotWorkspace({
                       <p className="mt-1 text-xs leading-relaxed text-text-muted">
                         {t(
                           "workspace.githubProxyDescription",
-                          "Uses AstrBot's bundled GitHub proxy presets for git clone and fetch.",
+                          "Direct GitHub is tried first. If it fails with a network error, AstrBot falls back to bundled proxy presets.",
                         )}
                       </p>
                     </label>

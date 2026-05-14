@@ -38,6 +38,22 @@ describe("analysis job request payloads", () => {
     });
   });
 
+  it("omits an empty GitHub proxy so the server uses automatic fallback mode", () => {
+    expect(
+      buildAnalysisJobPayload({
+        target: "https://github.com/AstralSolipsism/demo",
+        fullAnalysis: false,
+        autoUpdate: true,
+        githubProxy: "   ",
+      }),
+    ).toEqual({
+      action: "understand",
+      target: "https://github.com/AstralSolipsism/demo",
+      full: false,
+      auto_update: true,
+    });
+  });
+
   it("detects GitHub targets without requiring a source mode toggle", () => {
     expect(looksLikeGitHubTarget(" https://github.com/owner/repo ")).toBe(true);
     expect(looksLikeGitHubTarget("G:/projects/repo")).toBe(false);
