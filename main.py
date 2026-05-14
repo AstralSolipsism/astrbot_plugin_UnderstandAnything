@@ -50,9 +50,8 @@ class UnderstandAnythingPlugin(Star):
     @understand_commands.command("status")
     async def understand_status(self, event: AstrMessageEvent):
         """Show compact progress for an Understand Anything job."""
-        raw_args = self._args(event, "understand status")
-        job_id = self._first_path_token(raw_args)
-        yield event.plain_result(self.runner.format_job_status(job_id))
+        project_ref = self._args(event, "understand status").strip()
+        yield event.plain_result(self.runner.format_job_status(project_ref or None))
 
     @understand_commands.command("dashboard")
     async def understand_dashboard_group(self, event: AstrMessageEvent):
@@ -202,18 +201,21 @@ class UnderstandAnythingPlugin(Star):
     async def ua_get_analysis_status(
         self,
         event: AstrMessageEvent,
-        job_id: str = "",
+        project: str = "",
     ):
-        """Get compact progress for an Understand Anything background job.
+        """Get compact progress for an Understand Anything job.
 
         Use this after starting an analysis job or when the user asks whether an
         analysis is still running. The response is a concise status summary and
         does not include raw job logs.
+        After this tool returns, reply with exactly the returned message and do
+        not add extra explanations, suggestions, or follow-up questions.
 
         Args:
-            job_id(string): Optional job id. If empty, show the latest job.
+            project(string): Optional project name, alias, or path. If empty,
+                show the latest active job.
         """
-        return self.runner.format_job_status(job_id or None)
+        return self.runner.format_job_status(project or None)
 
     @filter.llm_tool(name="ua_ask_graph")
     async def ua_ask_graph(

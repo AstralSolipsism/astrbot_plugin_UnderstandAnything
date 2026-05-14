@@ -91,11 +91,23 @@ def test_main_plugin_llm_tools_explain_background_analysis_contract() -> None:
     assert '@filter.llm_tool(name="ua_analyze_github_repo")' not in source
     assert '@filter.llm_tool(name="ua_search_graph")' not in source
     assert '@filter.llm_tool(name="ua_chat_with_graph")' not in source
-    assert "background" in source
     assert "30 minutes or longer" in source
-    assert "/understand status" in source
     assert "Do not assume" in source
-    assert "format_job_status(job_id or None)" in source
+    assert "User-facing lifecycle notifications are sent by the plugin" in source
+    assert "source preparation" in project_tool_source
+    assert "GitHub source preparation" in github_tool_source
+    assert "confirm scan scope before graph generation" in source
+    assert "Do not say analysis has started" in source
+    assert "background" not in project_tool_source
+    assert "background" not in github_tool_source
+    assert "reply with exactly the returned message" not in project_tool_source
+    assert "reply with exactly the returned message" not in github_tool_source
+    assert "format_tool_job_submitted_message(job)" in source
+    assert "return self.runner.format_job_started_message(job)" not in source
+    assert 'if not job.args.get("started_notification_sent")' in source
+    assert "job_id(string)" not in source
+    assert "project(string): Optional project name, alias, or path" in source
+    assert "format_job_status(project or None)" in source
 
 
 def test_main_plugin_has_single_llm_graph_question_tool() -> None:
@@ -338,47 +350,58 @@ def test_runner_formats_compact_chat_job_status(tmp_path: Path) -> None:
         context=None,  # type: ignore[arg-type]
         registry_path=tmp_path / "projects.json",
     )
-    job = runner.jobs.create(
-        "understand",
-        tmp_path / "project",
-        {"project_id": "project-1", "raw_args": "D:/repo"},
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstrBotDevs/AstrBot",
+        start_task=False,
     )
-    runner.jobs.mark_running(job.job_id)
-    runner.jobs.set_progress(
-        job.job_id,
-        "agent",
-        "Running Understand Anything agent workflow.",
-        55,
-    )
-    runner.jobs.append_log(job.job_id, "SubAgent started: file-analyzer:0")
-    runner.jobs.append_log(job.job_id, "SubAgent finished: file-analyzer:0 status=ok")
 
-    message = runner.format_job_status(job.job_id)
+    by_repo = runner.format_job_status("AstrBot")
+    by_owner_repo = runner.format_job_status("AstrBotDevs/AstrBot")
 
-    assert f"Job: {job.job_id}" in message
-    assert "Status: running" in message
-    assert "Progress: 55%" in message
-    assert "Running Understand Anything agent workflow." in message
-    assert "SubAgent started" not in message
-    assert "SubAgent finished" not in message
+    assert "分析状态：AstrBot" in by_repo
+    assert "分析状态：AstrBot" in by_owner_repo
+    assert job.job_id not in by_repo
+    assert job.job_id not in by_owner_repo
 
 
-def test_runner_formats_latest_active_job_when_status_id_omitted(
+def test_runner_status_reports_ambiguous_project_name_without_logs(
     tmp_path: Path,
 ) -> None:
     runner = UnderstandAnythingRunner(
         context=None,  # type: ignore[arg-type]
         registry_path=tmp_path / "projects.json",
     )
-    finished = runner.jobs.create("understand", tmp_path / "old", {})
-    runner.jobs.mark_finished(finished.job_id, {"message": "done"})
-    active = runner.jobs.create("understand", tmp_path / "active", {})
-    runner.jobs.mark_running(active.job_id)
+    first = runner.jobs.create(
+        "understand",
+        tmp_path / "owner-a" / "demo",
+        {
+            "status_ref": "demo",
+            "project_display_name": "demo",
+            "status_aliases": ["owner-a/demo"],
+        },
+    )
+    second = runner.jobs.create(
+        "understand",
+        tmp_path / "owner-b" / "demo",
+        {
+            "status_ref": "demo",
+            "project_display_name": "demo",
+            "status_aliases": ["owner-b/demo"],
+        },
+    )
+    runner.jobs.append_log(first.job_id, "SubAgent started: file-analyzer:0")
+    runner.jobs.append_log(second.job_id, "SubAgent finished: file-analyzer:0")
 
-    message = runner.format_job_status()
+    message = runner.format_job_status("demo")
 
-    assert f"Job: {active.job_id}" in message
-    assert f"Job: {finished.job_id}" not in message
+    assert "匹配到多个项目：demo" in message
+    assert "owner-a/demo" in message
+    assert "owner-b/demo" in message
+    assert first.job_id not in message
+    assert second.job_id not in message
+    assert "SubAgent started" not in message
+    assert "SubAgent finished" not in message
 
 
 def test_runner_formats_github_failure_with_retry_hint(tmp_path: Path) -> None:
@@ -404,12 +427,18 @@ def test_runner_formats_github_failure_with_retry_hint(tmp_path: Path) -> None:
     )
     runner.jobs.append_log(job.job_id, "SubAgent started: file-analyzer:0")
 
-    message = runner.format_job_status(job.job_id)
+    job.args["project_display_name"] = "demo"
+    job.args["status_ref"] = "demo"
+    job.args["status_aliases"] = ["AstralSolipsism/demo", repo_url]
 
-    assert "Error: fatal: unable to access repo" in message
-    assert "Next: Retry later" in message
-    assert "--github-proxy https://gh.llkk.cc" in message
-    assert repo_url in message
+    message = runner.format_job_status("demo")
+
+    assert "分析失败：demo" in message
+    assert "原因：fatal: unable to access repo" in message
+    assert "重试：" in message
+    assert "已自动尝试直连 GitHub 和内置代理预设" in message
+    assert "--github-proxy" not in message
+    assert job.job_id not in message
     assert "SubAgent started" not in message
 
 

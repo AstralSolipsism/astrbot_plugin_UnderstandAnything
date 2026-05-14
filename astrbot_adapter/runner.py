@@ -36,7 +36,7 @@ from .ignore_review import (
     parse_confirmation_reply,
     write_ignore_content,
 )
-from .job_request import format_job_args, parse_job_args, split_args
+from .job_request import format_job_args, parse_job_args, quote_arg, split_args
 from .job_store import JobSnapshot, JobStatus, JobStore
 from .llm_dispatcher import LLMDispatcher, read_prompt_file
 from .path_security import PathSecurity
@@ -63,6 +63,12 @@ LANGUAGE_DIRECTIVE_TEMPLATE = (
     "Keep code identifiers, file paths, schema keys, tags, and established "
     "technical terms unchanged when appropriate."
 )
+
+ACTIVE_JOB_STATUSES = {
+    JobStatus.QUEUED,
+    JobStatus.RUNNING,
+    JobStatus.WAITING_CONFIRMATION,
+}
 
 
 class UnderstandAnythingRunner:
@@ -280,6 +286,12 @@ class UnderstandAnythingRunner:
             if github_checkout
             else {"type": "local"}
         )
+        project_display_name = self._initial_project_display_name(
+            project_root,
+            github_checkout,
+        )
+        status_ref = self._initial_status_ref(project_root, github_checkout)
+        status_aliases = self._initial_status_aliases(project_root, github_checkout)
         auto_update = self._auto_update_setting_from_flags(selected_flags)
         job = self.jobs.create(
             skill_name,
@@ -287,6 +299,9 @@ class UnderstandAnythingRunner:
             {
                 "raw_args": display_args,
                 "project_path": str(project_root),
+                "project_display_name": project_display_name,
+                "status_ref": status_ref,
+                "status_aliases": status_aliases,
                 "project_id": ProjectRegistry.project_id_for(
                     graph_root.parent if github_checkout else project_root,
                 ),
@@ -299,15 +314,21 @@ class UnderstandAnythingRunner:
         )
         if not github_checkout:
             self._track_project_from_flags(project_root, selected_flags)
-        aliases = github_checkout.aliases if github_checkout else None
-        if not github_checkout:
-            self.registry.register(
-                project_root,
-                job_id=job.job_id,
-                auto_update=auto_update,
-                aliases=aliases,
-            )
+        self.registry.register(
+            project_root,
+            job_id=job.job_id,
+            auto_update=auto_update,
+            aliases=status_aliases,
+            graph_root=graph_root,
+            source=source_payload,
+        )
         if start_task:
+            job.args["started_notification_sent"] = await self._send_job_chat_message(
+                job,
+                event,
+                self.format_job_source_started_message(job, job_label=job_label),
+                key="progress:source",
+            )
             task = asyncio.create_task(self._run_skill_job(job, event))
             self._tasks[job.job_id] = task
         return job
@@ -452,39 +473,244 @@ class UnderstandAnythingRunner:
         )
         return str(payload["markdown"])
 
-    def format_job_status(self, job_id: str | None = None) -> str:
-        job = self._select_status_job(job_id)
-        if job is None:
-            if job_id:
-                return f"Understand Anything job not found: {job_id}"
-            return "No Understand Anything jobs are available in this session."
+    def format_job_started_message(
+        self,
+        job: JobSnapshot,
+        *,
+        job_label: str = "analysis",
+    ) -> str:
+        return self.format_job_source_started_message(job, job_label=job_label)
 
+    def format_job_source_started_message(
+        self,
+        job: JobSnapshot,
+        *,
+        job_label: str = "analysis",
+    ) -> str:
+        locale = self._job_locale(job)
+        name = self._job_display_name(job)
+        stage = self._source_stage_label(job, locale)
+        status_command = self._status_command(job)
+        label = self._job_label(job_label, locale)
+        if self._job_requires_scope_confirmation(job):
+            if locale == "en-US":
+                return (
+                    f"Preparing source: {name}\n"
+                    f"Stage: {stage}\n"
+                    "Graph generation will start only after scan scope confirmation.\n"
+                    f"Progress: {status_command}"
+                )
+            if locale == "ru-RU":
+                return (
+                    f"Подготовка исходного кода: {name}\n"
+                    f"Этап: {stage}\n"
+                    "Построение графа начнется только после подтверждения "
+                    "области сканирования.\n"
+                    f"Статус: {status_command}"
+                )
+            return (
+                f"正在获取源码：{name}\n"
+                f"阶段：{stage}\n"
+                "确认扫描范围后才会开始生成图谱。\n"
+                f"查看进度：{status_command}"
+            )
+        if locale == "en-US":
+            return (
+                f"Preparing source: {name}\n"
+                f"Stage: {stage}\n"
+                f"The {label} workflow will run after source preparation.\n"
+                f"Progress: {status_command}"
+            )
+        if locale == "ru-RU":
+            return (
+                f"Подготовка исходного кода: {name}\n"
+                f"Этап: {stage}\n"
+                f"Процесс {label} продолжится после подготовки исходного кода.\n"
+                f"Статус: {status_command}"
+            )
+        return (
+            f"正在获取源码：{name}\n"
+            f"阶段：{stage}\n"
+            f"源码准备完成后将进入{label}流程。\n"
+            f"查看进度：{status_command}"
+        )
+
+    def format_tool_job_submitted_message(self, job: JobSnapshot) -> str:
+        if not job.args.get("started_notification_sent"):
+            return self.format_job_source_started_message(
+                job,
+                job_label=str(job.args.get("job_label") or "analysis"),
+            )
+        locale = self._job_locale(job)
+        name = self._job_display_name(job)
+        if self._job_requires_scope_confirmation(job):
+            return self._localized(
+                locale,
+                zh=(
+                    f"内部状态：{name} 源码准备中；插件会先确认扫描范围，"
+                    "确认后才开始生成图谱。不要复述为分析正在运行。"
+                ),
+                en=(
+                    f"Internal status: source preparation for {name} is in progress; "
+                    "the plugin will confirm scan scope first, and graph generation "
+                    "starts only after confirmation. Do not describe the analysis as "
+                    "running."
+                ),
+                ru=(
+                    f"Внутренний статус: идет подготовка исходного кода для {name}; "
+                    "плагин сначала подтвердит область сканирования, а построение "
+                    "графа начнется только после подтверждения. Не описывайте "
+                    "анализ как выполняющийся."
+                ),
+            )
+        return self._localized(
+            locale,
+            zh=(
+                f"内部状态：{name} 源码准备中；用户可见的源码准备通知已由插件发送。"
+                "不要复述为分析正在运行。"
+            ),
+            en=(
+                f"Internal status: source preparation for {name} is in progress; "
+                "the plugin already sent the user-facing source preparation "
+                "notification. Do not describe the analysis as running."
+            ),
+            ru=(
+                f"Внутренний статус: идет подготовка исходного кода для {name}; "
+                "плагин уже отправил пользователю уведомление о подготовке "
+                "исходного кода. Не описывайте анализ как выполняющийся."
+            ),
+        )
+
+    def format_job_status(self, project_ref: str | None = None) -> str:
+        job, ambiguous = self._select_status_job(project_ref)
+        locale = self._resolve_output_locale()
+        normalized_ref = str(project_ref or "").strip()
+        if ambiguous:
+            return self._format_ambiguous_status_ref(normalized_ref, ambiguous, locale)
+        if job is None:
+            if normalized_ref:
+                return self._format_status_not_found(normalized_ref, locale)
+            return self._localized(
+                locale,
+                zh="当前会话没有 Understand Anything 分析任务。",
+                en="No Understand Anything analysis jobs are available in this session.",
+                ru="В этом сеансе нет задач анализа Understand Anything.",
+            )
+
+        locale = self._job_locale(job)
+        name = self._job_display_name(job)
         progress = job.progress
+        failed_step = str(job.args.get("failed_step") or "").strip()
+        failed_phase = str(job.args.get("failed_phase") or progress.phase).strip()
+        title = (
+            self._localized(
+                locale,
+                zh=f"分析失败：{name}",
+                en=f"Analysis failed: {name}",
+                ru=f"Анализ завершился ошибкой: {name}",
+            )
+            if job.status is JobStatus.FAILED
+            else self._localized(
+                locale,
+                zh=f"分析状态：{name}",
+                en=f"Analysis status: {name}",
+                ru=f"Статус анализа: {name}",
+            )
+        )
         lines = [
-            "Understand Anything job status",
-            f"Job: {job.job_id}",
-            f"Type: {job.kind}",
-            f"Status: {job.status.value}",
-            f"Progress: {progress.percent}% - {progress.label}",
-            f"Step: {self._format_progress_step(progress.steps)}",
-            f"Project: {job.project_root}",
-            f"Updated: {self._format_timestamp(job.updated_at)}",
+            title,
+            self._localized(
+                locale,
+                zh=f"状态：{self._status_label(job.status, locale)}",
+                en=f"Status: {self._status_label(job.status, locale)}",
+                ru=f"Статус: {self._status_label(job.status, locale)}",
+            ),
+            self._localized(
+                locale,
+                zh=(
+                    f"进度：{progress.percent}% - "
+                    f"{self._phase_label(progress.phase, locale)}"
+                ),
+                en=(
+                    f"Progress: {progress.percent}% - "
+                    f"{self._phase_label(progress.phase, locale)}"
+                ),
+                ru=(
+                    f"Прогресс: {progress.percent}% - "
+                    f"{self._phase_label(progress.phase, locale)}"
+                ),
+            ),
+            self._localized(
+                locale,
+                zh=f"阶段：{self._format_progress_step(progress.steps, locale)}",
+                en=f"Step: {self._format_progress_step(progress.steps, locale)}",
+                ru=f"Этап: {self._format_progress_step(progress.steps, locale)}",
+            ),
+            self._localized(
+                locale,
+                zh=f"项目路径：{job.project_root}",
+                en=f"Project path: {job.project_root}",
+                ru=f"Путь проекта: {job.project_root}",
+            ),
+            self._localized(
+                locale,
+                zh=f"更新时间：{self._format_timestamp(job.updated_at)}",
+                en=f"Updated: {self._format_timestamp(job.updated_at)}",
+                ru=f"Обновлено: {self._format_timestamp(job.updated_at)}",
+            ),
         ]
         if job.status is JobStatus.WAITING_CONFIRMATION:
             lines.append(
-                "Action: confirm scan scope with `继续`/`continue`, "
-                "`取消`/`cancel`, or update .understandignore rules.",
+                self._localized(
+                    locale,
+                    zh="操作：回复 `继续` / `取消`，或更新 .understandignore 规则。",
+                    en=(
+                        "Action: reply `continue` / `cancel`, or update "
+                        ".understandignore rules."
+                    ),
+                    ru=(
+                        "Действие: ответьте `continue` / `cancel` или обновите "
+                        "правила .understandignore."
+                    ),
+                )
             )
-        failed_step = str(job.args.get("failed_step") or "").strip()
         if job.error and failed_step:
-            lines.append(f"Failed step: {self._truncate_status_text(failed_step)}")
+            lines.append(
+                self._localized(
+                    locale,
+                    zh=(f"失败阶段：{self._phase_label(failed_phase, locale)}"),
+                    en=f"Failed step: {self._phase_label(failed_phase, locale)}",
+                    ru=f"Сбой на этапе: {self._phase_label(failed_phase, locale)}",
+                )
+            )
         if job.error:
-            lines.append(f"Error: {self._truncate_status_text(job.error)}")
-            hint = self._github_failure_retry_hint(job)
+            lines.append(
+                self._localized(
+                    locale,
+                    zh=f"原因：{self._truncate_status_text(job.error)}",
+                    en=f"Error: {self._truncate_status_text(job.error)}",
+                    ru=f"Ошибка: {self._truncate_status_text(job.error)}",
+                )
+            )
+            hint = self._github_failure_retry_hint(job, locale)
             if hint:
-                lines.append(f"Next: {hint}")
+                lines.append(
+                    self._localized(
+                        locale,
+                        zh=f"重试：{hint}",
+                        en=f"Next: {hint}",
+                        ru=f"Далее: {hint}",
+                    )
+                )
         elif job.status is JobStatus.FINISHED:
-            lines.append("Result: analysis finished.")
+            lines.append(
+                self._localized(
+                    locale,
+                    zh="结果：分析已完成。",
+                    en="Result: analysis finished.",
+                    ru="Результат: анализ завершен.",
+                )
+            )
         return "\n".join(lines)
 
     async def _run_skill_job(
@@ -700,28 +926,73 @@ class UnderstandAnythingRunner:
         failed_step: str,
     ) -> str:
         snapshot = self.jobs.get(job.job_id) or job
+        locale = self._job_locale(job)
+        name = self._job_display_name(job)
+        phase = str(job.args.get("failed_phase") or snapshot.progress.phase)
         lines = [
-            "Understand Anything job failed.",
-            f"Job: {job.job_id}",
-            f"Step: {failed_step or snapshot.progress.label}",
-            f"Error: {self._truncate_status_text(error)}",
-            f"Status: /understand status {job.job_id}",
+            self._localized(
+                locale,
+                zh=f"分析失败：{name}",
+                en=f"Analysis failed: {name}",
+                ru=f"Анализ завершился ошибкой: {name}",
+            ),
+            self._localized(
+                locale,
+                zh=f"阶段：{self._phase_label(phase, locale)}",
+                en=(
+                    "Step: "
+                    f"{self._phase_label(phase, locale) or failed_step or snapshot.progress.label}"
+                ),
+                ru=f"Этап: {self._phase_label(phase, locale)}",
+            ),
+            self._localized(
+                locale,
+                zh=f"原因：{self._truncate_status_text(error)}",
+                en=f"Error: {self._truncate_status_text(error)}",
+                ru=f"Ошибка: {self._truncate_status_text(error)}",
+            ),
+            self._localized(
+                locale,
+                zh=f"查看进度：{self._status_command(job)}",
+                en=f"Status: {self._status_command(job)}",
+                ru=f"Статус: {self._status_command(job)}",
+            ),
         ]
-        hint = self._github_failure_retry_hint(job)
+        hint = self._github_failure_retry_hint(job, locale)
         if hint:
-            lines.append(f"Next: {hint}")
+            lines.append(
+                self._localized(
+                    locale,
+                    zh=f"重试：{hint}",
+                    en=f"Next: {hint}",
+                    ru=f"Далее: {hint}",
+                )
+            )
         return "\n".join(lines)
 
-    def _github_failure_retry_hint(self, job: JobSnapshot) -> str:
+    def _github_failure_retry_hint(
+        self,
+        job: JobSnapshot,
+        locale: str | None = None,
+    ) -> str:
         source = job.args.get("source")
         if not isinstance(source, dict) or source.get("type") != "github":
             return ""
         target = str(source.get("target_url") or source.get("repo_url") or "").strip()
         if not target:
             return ""
-        return (
-            "Retry later, open Dashboard and choose a GitHub proxy, or run "
-            f"`/understand analyze {target} --github-proxy https://gh.llkk.cc`."
+        selected_locale = locale or self._job_locale(job)
+        return self._localized(
+            selected_locale,
+            zh="已自动尝试直连 GitHub 和内置代理预设；请稍后重试，或在 Dashboard 查看任务日志确认网络状态。",
+            en=(
+                "Direct GitHub and bundled proxy presets were tried automatically; "
+                "retry later or check the Dashboard job logs for network details."
+            ),
+            ru=(
+                "Прямой доступ к GitHub и встроенные proxy уже были проверены; "
+                "повторите позже или проверьте журналы задачи в Dashboard."
+            ),
         )
 
     def _build_skill_execution_prompt(self, job: JobSnapshot) -> str:
@@ -1083,25 +1354,154 @@ class UnderstandAnythingRunner:
             return default
         return max(1, number)
 
-    def _select_status_job(self, job_id: str | None) -> JobSnapshot | None:
-        normalized = (job_id or "").strip()
+    def _select_status_job(
+        self,
+        project_ref: str | None,
+    ) -> tuple[JobSnapshot | None, list[JobSnapshot]]:
+        normalized = (project_ref or "").strip()
         if normalized:
-            return self.jobs.get(normalized)
+            matches = [
+                job
+                for job in self.jobs.list()
+                if self._job_matches_status_ref(job, normalized)
+            ]
+            if not matches:
+                record = self._registry_record_for_status_ref(normalized)
+                if record is not None:
+                    matches = [
+                        job
+                        for job in self.jobs.list()
+                        if self._job_project_key(job) == record.project_id
+                        or self._paths_equal(job.project_root, record.path)
+                    ]
+            if not matches:
+                return None, []
+            grouped = self._latest_job_by_project(matches)
+            if len(grouped) > 1:
+                return None, grouped
+            return self._pick_status_job(matches), []
         jobs = self.jobs.list()
-        active_statuses = {
-            JobStatus.QUEUED,
-            JobStatus.RUNNING,
-            JobStatus.WAITING_CONFIRMATION,
-        }
+        return self._pick_status_job(jobs), []
+
+    def _pick_status_job(self, jobs: list[JobSnapshot]) -> JobSnapshot | None:
+        if not jobs:
+            return None
         return next(
-            (job for job in jobs if job.status in active_statuses),
-            jobs[0] if jobs else None,
+            (job for job in jobs if job.status in ACTIVE_JOB_STATUSES),
+            jobs[0],
         )
 
+    def _latest_job_by_project(self, jobs: list[JobSnapshot]) -> list[JobSnapshot]:
+        grouped: dict[str, JobSnapshot] = {}
+        for job in jobs:
+            key = self._job_project_key(job)
+            current = grouped.get(key)
+            if current is None or job.created_at > current.created_at:
+                grouped[key] = job
+        return sorted(grouped.values(), key=lambda job: job.created_at, reverse=True)
+
+    def _job_matches_status_ref(self, job: JobSnapshot, project_ref: str) -> bool:
+        return any(
+            self._status_values_equal(candidate, project_ref)
+            for candidate in self._job_status_candidates(job)
+        )
+
+    def _job_status_candidates(self, job: JobSnapshot) -> list[str]:
+        candidates = [
+            str(job.args.get("status_ref") or ""),
+            str(job.args.get("project_display_name") or ""),
+            job.project_root.name,
+            str(job.project_root),
+            str(self._job_graph_root(job)),
+        ]
+        aliases = job.args.get("status_aliases")
+        if isinstance(aliases, list):
+            candidates.extend(str(alias) for alias in aliases)
+        source = job.args.get("source")
+        if isinstance(source, dict):
+            owner = str(source.get("owner") or "").strip()
+            repo = str(source.get("repo") or "").strip()
+            if repo:
+                candidates.append(repo)
+            if owner and repo:
+                candidates.append(f"{owner}/{repo}")
+            for key in ("display_name", "repo_url", "target_url", "cache_path"):
+                value = str(source.get(key) or "").strip()
+                if value:
+                    candidates.append(value)
+        return [candidate for candidate in candidates if candidate.strip()]
+
+    def _status_values_equal(self, candidate: str, project_ref: str) -> bool:
+        left = str(candidate or "").strip()
+        right = str(project_ref or "").strip()
+        if not left or not right:
+            return False
+        if left.casefold() == right.casefold():
+            return True
+        if self._looks_like_filesystem_path(left) or self._looks_like_filesystem_path(
+            right
+        ):
+            return self._paths_equal(left, right)
+        return False
+
     @staticmethod
-    def _format_progress_step(steps: list[dict[str, Any]]) -> str:
+    def _paths_equal(left: str | Path, right: str | Path) -> bool:
+        try:
+            return Path(left).expanduser().resolve(strict=False) == Path(
+                right
+            ).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    @staticmethod
+    def _looks_like_filesystem_path(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text or text.startswith(("http://", "https://")):
+            return False
+        return (
+            Path(text).is_absolute()
+            or text.startswith((".", "~"))
+            or "\\" in text
+            or ":" in text
+        )
+
+    def _job_project_key(self, job: JobSnapshot) -> str:
+        project_id = str(job.args.get("project_id") or "").strip()
+        if project_id:
+            return project_id
+        return str(job.project_root.resolve(strict=False)).casefold()
+
+    def _registry_record_for_status_ref(self, project_ref: str):
+        normalized = str(project_ref or "").strip()
+        if not normalized:
+            return None
+        for record in self.registry.list():
+            candidates = [
+                record.name,
+                record.path,
+                record.graph_root,
+                Path(record.path).name,
+                *(record.aliases or []),
+            ]
+            if any(
+                self._status_values_equal(str(candidate), normalized)
+                for candidate in candidates
+            ):
+                return record
+        return None
+
+    def _format_progress_step(
+        self,
+        steps: list[dict[str, Any]],
+        locale: str,
+    ) -> str:
         if not steps:
-            return "unknown"
+            return self._localized(
+                locale,
+                zh="未知",
+                en="unknown",
+                ru="неизвестно",
+            )
         active_index = next(
             (
                 index
@@ -1111,7 +1511,9 @@ class UnderstandAnythingRunner:
             len(steps) - 1,
         )
         step = steps[active_index]
-        label = str(step.get("label") or step.get("phase") or "unknown")
+        label = self._phase_label(str(step.get("phase") or ""), locale)
+        if not label:
+            label = str(step.get("label") or "unknown")
         return f"{active_index + 1}/{len(steps)} {label}"
 
     @staticmethod
@@ -1124,6 +1526,287 @@ class UnderstandAnythingRunner:
         if len(text) <= limit:
             return text
         return text[: limit - 3].rstrip() + "..."
+
+    @staticmethod
+    def _localized(locale: str, *, zh: str, en: str, ru: str) -> str:
+        if locale == "en-US":
+            return en
+        if locale == "ru-RU":
+            return ru
+        return zh
+
+    def _job_locale(self, job: JobSnapshot) -> str:
+        return self._resolve_output_locale(
+            str(job.args.get("locale") or "") or None,
+        )
+
+    def _job_display_name(self, job: JobSnapshot) -> str:
+        display_name = str(job.args.get("project_display_name") or "").strip()
+        if display_name:
+            return display_name
+        source = job.args.get("source")
+        if isinstance(source, dict):
+            repo = str(source.get("repo") or "").strip()
+            if repo:
+                return repo
+            display_name = str(source.get("display_name") or "").strip()
+            if display_name:
+                return display_name
+        return job.project_root.name or str(job.project_root)
+
+    def _status_ref_for_job(self, job: JobSnapshot) -> str:
+        return (
+            str(job.args.get("status_ref") or "").strip()
+            or self._job_display_name(job)
+            or job.project_root.name
+            or str(job.project_root)
+        )
+
+    def _command_status_ref(self, job: JobSnapshot) -> str:
+        return quote_arg(self._status_ref_for_job(job))
+
+    def _status_command(self, job: JobSnapshot) -> str:
+        return f"/understand status {self._command_status_ref(job)}"
+
+    @staticmethod
+    def _initial_project_display_name(
+        project_root: Path,
+        checkout: GitHubRepoCheckout | None,
+    ) -> str:
+        if checkout is not None:
+            return checkout.repo
+        return project_root.name or str(project_root)
+
+    @staticmethod
+    def _initial_status_ref(
+        project_root: Path,
+        checkout: GitHubRepoCheckout | None,
+    ) -> str:
+        if checkout is not None:
+            return checkout.repo
+        return project_root.name or str(project_root)
+
+    @staticmethod
+    def _initial_status_aliases(
+        project_root: Path,
+        checkout: GitHubRepoCheckout | None,
+    ) -> list[str]:
+        aliases = {project_root.name, str(project_root)}
+        if checkout is not None:
+            aliases.update(
+                {
+                    checkout.repo,
+                    checkout.display_name,
+                    checkout.repo_url,
+                    checkout.target_url,
+                    str(checkout.worktree_path),
+                    str(checkout.artifact_root),
+                }
+            )
+            aliases.update(checkout.aliases)
+        return sorted(
+            (alias for alias in aliases if str(alias).strip()),
+            key=str.casefold,
+        )
+
+    def _job_label(self, job_label: str, locale: str) -> str:
+        normalized = str(job_label or "analysis").strip().casefold()
+        if normalized == "domain analysis":
+            return self._localized(
+                locale,
+                zh="领域分析",
+                en="domain analysis",
+                ru="доменный анализ",
+            )
+        if normalized == "knowledge analysis":
+            return self._localized(
+                locale,
+                zh="知识库分析",
+                en="knowledge analysis",
+                ru="анализ базы знаний",
+            )
+        return self._localized(
+            locale,
+            zh="分析",
+            en="analysis",
+            ru="анализ",
+        )
+
+    def _status_label(self, status: JobStatus, locale: str) -> str:
+        labels = {
+            JobStatus.QUEUED: self._localized(
+                locale,
+                zh="排队中",
+                en="queued",
+                ru="в очереди",
+            ),
+            JobStatus.RUNNING: self._localized(
+                locale,
+                zh="运行中",
+                en="running",
+                ru="выполняется",
+            ),
+            JobStatus.WAITING_CONFIRMATION: self._localized(
+                locale,
+                zh="等待确认",
+                en="waiting for confirmation",
+                ru="ожидает подтверждения",
+            ),
+            JobStatus.FINISHED: self._localized(
+                locale,
+                zh="已完成",
+                en="finished",
+                ru="завершено",
+            ),
+            JobStatus.FAILED: self._localized(
+                locale,
+                zh="失败",
+                en="failed",
+                ru="ошибка",
+            ),
+            JobStatus.CANCELLED: self._localized(
+                locale,
+                zh="已取消",
+                en="cancelled",
+                ru="отменено",
+            ),
+        }
+        return labels.get(status, status.value)
+
+    def _phase_label(self, phase: str, locale: str) -> str:
+        normalized = str(phase or "").strip()
+        labels = {
+            "queued": self._localized(locale, zh="排队", en="queued", ru="очередь"),
+            "source": self._localized(
+                locale,
+                zh="获取源码",
+                en="preparing source",
+                ru="подготовка исходного кода",
+            ),
+            "confirmation": self._localized(
+                locale,
+                zh="确认扫描范围",
+                en="confirm scan scope",
+                ru="подтверждение области сканирования",
+            ),
+            "runtime": self._localized(
+                locale,
+                zh="准备运行环境",
+                en="preparing runtime",
+                ru="подготовка среды выполнения",
+            ),
+            "agent": self._localized(
+                locale,
+                zh="生成图谱",
+                en="generating graph",
+                ru="построение графа",
+            ),
+            "validate": self._localized(
+                locale,
+                zh="验证产物",
+                en="validating outputs",
+                ru="проверка результатов",
+            ),
+            "complete": self._localized(
+                locale,
+                zh="完成",
+                en="complete",
+                ru="завершено",
+            ),
+            "failed": self._localized(locale, zh="失败", en="failed", ru="ошибка"),
+            "cancelled": self._localized(
+                locale,
+                zh="已取消",
+                en="cancelled",
+                ru="отменено",
+            ),
+        }
+        return labels.get(normalized, normalized.replace("_", " ") or "unknown")
+
+    def _source_stage_label(self, job: JobSnapshot, locale: str) -> str:
+        source = job.args.get("source")
+        if isinstance(source, dict) and source.get("type") == "github":
+            return self._localized(
+                locale,
+                zh="下载 GitHub 仓库",
+                en="download GitHub repository",
+                ru="загрузка репозитория GitHub",
+            )
+        return self._localized(
+            locale,
+            zh="读取本地项目",
+            en="read local project",
+            ru="чтение локального проекта",
+        )
+
+    @staticmethod
+    def _job_requires_scope_confirmation(job: JobSnapshot) -> bool:
+        return job.kind == "understand"
+
+    def _format_status_not_found(self, project_ref: str, locale: str) -> str:
+        available = self._available_status_refs()
+        suffix = ""
+        if available:
+            suffix = self._localized(
+                locale,
+                zh=f"\n可用项目：{available}",
+                en=f"\nAvailable projects: {available}",
+                ru=f"\nДоступные проекты: {available}",
+            )
+        return (
+            self._localized(
+                locale,
+                zh=f"没有找到分析任务：{project_ref}",
+                en=f"Understand Anything project not found: {project_ref}",
+                ru=f"Проект Understand Anything не найден: {project_ref}",
+            )
+            + suffix
+        )
+
+    def _format_ambiguous_status_ref(
+        self,
+        project_ref: str,
+        jobs: list[JobSnapshot],
+        locale: str,
+    ) -> str:
+        options = ", ".join(self._disambiguation_ref_for_job(job) for job in jobs)
+        return self._localized(
+            locale,
+            zh=f"匹配到多个项目：{project_ref}\n请改用更明确的项目名：{options}",
+            en=(
+                f"Multiple projects match: {project_ref}\n"
+                f"Use a more specific project name: {options}"
+            ),
+            ru=(
+                f"Найдено несколько проектов: {project_ref}\n"
+                f"Используйте более точное имя проекта: {options}"
+            ),
+        )
+
+    def _available_status_refs(self) -> str:
+        refs: list[str] = []
+        seen: set[str] = set()
+        for job in self.jobs.list():
+            ref = self._disambiguation_ref_for_job(job)
+            key = ref.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(ref)
+        return ", ".join(refs[:8])
+
+    def _disambiguation_ref_for_job(self, job: JobSnapshot) -> str:
+        aliases = job.args.get("status_aliases")
+        if isinstance(aliases, list):
+            for alias in aliases:
+                text = str(alias or "").strip()
+                if (
+                    "/" in text
+                    and not text.startswith(("http://", "https://"))
+                    and not self._looks_like_filesystem_path(text)
+                ):
+                    return text
+        return self._status_ref_for_job(job)
 
     def _project_root_from_args(self, raw_args: str) -> Path:
         token = self._first_path_token(raw_args)
@@ -1278,7 +1961,7 @@ class UnderstandAnythingRunner:
                 if isinstance(job.args.get("auto_update"), bool)
                 else None
             ),
-            aliases=checkout.aliases,
+            aliases=self._job_source_aliases(job),
             graph_root=checkout.graph_root,
             source=self._github_source_payload(checkout),
         )
@@ -1353,9 +2036,11 @@ class UnderstandAnythingRunner:
         aliases = [
             str(value)
             for value in (
+                source.get("repo"),
                 source.get("display_name"),
                 source.get("repo_url"),
                 source.get("target_url"),
+                source.get("cache_path"),
             )
             if value
         ]

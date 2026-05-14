@@ -25,8 +25,8 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 
 ## 命令
 
-- `/understand analyze [path|https://github.com/owner/repo[/tree/<branch-or-tag>[/sub/path]]] [--full|--auto-update|--no-auto-update|--review]`
-- `/understand status [job_id]`
+- `/understand analyze [path|https://github.com/owner/repo[/tree/<branch-or-tag>[/sub/path]]] [--full|--auto-update|--no-auto-update|--review] [--github-proxy <preset>]`
+- `/understand status [project-name|alias|path]`
 - `/understand dashboard [path]`
 - `/understand chat [--project <name|id|alias>] <query>`
 - `/understand diff [--project <name|id|alias>|path]`
@@ -42,7 +42,8 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 
 登记记录包含 `project_id`、`name`、`aliases`、`path`、`graph_root`、
 `last_job_id`、`last_analyzed_at` 和 `auto_update`。项目名优先取图谱里的
-`project.name`，缺失时使用目录名。
+`project.name`，缺失时使用目录名；聊天状态查询使用项目名、别名或路径，
+例如 `/understand status AstrBot` 或 `/understand status AstrBotDevs/AstrBot`。
 
 聊天、解释、diff 和 onboarding 会按以下顺序解析项目：
 
