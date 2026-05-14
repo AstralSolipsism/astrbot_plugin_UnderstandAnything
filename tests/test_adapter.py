@@ -366,6 +366,185 @@ def test_runner_formats_compact_chat_job_status(tmp_path: Path) -> None:
         context=None,  # type: ignore[arg-type]
         registry_path=tmp_path / "projects.json",
     )
+    job = runner.jobs.create(
+        "understand",
+        tmp_path / "project",
+        {
+            "project_id": "project-1",
+            "raw_args": "D:/repo",
+            "project_display_name": "Demo",
+            "status_ref": "Demo",
+        },
+    )
+    runner.jobs.mark_running(job.job_id)
+    runner.jobs.set_progress(
+        job.job_id,
+        "agent",
+        "Running Understand Anything agent workflow.",
+        55,
+    )
+    runner.jobs.append_log(job.job_id, "SubAgent started: file-analyzer:0")
+    runner.jobs.append_log(job.job_id, "SubAgent finished: file-analyzer:0 status=ok")
+
+    message = runner.format_job_status("Demo")
+
+    assert "分析状态：Demo" in message
+    assert "状态：运行中" in message
+    assert "进度：55%" in message
+    assert "生成图谱" in message
+    assert job.job_id not in message
+    assert "SubAgent started" not in message
+    assert "SubAgent finished" not in message
+
+
+def test_runner_formats_latest_active_job_when_status_id_omitted(
+    tmp_path: Path,
+) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    finished = runner.jobs.create("understand", tmp_path / "old", {})
+    runner.jobs.mark_finished(finished.job_id, {"message": "done"})
+    active = runner.jobs.create("understand", tmp_path / "active", {})
+    runner.jobs.mark_running(active.job_id)
+
+    message = runner.format_job_status()
+
+    assert "active" in message
+    assert active.job_id not in message
+    assert finished.job_id not in message
+
+
+@pytest.mark.asyncio
+async def test_runner_source_message_uses_project_status_ref_not_job_id(
+    tmp_path: Path,
+) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstrBotDevs/AstrBot",
+        start_task=False,
+    )
+
+    message = runner.format_job_source_started_message(job)
+
+    assert "正在获取源码：AstrBot" in message
+    assert "确认扫描范围后才会开始生成图谱" in message
+    assert "已开始分析" not in message
+    assert "/understand status AstrBot" in message
+    assert job.job_id not in message
+
+
+@pytest.mark.asyncio
+async def test_runner_sends_source_notification_before_background_task(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    class Context:
+        async def send_message(self, _session, message):
+            events.append(f"send:{message.get_plain_text()}")
+            return True
+
+    async def fake_run_skill_job(_job, _event):
+        events.append("run")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    event = SimpleNamespace(unified_msg_origin="webchat:FriendMessage:session-1")
+    runner = UnderstandAnythingRunner(
+        context=Context(),  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    runner._run_skill_job = fake_run_skill_job  # type: ignore[method-assign]
+
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        project_path=project,
+        event=event,  # type: ignore[arg-type]
+    )
+    await runner._tasks[job.job_id]
+
+    assert events[0].startswith("send:正在获取源码：project")
+    assert "已开始分析" not in events[0]
+    assert "确认扫描范围后才会开始生成图谱" in events[0]
+    assert events[1] == "run"
+    assert job.args["started_notification_sent"] is True
+
+
+@pytest.mark.asyncio
+async def test_runner_tool_message_is_phase_safe_before_scope_confirmation(
+    tmp_path: Path,
+) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstrBotDevs/AstrBot",
+        start_task=False,
+    )
+    job.args["started_notification_sent"] = True
+
+    message = runner.format_tool_job_submitted_message(job)
+
+    banned = ["提交", "后台执行", "已开始分析", "submitted", "Started analysis"]
+    assert "源码准备" in message
+    assert "确认扫描范围" in message
+    assert "确认后才开始生成图谱" in message
+    for phrase in banned:
+        assert phrase not in message
+
+
+@pytest.mark.asyncio
+async def test_started_notification_is_deduplicated_by_key(tmp_path: Path) -> None:
+    class Context:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        async def send_message(self, _session, message):
+            self.messages.append(message.get_plain_text())
+            return True
+
+    context = Context()
+    event = SimpleNamespace(unified_msg_origin="webchat:FriendMessage:session-1")
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create("understand", tmp_path / "project", {})
+
+    first = await runner._send_job_chat_message(
+        job,
+        event,  # type: ignore[arg-type]
+        "started once",
+        key="started",
+    )
+    second = await runner._send_job_chat_message(
+        job,
+        event,  # type: ignore[arg-type]
+        "started twice",
+        key="started",
+    )
+
+    assert first is True
+    assert second is True
+    assert context.messages == ["started once"]
+
+
+@pytest.mark.asyncio
+async def test_runner_status_matches_running_github_job_by_project_aliases(
+    tmp_path: Path,
+) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
     job = await runner.start_skill_job(
         skill_name="understand",
         repo_url="https://github.com/AstrBotDevs/AstrBot",
@@ -588,6 +767,35 @@ def test_runner_prompt_delegates_understandignore_confirmation_to_host(
 
     prompt = runner._build_skill_execution_prompt(job)
 
+    assert "host adapter handles `.understandignore` confirmation" in prompt
+    assert "non-interactive AstrBot host run" not in prompt
+    assert "Do not pause for `.understandignore` review" not in prompt
+    assert "Generate all user-visible textual content in Simplified Chinese" in prompt
+    assert "Keep code identifiers, file paths, schema keys, tags" in prompt
+
+
+def test_runner_output_locale_config_overrides_job_locale(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={"output_locale": "en-US"},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "raw_args": str(project),
+            "project_path": str(project),
+            "graph_root": str(project / ".understand-anything"),
+            "locale": "zh-CN",
+            "source": {"type": "local"},
+        },
+    )
+
+    prompt = runner._build_skill_execution_prompt(job)
+
     assert "Generate all user-visible textual content in English" in prompt
     assert "Simplified Chinese" not in prompt
 
@@ -709,14 +917,22 @@ def test_ignore_review_summarizes_current_excluded_directory_tree(
 ) -> None:
     project = tmp_path / "project"
     graph_root = tmp_path / "graph" / ".understand-anything"
-    project.mkdir()
+    (project / "docs" / "reference").mkdir(parents=True)
+    (project / "src" / "generated").mkdir(parents=True)
+    (project / "src" / "runtime").mkdir(parents=True)
+    (project / "dist").mkdir()
     graph_root.mkdir(parents=True)
-    (graph_root / ".understandignore").write_text("docs/\n", encoding="utf-8")
+    (graph_root / ".understandignore").write_text(
+        "docs/\nsrc/generated/\n!dist/\n*.test.*\n",
+        encoding="utf-8",
+    )
 
     confirmation = build_ignore_confirmation(project, graph_root)
 
-    assert confirmation["summary"]["generated"] is False
-    assert confirmation["content"] == "docs/\n"
+    exclusions = confirmation["summary"]["current_exclusions"]
+    assert exclusions["directories"] == ["docs", "src/generated"]
+    assert exclusions["truncated"] == 0
+    assert "dist" not in exclusions["directories"]
 
 
 def test_ignore_confirmation_reply_parser_updates_rules(tmp_path: Path) -> None:
@@ -731,12 +947,56 @@ def test_ignore_confirmation_reply_parser_updates_rules(tmp_path: Path) -> None:
         ["tests/", "docs/"],
     )
     assert parse_confirmation_reply("包含 docs/") == ("update", ["!docs/"])
+    assert parse_confirmation_reply("现在进度怎么样") == ("unknown", [])
 
     action, content = apply_confirmation_reply(graph_root, "排除 tests/")
 
     assert action == "update"
     assert "dist/" in content
     assert "tests/" in content
+
+
+def test_runner_confirmation_message_is_compact_and_localized(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    graph_root = tmp_path / "graph"
+    (project / "docs" / "reference").mkdir(parents=True)
+    (project / "src" / "generated").mkdir(parents=True)
+    graph_root.mkdir()
+    (graph_root / ".understandignore").write_text(
+        "docs/\nsrc/generated/\nvery-specific-raw-pattern/\n",
+        encoding="utf-8",
+    )
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "graph_root": str(graph_root),
+            "project_display_name": "Demo",
+            "status_ref": "Demo",
+        },
+    )
+    confirmation = build_ignore_confirmation(project, graph_root)
+    confirmation["content"] += "\nvery-specific-raw-pattern/\n"
+    runner.jobs.mark_waiting_confirmation(job.job_id, confirmation)
+
+    message = runner._confirmation_message(job)
+
+    assert "扫描范围确认：Demo" in message
+    assert "查看进度：/understand status Demo" in message
+    assert "继续" in message
+    assert "取消" in message
+    assert "排除 tests/ docs/" in message
+    assert "当前排除目录树：" in message
+    assert "- docs/" in message
+    assert "- src/" in message
+    assert "  - generated/" in message
+    assert "Current .understandignore" not in message
+    assert "very-specific-raw-pattern" not in message
+    assert "Project:" not in message
 
 
 @pytest.mark.asyncio
@@ -2937,6 +3197,37 @@ def test_plugin_i18n_covers_config_page_and_dashboard_ui() -> None:
         assert ui["subagents"]["registerButton"]
         assert ui["search"]["placeholder"]
         assert ui["tokenGate"]["requiredTitle"]
+
+
+def test_ru_i18n_has_readable_output_locale_text() -> None:
+    payload = json.loads(
+        (PLUGIN_ROOT / ".astrbot-plugin" / "i18n" / "ru-RU.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    output_locale = payload["config"]["output_locale"]
+    checked_text = [
+        payload["metadata"]["short_desc"],
+        payload["metadata"]["desc"],
+        output_locale["description"],
+        output_locale["hint"],
+        *output_locale["labels"],
+        payload["config"]["github_command_timeout_seconds"]["description"],
+        payload["config"]["github_command_timeout_seconds"]["hint"],
+        payload["config"]["auto_build"]["description"],
+        payload["config"]["auto_build"]["hint"],
+    ]
+
+    assert all("?" not in text for text in checked_text)
+    assert output_locale["description"] != (
+        "Output language for generated Understand Anything content"
+    )
+    assert output_locale["labels"] == [
+        "Следовать языку WebUI / чата",
+        "Упрощенный китайский",
+        "Английский",
+        "Русский",
+    ]
 
 
 def test_astrbot_internal_access_is_centralized() -> None:

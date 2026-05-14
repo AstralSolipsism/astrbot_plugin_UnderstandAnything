@@ -1186,8 +1186,7 @@ class UnderstandAnythingRunner:
     ) -> str:
         resolved_locale = self._resolve_output_locale(locale, event)
         return (
-            f"{system_prompt}\n\n"
-            f"{self._language_directive_for_locale(resolved_locale)}"
+            f"{system_prompt}\n\n{self._language_directive_for_locale(resolved_locale)}"
         )
 
     def _language_directive_for_job(self, job: JobSnapshot) -> str:
@@ -1213,9 +1212,67 @@ class UnderstandAnythingRunner:
             return "zh-CN"
         if any("\u0400" <= char <= "\u04ff" for char in message):
             return "ru-RU"
-        if any(("a" <= char.lower() <= "z") for char in message):
+        if any(
+            ("a" <= char.lower() <= "z") for char in cls._locale_signal_text(message)
+        ):
             return "en-US"
         return None
+
+    @classmethod
+    def _locale_signal_text(cls, message: str) -> str:
+        text = re.sub(r"https?://\S+", " ", message, flags=re.IGNORECASE)
+        text = re.sub(r"[A-Za-z]:[\\/]\S+", " ", text)
+        text = re.sub(
+            r"(?<!\S)/(?:understand|ua_[\w-]+)\b", " ", text, flags=re.IGNORECASE
+        )
+        text = re.sub(r"\bua_[\w-]+\b", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b[\w-]+\s*=", " ", text)
+        text = re.sub(r"--[\w-]+(?:=(?:\S+))?", " ", text)
+        text = re.sub(
+            r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\b", " ", text
+        )
+        words = re.findall(r"[A-Za-z][A-Za-z']*", text)
+        ignored_words = {
+            "understand",
+            "analyze",
+            "analysis",
+            "status",
+            "dashboard",
+            "chat",
+            "diff",
+            "domain",
+            "explain",
+            "knowledge",
+            "onboard",
+            "github",
+            "repo",
+            "repository",
+            "project",
+            "start",
+            "tool",
+            "call",
+            "target",
+            "url",
+            "ref",
+            "path",
+            "proxy",
+        }
+        return " ".join(
+            word
+            for word in words
+            if word.casefold() not in ignored_words
+            and not cls._looks_like_code_identifier(word)
+        )
+
+    @staticmethod
+    def _looks_like_code_identifier(word: str) -> bool:
+        if any(char.isdigit() for char in word):
+            return True
+        if word.isupper() and len(word) > 1:
+            return True
+        return any(char.isupper() for char in word[1:]) and any(
+            char.islower() for char in word
+        )
 
     async def _confirm_understandignore(
         self,
@@ -1273,17 +1330,40 @@ class UnderstandAnythingRunner:
             controller: SessionController,
             reply_event: AstrMessageEvent,
         ) -> None:
-            action, _payload = parse_confirmation_reply(reply_event.message_str)
+            reply_text = str(getattr(reply_event, "message_str", "") or "")
+            action, _payload = parse_confirmation_reply(reply_text)
+            if action == "unknown":
+                await reply_event.send(
+                    MessageChain().message(
+                        self._confirmation_fallback_message(job, reply_text),
+                    ),
+                )
+                controller.keep(timeout_seconds, reset_timeout=True)
+                reply_event.stop_event()
+                return
             snapshot = self.confirm_job_from_message(
                 job.job_id,
-                reply_event.message_str,
+                reply_text,
                 source="conversation",
             )
             if action == "update":
                 await reply_event.send(
                     MessageChain().message(
                         self._confirmation_message(job)
-                        + "\n\nRules updated. Reply `继续`/`continue` to proceed or add more patterns.",
+                        + "\n\n"
+                        + self._localized(
+                            self._job_locale(job),
+                            zh="规则已更新。回复 `继续` 开始分析，或继续发送 `排除 ...` / `包含 ...`。",
+                            en=(
+                                "Rules updated. Reply `continue` to start analysis, "
+                                "or keep sending `exclude ...` / `include ...`."
+                            ),
+                            ru=(
+                                "Правила обновлены. Ответьте `continue`, чтобы начать "
+                                "анализ, или продолжайте отправлять `exclude ...` / "
+                                "`include ...`."
+                            ),
+                        )
                     ),
                 )
                 controller.keep(timeout_seconds, reset_timeout=True)
@@ -1291,19 +1371,36 @@ class UnderstandAnythingRunner:
                 return
             if snapshot.status is JobStatus.CANCELLED:
                 await reply_event.send(
-                    MessageChain().message("Understand Anything analysis cancelled.")
+                    MessageChain().message(
+                        self._localized(
+                            self._job_locale(job),
+                            zh="已取消 Understand Anything 分析。",
+                            en="Understand Anything analysis cancelled.",
+                            ru="Анализ Understand Anything отменен.",
+                        )
+                    )
                 )
             else:
                 await reply_event.send(
-                    MessageChain().message("Confirmed. Continuing analysis.")
+                    MessageChain().message(
+                        self._localized(
+                            self._job_locale(job),
+                            zh="已确认，开始分析。",
+                            en="Confirmed. Starting analysis.",
+                            ru="Подтверждено. Анализ начинается.",
+                        )
+                    )
                 )
             controller.stop()
             reply_event.stop_event()
 
         waiter_task = asyncio.create_task(waiter(event))
         await asyncio.sleep(0)
-        await event.send(
-            MessageChain().message(self._confirmation_message(job)),
+        await self._send_job_chat_message(
+            job,
+            event,
+            self._confirmation_message(job),
+            key="confirmation:understandignore",
         )
         await waiter_task
 
@@ -1311,27 +1408,189 @@ class UnderstandAnythingRunner:
         snapshot = self.jobs.get(job.job_id)
         confirmation = snapshot.confirmation if snapshot else None
         if not confirmation:
-            return "Confirm Understand Anything scan scope."
+            return self._localized(
+                self._job_locale(job),
+                zh=f"扫描范围确认：{self._job_display_name(job)}",
+                en=f"Confirm scan scope: {self._job_display_name(job)}",
+                ru=f"Подтвердите область сканирования: {self._job_display_name(job)}",
+            )
         summary = confirmation.get("summary", {})
         detected_dirs = ", ".join(summary.get("detected_dirs", [])) or "none"
         gitignore_count = len(summary.get("gitignore_patterns", []))
-        rules = str(confirmation.get("content") or "").strip() or "# empty"
-        if len(rules) > 3500:
-            rules = rules[:3500].rstrip() + "\n# ... truncated ..."
-        return (
-            "Understand Anything scan scope needs confirmation.\n"
-            f"Project: {confirmation.get('project_root')}\n"
-            f"Graph root: {confirmation.get('graph_root')}\n"
-            f"Detected optional directories: {detected_dirs}\n"
-            f"Extra .gitignore suggestions: {gitignore_count}\n\n"
-            "Current .understandignore:\n"
-            "```gitignore\n"
-            f"{rules}\n"
-            "```\n\n"
-            "Reply `继续`/`continue` to use the current .understandignore, "
-            "`取消`/`cancel` to stop, `排除 tests/ docs/` to add exclusions, "
-            "or `包含 dist/` to force include a path."
+        locale = self._job_locale(job)
+        name = self._job_display_name(job)
+        exclusion_tree = self._confirmation_exclusion_tree(confirmation, locale)
+        return self._localized(
+            locale,
+            zh=(
+                f"扫描范围确认：{name}\n"
+                f"建议排除目录：{detected_dirs}\n"
+                f"已采纳 .gitignore 建议：{gitignore_count} 条\n"
+                f"{exclusion_tree}\n"
+                f"查看进度：{self._status_command(job)}\n\n"
+                "回复 `继续` 开始分析，回复 `取消` 停止。\n"
+                "需要调整范围时，发送 `排除 tests/ docs/` 或 `包含 dist/`。"
+            ),
+            en=(
+                f"Scan scope confirmation: {name}\n"
+                f"Suggested excluded directories: {detected_dirs}\n"
+                f".gitignore suggestions applied: {gitignore_count}\n"
+                f"{exclusion_tree}\n"
+                f"Progress: {self._status_command(job)}\n\n"
+                "Reply `continue` to start analysis, or `cancel` to stop.\n"
+                "To adjust scope, send `exclude tests/ docs/` or `include dist/`."
+            ),
+            ru=(
+                f"Подтверждение области сканирования: {name}\n"
+                f"Рекомендуемые исключения: {detected_dirs}\n"
+                f"Применено правил из .gitignore: {gitignore_count}\n"
+                f"{exclusion_tree}\n"
+                f"Статус: {self._status_command(job)}\n\n"
+                "Ответьте `continue`, чтобы начать анализ, или `cancel`, чтобы "
+                "остановить.\nДля изменения области отправьте `exclude tests/ docs/` "
+                "или `include dist/`."
+            ),
         )
+
+    def _confirmation_exclusion_tree(
+        self,
+        confirmation: dict[str, Any],
+        locale: str,
+    ) -> str:
+        summary = confirmation.get("summary", {})
+        exclusions = summary.get("current_exclusions")
+        if not isinstance(exclusions, dict):
+            exclusions = {}
+        directories = [
+            str(item).strip().replace("\\", "/").strip("/")
+            for item in exclusions.get("directories", [])
+            if str(item).strip()
+        ]
+        heading = self._localized(
+            locale,
+            zh="当前排除目录树：",
+            en="Current excluded directory tree:",
+            ru="Текущее дерево исключенных каталогов:",
+        )
+        if not directories:
+            empty = self._localized(
+                locale,
+                zh="暂无匹配到的目录。",
+                en="no matching directories.",
+                ru="нет совпадающих каталогов.",
+            )
+            return f"{heading}{empty}"
+        lines = [heading, *self._directory_tree_lines(directories)]
+        truncated = int(exclusions.get("truncated") or 0)
+        if truncated > 0:
+            lines.append(
+                self._localized(
+                    locale,
+                    zh=f"... 还有 {truncated} 个目录未显示",
+                    en=f"... {truncated} more directories not shown",
+                    ru=f"... еще каталогов не показано: {truncated}",
+                )
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _directory_tree_lines(paths: list[str]) -> list[str]:
+        tree: dict[str, dict[str, Any]] = {}
+        for path in paths:
+            node = tree
+            for segment in [part for part in path.split("/") if part]:
+                node = node.setdefault(segment, {})
+
+        lines: list[str] = []
+
+        def walk(node: dict[str, dict[str, Any]], depth: int) -> None:
+            for name in sorted(node, key=str.casefold):
+                lines.append(f"{'  ' * depth}- {name}/")
+                walk(node[name], depth + 1)
+
+        walk(tree, 0)
+        return lines
+
+    def _confirmation_fallback_message(self, job: JobSnapshot, message: str) -> str:
+        locale = self._job_locale(job)
+        if self._status_command_requested(message):
+            project_ref = self._status_ref_from_command(message)
+            return self.format_job_status(project_ref or self._status_ref_for_job(job))
+        if self._is_status_query(message):
+            return (
+                self.format_job_status(self._status_ref_for_job(job))
+                + "\n\n"
+                + self._localized(
+                    locale,
+                    zh="当前仍在等待扫描范围确认。回复 `继续` 开始分析，或 `取消` 停止。",
+                    en=(
+                        "The job is still waiting for scan scope confirmation. "
+                        "Reply `continue` to start analysis, or `cancel` to stop."
+                    ),
+                    ru=(
+                        "Задача ожидает подтверждения области сканирования. "
+                        "Ответьте `continue`, чтобы начать, или `cancel`, чтобы "
+                        "остановить."
+                    ),
+                )
+            )
+        return self._localized(
+            locale,
+            zh=(
+                "当前需要先确认扫描范围。\n"
+                "可回复：`继续`、`取消`、`排除 tests/ docs/`、`包含 dist/`。\n"
+                "查看进度可以直接问“进度怎么样”。"
+            ),
+            en=(
+                "Please confirm the scan scope first.\n"
+                "You can reply: `continue`, `cancel`, `exclude tests/ docs/`, "
+                "`include dist/`.\n"
+                "Ask `status?` to check progress."
+            ),
+            ru=(
+                "Сначала подтвердите область сканирования.\n"
+                "Можно ответить: `continue`, `cancel`, `exclude tests/ docs/`, "
+                "`include dist/`.\n"
+                "Спросите `status?`, чтобы проверить прогресс."
+            ),
+        )
+
+    @staticmethod
+    def _is_status_query(message: str) -> bool:
+        text = str(message or "").strip().casefold()
+        if not text:
+            return False
+        if any(
+            keyword in text
+            for keyword in (
+                "进度",
+                "状态",
+                "到哪",
+                "推进",
+                "下载",
+                "卡住",
+                "好了没",
+                "完成了吗",
+                "status",
+                "progress",
+                "running",
+            )
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _status_command_requested(message: str) -> bool:
+        text = str(message or "").strip().casefold()
+        return text.startswith(("/understand status", "understand status"))
+
+    @staticmethod
+    def _status_ref_from_command(message: str) -> str | None:
+        text = str(message or "").strip()
+        for prefix in ("/understand status", "understand status"):
+            if text.casefold().startswith(prefix):
+                return text[len(prefix) :].strip() or None
+        return None
 
     def confirm_job(
         self,

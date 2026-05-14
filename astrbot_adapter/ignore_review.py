@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -88,13 +89,18 @@ def build_ignore_confirmation(
     if generated:
         ignore_path.write_text(_starter_content(summary), encoding="utf-8")
     content = ignore_path.read_text(encoding="utf-8")
+    current_exclusions = summarize_current_exclusions(project_root, content)
     return {
         "kind": "understandignore",
         "project_root": str(project_root),
         "graph_root": str(graph_root),
         "ignore_path": str(ignore_path),
         "content": content,
-        "summary": summary | {"generated": generated},
+        "summary": summary
+        | {
+            "generated": generated,
+            "current_exclusions": current_exclusions,
+        },
         "instructions": (
             "Reply with continue/ok to proceed, cancel to stop, "
             "exclude <patterns> to add exclusions, or include <patterns> to force include."
@@ -115,6 +121,22 @@ def summarize_project_for_ignore(project_root: Path) -> dict[str, Any]:
         "gitignore_patterns": gitignore_patterns,
         "detected_dirs": detected_dirs,
         "test_file_patterns": list(TEST_FILE_PATTERNS) if test_files else [],
+    }
+
+
+def summarize_current_exclusions(
+    project_root: Path,
+    ignore_content: str,
+    *,
+    max_directories: int = 40,
+) -> dict[str, Any]:
+    patterns = sorted(DEFAULT_IGNORE_PATTERNS) + _active_ignore_patterns(ignore_content)
+    directories = _excluded_directories(project_root, patterns)
+    visible = directories[:max_directories]
+    return {
+        "directories": visible,
+        "directory_count": len(directories),
+        "truncated": max(0, len(directories) - len(visible)),
     }
 
 
@@ -150,7 +172,7 @@ def parse_confirmation_reply(reply: str) -> tuple[str, list[str]]:
         payload = _strip_prefix(text, prefix)
         if payload is not None:
             return "update", _patterns_from_text(payload, force_include=True)
-    return "update", _patterns_from_text(text, force_include=False)
+    return "unknown", []
 
 
 def append_ignore_patterns(graph_root: Path, patterns: list[str]) -> str:
@@ -227,6 +249,76 @@ def _has_test_files(project_root: Path) -> bool:
     except OSError:
         return False
     return False
+
+
+def _active_ignore_patterns(content: str) -> list[str]:
+    patterns: list[str] = []
+    for raw_line in str(content or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.append(line)
+    return patterns
+
+
+def _excluded_directories(project_root: Path, patterns: list[str]) -> list[str]:
+    excluded: list[str] = []
+    try:
+        for root, dirs, _files in os.walk(project_root):
+            dirs.sort()
+            root_path = Path(root)
+            kept_dirs: list[str] = []
+            for dirname in dirs:
+                path = root_path / dirname
+                rel_path = path.relative_to(project_root).as_posix()
+                if _is_directory_excluded(rel_path, patterns):
+                    excluded.append(rel_path)
+                else:
+                    kept_dirs.append(dirname)
+            dirs[:] = kept_dirs
+    except OSError:
+        return []
+    return excluded
+
+
+def _is_directory_excluded(rel_path: str, patterns: list[str]) -> bool:
+    excluded = False
+    for pattern in patterns:
+        normalized = pattern.strip()
+        if not normalized:
+            continue
+        negated = normalized.startswith("!")
+        if negated:
+            normalized = normalized[1:].strip()
+        if _matches_directory_pattern(rel_path, normalized):
+            excluded = not negated
+    return excluded
+
+
+def _matches_directory_pattern(rel_path: str, pattern: str) -> bool:
+    normalized = pattern.replace("\\", "/").strip()
+    if not normalized or normalized.startswith("#"):
+        return False
+    anchored = normalized.startswith("/")
+    normalized = normalized.lstrip("/").rstrip("/")
+    if not normalized:
+        return False
+    rel = rel_path.strip("/")
+    if "/" not in normalized:
+        return any(
+            fnmatchcase(segment, normalized) for segment in rel.split("/") if segment
+        )
+    if fnmatchcase(rel, normalized) or rel.startswith(f"{normalized}/"):
+        return True
+    if normalized.endswith("/**"):
+        base = normalized[:-3].rstrip("/")
+        return rel == base or rel.startswith(f"{base}/")
+    if anchored:
+        return False
+    return fnmatchcase(rel, f"*/{normalized}") or fnmatchcase(
+        rel,
+        f"*/{normalized}/*",
+    )
 
 
 def _strip_prefix(text: str, prefix: str) -> str | None:
