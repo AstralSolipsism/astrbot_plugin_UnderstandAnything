@@ -13,6 +13,7 @@ from quart import jsonify, request
 from astrbot.core.star import Context
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
+from .astrbot_host import AstrBotHostAdapter
 from .computer_use import computer_use_status
 from .constants import (
     DASHBOARD_PAGE_ROOT,
@@ -36,6 +37,7 @@ WebHandler = Callable[[], Awaitable[Any]]
 class UnderstandAnythingWebApi:
     def __init__(self, context: Context, runner: UnderstandAnythingRunner) -> None:
         self.context = context
+        self.host = AstrBotHostAdapter(context)
         self.runner = runner
         self.subagent_registry = UnderstandAnythingSubAgentRegistry(
             context,
@@ -626,12 +628,10 @@ class UnderstandAnythingWebApi:
         if recommended and recommended not in provider_ids:
             recommended = None
         if not recommended and self.context is not None:
-            get_using_provider = getattr(self.context, "get_using_provider", None)
-            if callable(get_using_provider):
-                current_provider = get_using_provider()
-                recommended = self._provider_id(current_provider)
-                if recommended not in provider_ids:
-                    recommended = None
+            current_provider = self.host.get_using_provider()
+            recommended = self._provider_id(current_provider)
+            if recommended not in provider_ids:
+                recommended = None
         if not recommended and providers:
             recommended = providers[0]["id"]
         return {
@@ -644,46 +644,18 @@ class UnderstandAnythingWebApi:
             return []
         providers: list[dict[str, Any]] = []
         seen: set[str] = set()
-        get_all_providers = getattr(self.context, "get_all_providers", None)
-        if callable(get_all_providers):
-            for provider in get_all_providers() or []:
-                summary = self._provider_summary_from_instance(provider)
-                if not summary:
-                    continue
-                seen.add(summary["id"])
-                providers.append(summary)
-
-        provider_manager = getattr(self.context, "provider_manager", None)
-        if provider_manager is None:
-            return providers
-
-        sources = {
-            str(item.get("id", "")): str(
-                item.get("provider_type") or "chat_completion",
-            )
-            for item in getattr(provider_manager, "provider_sources_config", []) or []
-            if isinstance(item, dict)
-        }
-        for provider_config in getattr(provider_manager, "providers_config", []) or []:
-            if not isinstance(provider_config, dict):
+        for provider in self.host.get_all_chat_providers():
+            summary = self._provider_summary_from_instance(provider)
+            if not summary:
                 continue
+            seen.add(summary["id"])
+            providers.append(summary)
+
+        for provider_config in self.host.chat_provider_config_records():
             provider_id = str(provider_config.get("id") or "").strip()
             if not provider_id or provider_id in seen:
                 continue
-            source_id = provider_config.get("provider_source_id")
-            source_type = sources.get(str(source_id or "")) if source_id else None
-            provider_type = source_type or str(
-                provider_config.get("provider_type") or "",
-            )
-            if provider_type != "chat_completion":
-                continue
-            get_merged = getattr(provider_manager, "get_merged_provider_config", None)
-            merged = (
-                get_merged(provider_config)
-                if callable(get_merged)
-                else dict(provider_config)
-            )
-            summary = self._provider_summary_from_config(merged)
+            summary = self._provider_summary_from_config(provider_config)
             if summary:
                 seen.add(summary["id"])
                 providers.append(summary)

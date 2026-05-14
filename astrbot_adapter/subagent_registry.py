@@ -6,6 +6,7 @@ from typing import Any
 
 from astrbot.core.star import Context
 
+from .astrbot_host import AstrBotHostAdapter
 from .constants import AGENT_PROMPTS_ROOT, PLUGIN_NAME
 
 ROLE_NAMES = (
@@ -63,6 +64,7 @@ class UnderstandAnythingSubAgentRegistry:
         plugin_config: dict[str, Any] | None = None,
     ) -> None:
         self.context = context
+        self.host = AstrBotHostAdapter(context)
         self.plugin_config = plugin_config or {}
 
     def status_payload(self) -> dict[str, Any]:
@@ -382,28 +384,11 @@ class UnderstandAnythingSubAgentRegistry:
 
     async def _ensure_persona_folder(self) -> str | None:
         persona_mgr = self._persona_manager(required=True)
-        get_folders = getattr(persona_mgr, "get_folders", None)
-        create_folder = getattr(persona_mgr, "create_folder", None)
-        if not callable(get_folders) or not callable(create_folder):
-            raise RuntimeError("AstrBot persona folder APIs are unavailable.")
-
-        folders = await get_folders(None)
-        if isinstance(folders, list):
-            for folder in folders:
-                name = self._persona_get(folder, "name")
-                parent_id = self._persona_get(folder, "parent_id")
-                if name == UA_PERSONA_FOLDER_NAME and parent_id is None:
-                    folder_id = self._persona_get(folder, "folder_id")
-                    return str(folder_id) if folder_id else None
-
-        folder = await create_folder(
+        return await self.host.find_or_create_persona_folder(
+            persona_mgr,
             name=UA_PERSONA_FOLDER_NAME,
-            parent_id=None,
             description=UA_PERSONA_FOLDER_DESCRIPTION,
-            sort_order=0,
         )
-        folder_id = self._persona_get(folder, "folder_id")
-        return str(folder_id) if folder_id else None
 
     async def _move_persona_to_folder(
         self,
@@ -411,23 +396,10 @@ class UnderstandAnythingSubAgentRegistry:
         persona_id: str,
         folder_id: str | None,
     ) -> None:
-        if folder_id is None:
-            return
-        record = self._persona_record(persona_mgr, persona_id)
-        if self._persona_get(record, "folder_id") == folder_id:
-            return
-        move_persona_to_folder = getattr(persona_mgr, "move_persona_to_folder", None)
-        if callable(move_persona_to_folder):
-            await move_persona_to_folder(persona_id, folder_id)
+        await self.host.move_persona_to_folder(persona_mgr, persona_id, folder_id)
 
     def _persona_manager(self, *, required: bool) -> Any:
-        persona_mgr = getattr(self.context, "persona_manager", None)
-        if persona_mgr is None:
-            orchestrator = getattr(self.context, "subagent_orchestrator", None)
-            persona_mgr = getattr(orchestrator, "_persona_mgr", None)
-        if persona_mgr is None and required:
-            raise RuntimeError("AstrBot persona manager is unavailable.")
-        return persona_mgr
+        return self.host.persona_manager(required=required)
 
     def _persona_exists(self, persona_mgr: Any, spec: UASubAgentSpec) -> bool:
         return self._persona_data(persona_mgr, spec) is not None
@@ -452,40 +424,13 @@ class UnderstandAnythingSubAgentRegistry:
         if skills != list(spec.skills):
             reasons.append("persona_skills")
         if folder_id is not None:
-            record = self._persona_record(persona_mgr, spec.persona_id)
+            record = self.host.persona_record(persona_mgr, spec.persona_id)
             if self._persona_get(record, "folder_id") != folder_id:
                 reasons.append("persona_folder")
         return reasons
 
     def _persona_data(self, persona_mgr: Any, spec: UASubAgentSpec) -> Any:
-        if persona_mgr is None:
-            return None
-        record = self._persona_record(persona_mgr, spec.persona_id)
-        if record is not None:
-            return record
-        get_persona_v3_by_id = getattr(persona_mgr, "get_persona_v3_by_id", None)
-        if callable(get_persona_v3_by_id):
-            return get_persona_v3_by_id(spec.persona_id)
-        return None
-
-    @staticmethod
-    def _persona_record(persona_mgr: Any, persona_id: str) -> Any:
-        personas = getattr(persona_mgr, "personas", None)
-        if isinstance(personas, dict):
-            return personas.get(persona_id)
-        if isinstance(personas, list):
-            for persona in personas:
-                if (
-                    getattr(persona, "persona_id", None) == persona_id
-                    or getattr(persona, "name", None) == persona_id
-                ):
-                    return persona
-                if isinstance(persona, dict) and (
-                    persona.get("persona_id") == persona_id
-                    or persona.get("name") == persona_id
-                ):
-                    return persona
-        return None
+        return self.host.persona_data(persona_mgr, spec.persona_id)
 
     @staticmethod
     def _persona_get(persona: Any, *keys: str) -> Any:
@@ -511,25 +456,12 @@ class UnderstandAnythingSubAgentRegistry:
     def _validate_provider_id(self, provider_id: str) -> None:
         if not provider_id:
             return
-        get_provider_by_id = getattr(self.context, "get_provider_by_id", None)
-        if callable(get_provider_by_id) and get_provider_by_id(provider_id) is not None:
-            return
-        provider_manager = getattr(self.context, "provider_manager", None)
-        inst_map = getattr(provider_manager, "inst_map", None)
-        if isinstance(inst_map, dict) and provider_id in inst_map:
+        if self.host.get_provider_by_id(provider_id) is not None:
             return
         raise ValueError(f"Provider {provider_id} is not available.")
 
     def _core_config(self) -> dict[str, Any]:
-        if self.context is None:
-            raise RuntimeError("AstrBot context is unavailable.")
-        get_config = getattr(self.context, "get_config", None)
-        if callable(get_config):
-            return get_config()
-        config = getattr(self.context, "config", None)
-        if isinstance(config, dict):
-            return config
-        raise RuntimeError("AstrBot config is unavailable.")
+        return self.host.get_config()
 
     @staticmethod
     def _orchestrator_config(cfg: dict[str, Any]) -> dict[str, Any]:

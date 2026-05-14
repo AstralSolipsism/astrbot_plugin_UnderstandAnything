@@ -2364,6 +2364,31 @@ def test_plugin_i18n_covers_config_page_and_dashboard_ui() -> None:
         assert ui["tokenGate"]["requiredTitle"]
 
 
+def test_astrbot_internal_access_is_centralized() -> None:
+    helper_path = PLUGIN_ROOT / "astrbot_adapter" / "astrbot_host.py"
+    assert helper_path.is_file()
+    assert "class AstrBotHostAdapter" in helper_path.read_text(encoding="utf-8")
+
+    business_sources = {
+        "web_api.py": (PLUGIN_ROOT / "astrbot_adapter" / "web_api.py").read_text(
+            encoding="utf-8"
+        ),
+        "subagent_registry.py": (
+            PLUGIN_ROOT / "astrbot_adapter" / "subagent_registry.py"
+        ).read_text(encoding="utf-8"),
+        "computer_use.py": (
+            PLUGIN_ROOT / "astrbot_adapter" / "computer_use.py"
+        ).read_text(encoding="utf-8"),
+    }
+
+    assert "provider_manager" not in business_sources["web_api.py"]
+    assert "provider_manager" not in business_sources["subagent_registry.py"]
+    assert "astrbot_config_mgr" not in business_sources["computer_use.py"]
+    assert 'getattr(persona_mgr, "personas"' not in business_sources[
+        "subagent_registry.py"
+    ]
+
+
 def test_skill_prompts_require_internal_subagent_tools() -> None:
     understand = (PLUGIN_ROOT / "skills" / "understand" / "SKILL.md").read_text(
         encoding="utf-8",

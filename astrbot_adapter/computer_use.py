@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .astrbot_host import AstrBotHostAdapter
+
 ENABLED_COMPUTER_USE_RUNTIMES = {"local", "sandbox"}
 COMPUTER_USE_DISABLED_MESSAGE = (
     "AstrBot Computer Use runtime is disabled. In AstrBot settings, set "
@@ -69,39 +71,28 @@ def _config_status(
 
 
 def _all_config_statuses(context: Any) -> list[dict[str, Any]]:
-    config_manager = getattr(context, "astrbot_config_mgr", None)
-    confs = getattr(config_manager, "confs", {})
-    if not isinstance(confs, dict):
-        confs = {}
+    host = AstrBotHostAdapter(context)
     configs: list[dict[str, Any]] = []
     seen: set[str] = set()
-    if config_manager is not None and hasattr(config_manager, "get_conf_list"):
-        try:
-            config_infos = config_manager.get_conf_list()
-        except Exception:
-            config_infos = []
-        for info in config_infos:
-            if not isinstance(info, dict):
-                continue
-            config_id = str(info.get("id") or "default")
-            if config_id in seen:
-                continue
-            seen.add(config_id)
-            config = _config_by_id(context, config_manager, confs, config_id)
-            configs.append(
-                _config_status(
-                    config_id=config_id,
-                    name=str(info.get("name") or config_id),
-                    config=config,
-                    is_default=config_id == "default",
-                ),
-            )
+    for info in host.config_infos():
+        config_id = str(info.get("id") or "default")
+        if config_id in seen:
+            continue
+        seen.add(config_id)
+        configs.append(
+            _config_status(
+                config_id=config_id,
+                name=str(info.get("name") or config_id),
+                config=host.config_by_id(config_id),
+                is_default=config_id == "default",
+            ),
+        )
     if "default" not in seen:
         configs.append(
             _config_status(
                 config_id="default",
                 name="default",
-                config=_default_config(context, config_manager),
+                config=host.default_config(),
                 is_default=True,
             ),
         )
@@ -125,15 +116,8 @@ def _effective_config_status(
 ) -> dict[str, Any]:
     if not umo:
         return default_config
-    config_manager = getattr(context, "astrbot_config_mgr", None)
-    config_info: dict[str, Any] = {}
-    if config_manager is not None and hasattr(config_manager, "get_conf_info"):
-        try:
-            raw_info = config_manager.get_conf_info(umo)
-            if isinstance(raw_info, dict):
-                config_info = raw_info
-        except Exception:
-            config_info = {}
+    host = AstrBotHostAdapter(context)
+    config_info = host.config_info_for_umo(umo)
     config_id = str(config_info.get("id") or "")
     if config_id:
         for config in configs:
@@ -142,39 +126,9 @@ def _effective_config_status(
     return _config_status(
         config_id=config_id or default_config["id"],
         name=str(config_info.get("name") or default_config["name"]),
-        config=_context_config(context, umo=umo),
+        config=host.get_config(umo=umo),
         is_default=(config_id or default_config["id"]) == "default",
     )
-
-
-def _config_by_id(
-    context: Any,
-    config_manager: Any,
-    confs: dict[str, Any],
-    config_id: str,
-) -> Any:
-    if config_id == "default":
-        return _default_config(context, config_manager)
-    return confs.get(config_id, {})
-
-
-def _default_config(context: Any, config_manager: Any) -> Any:
-    if config_manager is not None and hasattr(config_manager, "default_conf"):
-        try:
-            return config_manager.default_conf
-        except Exception:
-            pass
-    return _context_config(context)
-
-
-def _context_config(context: Any, umo: str | None = None) -> Any:
-    config: Any = {}
-    if context is not None and hasattr(context, "get_config"):
-        try:
-            config = context.get_config(umo=umo) if umo else context.get_config()
-        except Exception:
-            config = {}
-    return config
 
 
 def _provider_settings_from_config(config: Any) -> dict[str, Any]:
