@@ -45,7 +45,8 @@ class UnderstandAnythingPlugin(Star):
             raw_args=self._args(event, "understand analyze"),
             event=event,
         )
-        yield event.plain_result(self._format_job_started_message(job.job_id))
+        if not job.args.get("started_notification_sent"):
+            yield event.plain_result(self.runner.format_job_source_started_message(job))
 
     @understand_commands.command("status")
     async def understand_status(self, event: AstrMessageEvent):
@@ -90,14 +91,20 @@ class UnderstandAnythingPlugin(Star):
     @understand_commands.command("domain")
     async def understand_domain_group(self, event: AstrMessageEvent):
         """Extract business domain graph information."""
+        job_label = "domain analysis"
         job = await self.runner.start_skill_job(
             skill_name="understand-domain",
+            job_label=job_label,
             raw_args=self._args(event, "understand domain"),
             event=event,
         )
-        yield event.plain_result(
-            self._format_job_started_message(job.job_id, job_label="domain analysis"),
-        )
+        if not job.args.get("started_notification_sent"):
+            yield event.plain_result(
+                self.runner.format_job_source_started_message(
+                    job,
+                    job_label=job_label,
+                ),
+            )
 
     @understand_commands.command("explain")
     async def understand_explain_group(self, event: AstrMessageEvent):
@@ -115,17 +122,20 @@ class UnderstandAnythingPlugin(Star):
     @understand_commands.command("knowledge")
     async def understand_knowledge_group(self, event: AstrMessageEvent):
         """Analyze a Karpathy-pattern wiki knowledge base."""
+        job_label = "knowledge analysis"
         job = await self.runner.start_skill_job(
             skill_name="understand-knowledge",
+            job_label=job_label,
             raw_args=self._args(event, "understand knowledge"),
             event=event,
         )
-        yield event.plain_result(
-            self._format_job_started_message(
-                job.job_id,
-                job_label="knowledge analysis",
-            ),
-        )
+        if not job.args.get("started_notification_sent"):
+            yield event.plain_result(
+                self.runner.format_job_source_started_message(
+                    job,
+                    job_label=job_label,
+                ),
+            )
 
     @understand_commands.command("onboard")
     async def understand_onboard_group(self, event: AstrMessageEvent):
@@ -146,13 +156,15 @@ class UnderstandAnythingPlugin(Star):
         event: AstrMessageEvent,
         project_path: str,
     ):
-        """Start a background Understand Anything analysis job for a local project.
+        """Begin Understand Anything source preparation for a local project.
 
         Use this when the user asks to analyze a local repository or project.
-        This tool returns after scheduling the job; the analysis keeps running in
-        the background and can take 30 minutes or longer for large repositories.
-        Do not assume the graph is ready until the job status is finished.
-        Tell the user the returned job id and how to check progress.
+        This tool creates the job and starts source preparation; the plugin will
+        confirm scan scope before graph generation. Large repositories can take
+        30 minutes or longer after confirmation. Do not assume the graph is
+        ready until the job status is finished.
+        User-facing lifecycle notifications are sent by the plugin.
+        Do not say analysis has started until the plugin reports graph generation.
 
         Args:
             project_path(string): Project directory to analyze.
@@ -162,7 +174,7 @@ class UnderstandAnythingPlugin(Star):
             project_path=project_path,
             event=event,
         )
-        return self._format_job_started_message(job.job_id)
+        return self.runner.format_tool_job_submitted_message(job)
 
     @filter.llm_tool(name="ua_start_github_analysis")
     async def ua_start_github_analysis(
@@ -172,21 +184,22 @@ class UnderstandAnythingPlugin(Star):
         ref: str = "",
         github_proxy: str = "",
     ):
-        """Start a background Understand Anything analysis job for a GitHub repo.
+        """Begin Understand Anything source preparation for a GitHub repo.
 
         Use this when the user asks to analyze a public GitHub repository.
-        This tool returns after scheduling the job; source preparation and graph
-        analysis keep running in the background and can take 30 minutes or longer
-        for large repositories. Do not assume the graph is ready until the job
-        status is finished. Tell the user the returned job id and how to check
-        progress.
+        This tool creates the job and starts GitHub source preparation; the
+        plugin will confirm scan scope before graph generation. Large
+        repositories can take 30 minutes or longer after confirmation. Do not
+        assume the graph is ready until the job status is finished.
+        User-facing lifecycle notifications are sent by the plugin.
+        Do not say analysis has started until the plugin reports graph generation.
 
         Args:
             repo_url(string): Public https://github.com/owner/repo URL.
                 May include /tree/<ref>/<path>.
             ref(string): Optional legacy branch, tag, or commit-ish ref override.
-            github_proxy(string): Optional bundled proxy preset URL for GitHub
-                network failures. Leave empty for direct GitHub access.
+            github_proxy(string): Optional bundled proxy preset URL to try first.
+                Leave empty for automatic direct GitHub, then proxy fallback.
         """
         job = await self.runner.start_skill_job(
             skill_name="understand",
@@ -195,7 +208,7 @@ class UnderstandAnythingPlugin(Star):
             github_proxy=github_proxy or None,
             event=event,
         )
-        return self._format_job_started_message(job.job_id)
+        return self.runner.format_tool_job_submitted_message(job)
 
     @filter.llm_tool(name="ua_get_analysis_status")
     async def ua_get_analysis_status(
@@ -281,7 +294,7 @@ class UnderstandAnythingPlugin(Star):
         Args:
             project_path(string): Project directory containing the graph.
         """
-        return await self.runner.onboard(project_path=project_path)
+        return await self.runner.onboard(project_path=project_path, event=event)
 
     @filter.llm_tool(name="ua_open_dashboard")
     async def ua_open_dashboard(self, event: AstrMessageEvent):
@@ -289,20 +302,6 @@ class UnderstandAnythingPlugin(Star):
         return (
             f"Open AstrBot WebUI, go to plugin `{PLUGIN_NAME}`, then open "
             "the `dashboard` Page."
-        )
-
-    @staticmethod
-    def _format_job_started_message(
-        job_id: str,
-        *,
-        job_label: str = "analysis",
-    ) -> str:
-        return (
-            f"Started background Understand Anything {job_label} job {job_id}. "
-            "Large repositories can take 30 minutes or longer. "
-            f"Check progress with `/understand status {job_id}`. "
-            "The graph is not ready until the job status is finished; this chat "
-            "will be notified when the job finishes or fails."
         )
 
     @staticmethod

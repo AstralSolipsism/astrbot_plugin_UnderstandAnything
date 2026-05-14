@@ -77,8 +77,18 @@ def test_main_plugin_exposes_understand_command_group() -> None:
     assert '@understand_commands.command("onboard")' in source
 
 
-def test_main_plugin_llm_tools_explain_background_analysis_contract() -> None:
+def test_main_plugin_llm_tools_explain_source_preparation_contract() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+    project_tool_source = source[
+        source.index('@filter.llm_tool(name="ua_start_project_analysis")') : source.index(
+            '@filter.llm_tool(name="ua_start_github_analysis")'
+        )
+    ]
+    github_tool_source = source[
+        source.index('@filter.llm_tool(name="ua_start_github_analysis")') : source.index(
+            '@filter.llm_tool(name="ua_get_analysis_status")'
+        )
+    ]
 
     assert '@filter.llm_tool(name="ua_start_project_analysis")' in source
     assert '@filter.llm_tool(name="ua_start_github_analysis")' in source
@@ -114,6 +124,12 @@ def test_main_plugin_has_single_llm_graph_question_tool() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
     assert source.count("return await self.runner.chat(") == 1
+
+
+def test_main_plugin_onboarding_tool_preserves_event_context() -> None:
+    source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "return await self.runner.onboard(project_path=project_path, event=event)" in source
 
 
 def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
@@ -572,37 +588,79 @@ def test_runner_prompt_delegates_understandignore_confirmation_to_host(
 
     prompt = runner._build_skill_execution_prompt(job)
 
-    assert "host adapter handles `.understandignore` confirmation" in prompt
-    assert "non-interactive AstrBot host run" not in prompt
-    assert "Do not pause for `.understandignore` review" not in prompt
-    assert "Generate all user-visible textual content in Simplified Chinese" in prompt
-    assert "Keep code identifiers, file paths, schema keys, tags" in prompt
-
-
-def test_runner_output_locale_config_overrides_job_locale(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    runner = UnderstandAnythingRunner(
-        context=None,  # type: ignore[arg-type]
-        config={"output_locale": "en-US"},
-        registry_path=tmp_path / "projects.json",
-    )
-    job = runner.jobs.create(
-        "understand",
-        project,
-        {
-            "raw_args": str(project),
-            "project_path": str(project),
-            "graph_root": str(project / ".understand-anything"),
-            "locale": "zh-CN",
-            "source": {"type": "local"},
-        },
-    )
-
-    prompt = runner._build_skill_execution_prompt(job)
-
     assert "Generate all user-visible textual content in English" in prompt
     assert "Simplified Chinese" not in prompt
+
+
+def test_runner_auto_locale_ignores_github_url_noise(tmp_path: Path) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    event = SimpleNamespace(
+        message_str="/understand analyze https://github.com/AstrBotDevs/AstrBot",
+    )
+
+    assert runner._resolve_output_locale(event=event) == "zh-CN"
+
+
+def test_runner_auto_locale_ignores_llm_tool_name_noise(tmp_path: Path) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    event = SimpleNamespace(
+        message_str=(
+            "ua_start_github_analysis "
+            "repo_url=https://github.com/AstrBotDevs/AstrBot"
+        ),
+    )
+
+    assert runner._resolve_output_locale(event=event) == "zh-CN"
+
+
+def test_runner_auto_locale_still_detects_english_prose(tmp_path: Path) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    event = SimpleNamespace(message_str="please analyze this repository")
+
+    assert runner._resolve_output_locale(event=event) == "en-US"
+
+
+@pytest.mark.asyncio
+async def test_github_job_confirmation_and_prompt_use_auto_zh_for_url_only_command(
+    tmp_path: Path,
+) -> None:
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    event = SimpleNamespace(
+        message_str="/understand analyze https://github.com/AstrBotDevs/AstrBot",
+    )
+
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstrBotDevs/AstrBot",
+        event=event,  # type: ignore[arg-type]
+        start_task=False,
+    )
+    confirmation = build_ignore_confirmation(job.project_root, Path(job.args["graph_root"]))
+    runner.jobs.mark_waiting_confirmation(job.job_id, confirmation)
+
+    message = runner._confirmation_message(job)
+    prompt = runner._build_skill_execution_prompt(job)
+
+    assert job.args["locale"] == "zh-CN"
+    assert "扫描范围确认：AstrBot" in message
+    assert "Scan scope confirmation" not in message
+    assert "Generate all user-visible textual content in Simplified Chinese" in prompt
 
 
 def test_ignore_review_generates_confirmation_from_project_scan(tmp_path: Path) -> None:
@@ -632,6 +690,21 @@ def test_ignore_review_generates_confirmation_from_project_scan(tmp_path: Path) 
 
 
 def test_ignore_review_existing_understandignore_still_requires_confirmation(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    graph_root = tmp_path / "graph" / ".understand-anything"
+    project.mkdir()
+    graph_root.mkdir(parents=True)
+    (graph_root / ".understandignore").write_text("docs/\n", encoding="utf-8")
+
+    confirmation = build_ignore_confirmation(project, graph_root)
+
+    assert confirmation["summary"]["generated"] is False
+    assert confirmation["content"] == "docs/\n"
+
+
+def test_ignore_review_summarizes_current_excluded_directory_tree(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -1207,15 +1280,20 @@ async def test_runner_sends_chat_progress_and_friendly_github_failure(
 ) -> None:
     messages: list[str] = []
 
-    async def send(message):
-        messages.append(message.get_plain_text())
+    class Context:
+        async def send_message(self, _session, message):
+            messages.append(message.get_plain_text())
+            return True
+
+    async def send(_message):
+        raise RuntimeError("event send is no longer active")
 
     event = SimpleNamespace(
         unified_msg_origin="chat-origin",
         send=send,
     )
     runner = UnderstandAnythingRunner(
-        context=None,  # type: ignore[arg-type]
+        context=Context(),  # type: ignore[arg-type]
         registry_path=tmp_path / "projects.json",
     )
     runner.github = _FakeGitHubRepoManager(tmp_path / "github-cache", fail_clone=True)
@@ -1230,13 +1308,316 @@ async def test_runner_sends_chat_progress_and_friendly_github_failure(
     snapshot = runner.jobs.get(job.job_id)
     assert snapshot is not None
     assert snapshot.status is JobStatus.FAILED
-    assert any("Cloning GitHub repository AstralSolipsism/demo." in item for item in messages)
+    joined_messages = "\n---\n".join(messages)
+    assert "正在获取源码：demo" in joined_messages
+    assert "阶段：下载 GitHub 仓库" in joined_messages
+    assert "Resolving GitHub repository reference" not in joined_messages
+    assert "Cloning GitHub repository" not in joined_messages
+    assert "Understand Anything job update" not in joined_messages
+    assert f"Job: {job.job_id}" not in joined_messages
+    assert f"/understand status {job.job_id}" not in joined_messages
     failure_message = messages[-1]
-    assert "Understand Anything job failed" in failure_message
-    assert f"Job: {job.job_id}" in failure_message
-    assert f"/understand status {job.job_id}" in failure_message
-    assert "--github-proxy https://gh.llkk.cc" in failure_message
-    assert "clone failed" in failure_message
+    assert "分析失败：demo" in failure_message
+    assert "阶段：获取源码" in failure_message
+    assert "原因：clone failed" in failure_message
+    assert "/understand status demo" in failure_message
+    assert "--github-proxy" not in failure_message
+    assert job.job_id not in failure_message
+
+
+@pytest.mark.asyncio
+async def test_runner_job_chat_notification_uses_context_proactive_send(
+    tmp_path: Path,
+) -> None:
+    class Context:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str]] = []
+
+        async def send_message(self, session, message):
+            self.messages.append((str(session), message.get_plain_text()))
+            return True
+
+    async def send(_message):
+        raise RuntimeError("event send is no longer active")
+
+    context = Context()
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:session-1",
+        send=send,
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create("understand", tmp_path / "project", {})
+
+    await runner._send_job_chat_message(
+        job,
+        event,  # type: ignore[arg-type]
+        "background update",
+        key="update",
+    )
+
+    assert context.messages == [
+        ("webchat:FriendMessage:session-1", "background update")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_understandignore_prompt_uses_context_proactive_send(
+    tmp_path: Path,
+) -> None:
+    from astrbot.core.utils.session_waiter import SessionWaiter
+
+    class Context:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str]] = []
+
+        async def send_message(self, session, message):
+            self.messages.append((str(session), message.get_plain_text()))
+            return True
+
+    async def stale_send(_message):
+        raise RuntimeError("event send is no longer active")
+
+    reply_stopped = False
+
+    async def reply_send(_message):
+        return None
+
+    def stop_reply() -> None:
+        nonlocal reply_stopped
+        reply_stopped = True
+
+    project = tmp_path / "project"
+    graph_root = tmp_path / "graph"
+    project.mkdir()
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:session-1",
+        send=stale_send,
+    )
+    reply_event = SimpleNamespace(
+        unified_msg_origin=event.unified_msg_origin,
+        message_str="continue",
+        send=reply_send,
+        stop_event=stop_reply,
+    )
+    context = Context()
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {"graph_root": str(graph_root)},
+    )
+
+    task = asyncio.create_task(
+        runner._confirm_understandignore(
+            job,
+            event,  # type: ignore[arg-type]
+            timeout_seconds=5,
+        )
+    )
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if context.messages:
+            break
+    else:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        pytest.fail("Understand ignore confirmation prompt was not sent.")
+
+    await SessionWaiter.trigger(event.unified_msg_origin, reply_event)  # type: ignore[arg-type]
+    confirmed = await task
+
+    assert confirmed is True
+    assert reply_stopped is True
+    assert context.messages[0][0] == "webchat:FriendMessage:session-1"
+    assert "扫描范围确认：project" in context.messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_runner_github_notifications_follow_source_confirmation_agent_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astrbot.core.utils.session_waiter import SessionWaiter
+
+    class DummyDispatcher:
+        async def run_with_local_tools(self, **kwargs):
+            marker = "UA graph output root:\n"
+            prompt = str(kwargs["prompt"])
+            graph_root = Path(prompt.split(marker, 1)[1].split("\n\n", 1)[0])
+            graph_root.mkdir(parents=True, exist_ok=True)
+            (graph_root / "knowledge-graph.json").write_text(
+                json.dumps({"project": {"name": "AstrBot"}, "nodes": [], "edges": []}),
+                encoding="utf-8",
+            )
+            return "analysis complete"
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            return None
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "local"}}),
+    )
+    messages: list[str] = []
+
+    async def send_message(_session, message):
+        messages.append(message.get_plain_text())
+        return True
+
+    context.send_message = send_message  # type: ignore[method-assign]
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.github = _FakeGitHubRepoManager(tmp_path / "github-cache")
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+    runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:session-1",
+        message_str="/understand analyze https://github.com/AstrBotDevs/AstrBot",
+    )
+    replies: list[str] = []
+
+    async def reply_send(message):
+        replies.append(message.get_plain_text())
+
+    reply_event = SimpleNamespace(
+        unified_msg_origin=event.unified_msg_origin,
+        message_str="continue",
+        send=reply_send,
+        stop_event=lambda: None,
+    )
+
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstrBotDevs/AstrBot",
+        event=event,  # type: ignore[arg-type]
+    )
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        snapshot = runner.jobs.get(job.job_id)
+        if snapshot and snapshot.status is JobStatus.WAITING_CONFIRMATION:
+            break
+    else:
+        runner._tasks[job.job_id].cancel()
+        await asyncio.gather(runner._tasks[job.job_id], return_exceptions=True)
+        pytest.fail("Job did not enter scan scope confirmation.")
+
+    await SessionWaiter.trigger(event.unified_msg_origin, reply_event)  # type: ignore[arg-type]
+    await runner._tasks[job.job_id]
+
+    assert messages[0].startswith("正在获取源码：AstrBot")
+    assert "已开始分析" not in "\n".join(messages[:2])
+    confirmation_index = next(
+        index for index, message in enumerate(messages) if "扫描范围确认：AstrBot" in message
+    )
+    agent_index = next(
+        index for index, message in enumerate(messages) if "开始生成图谱：AstrBot" in message
+    )
+    assert 0 < confirmation_index < agent_index
+    assert any("已确认，开始分析。" in reply for reply in replies)
+
+
+@pytest.mark.asyncio
+async def test_waiting_confirmation_status_question_does_not_update_ignore_rules(
+    tmp_path: Path,
+) -> None:
+    from astrbot.core.utils.session_waiter import SessionWaiter
+
+    class Context:
+        async def send_message(self, _session, _message):
+            return True
+
+    project = tmp_path / "project"
+    graph_root = tmp_path / "graph"
+    project.mkdir()
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:session-1",
+    )
+    replies: list[str] = []
+
+    async def reply_send(message):
+        replies.append(message.get_plain_text())
+
+    reply_event = SimpleNamespace(
+        unified_msg_origin=event.unified_msg_origin,
+        message_str="现在进度怎么样",
+        send=reply_send,
+        stop_event=lambda: None,
+    )
+    runner = UnderstandAnythingRunner(
+        context=Context(),  # type: ignore[arg-type]
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project,
+        {
+            "graph_root": str(graph_root),
+            "project_display_name": "Demo",
+            "status_ref": "Demo",
+        },
+    )
+
+    task = asyncio.create_task(
+        runner._confirm_understandignore(
+            job,
+            event,  # type: ignore[arg-type]
+            timeout_seconds=5,
+        )
+    )
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if runner.jobs.get(job.job_id).status is JobStatus.WAITING_CONFIRMATION:
+            break
+    else:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        pytest.fail("Job did not enter confirmation state.")
+
+    await SessionWaiter.trigger(event.unified_msg_origin, reply_event)  # type: ignore[arg-type]
+    await asyncio.sleep(0.01)
+
+    ignore_content = (graph_root / ".understandignore").read_text(encoding="utf-8")
+    assert "现在进度怎么样" not in ignore_content
+    assert any("分析状态：Demo" in reply for reply in replies)
+    assert runner.jobs.get(job.job_id).status is JobStatus.WAITING_CONFIRMATION
+
+    runner.confirm_job(job.job_id, action="cancel", source="test")
+    await task
 
 
 @pytest.mark.asyncio
@@ -1298,9 +1679,16 @@ async def test_github_cache_cleanup_keeps_artifacts_readable(tmp_path: Path) -> 
 async def test_runner_rehydrates_cleaned_github_source_from_registry(
     tmp_path: Path,
 ) -> None:
+    direct_url = "https://github.com/AstralSolipsism/demo.git"
     manager = _FakeGitHubRepoManager(
         tmp_path / "github-cache",
         create_subpath="packages/app",
+        clone_failures_by_url={
+            direct_url: (
+                "fatal: unable to access 'https://github.com/AstralSolipsism/demo.git/': "
+                "Recv failure: Connection was reset"
+            ),
+        },
     )
     checkout = await manager.resolve_remote(
         "https://github.com/AstralSolipsism/demo/tree/main/packages/app",
@@ -1323,6 +1711,8 @@ async def test_runner_rehydrates_cleaned_github_source_from_registry(
 
     assert checkout.analysis_root.is_dir()
     assert any(call[0] == "clone" for call in manager.calls)
+    refreshed_record = runner.registry.resolve_record(project_id=record.project_id)
+    assert refreshed_record.source["github_proxy"] == "https://edgeone.gh-proxy.com"
 
 
 @pytest.mark.asyncio

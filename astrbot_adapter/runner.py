@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import datetime
 import json
+import re
 import subprocess
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.star import Context
 
+from .astrbot_host import AstrBotHostAdapter
 from .computer_use import ensure_computer_use_enabled
 from .constants import (
     AGENT_PROMPTS_ROOT,
@@ -80,6 +82,7 @@ class UnderstandAnythingRunner:
     ) -> None:
         self.context = context
         self.config = config or {}
+        self.host = AstrBotHostAdapter(context)
         self.github = GitHubRepoManager(
             git_timeout_seconds=self._coerce_positive_int(
                 self.config.get("github_command_timeout_seconds"),
@@ -217,12 +220,20 @@ class UnderstandAnythingRunner:
             None if has_target_url else ref,
             self._source_github_proxy(source),
         )
-        await self.github.prepare(checkout)
+        result = await self.github.prepare_with_checkout(checkout)
+        self.registry.register(
+            result.path,
+            auto_update=record.auto_update,
+            aliases=record.aliases,
+            graph_root=result.checkout.graph_root,
+            source=self._github_source_payload(result.checkout),
+        )
 
     async def start_skill_job(
         self,
         *,
         skill_name: str,
+        job_label: str = "analysis",
         raw_args: str = "",
         event: AstrMessageEvent | None = None,
         project_path: str | Path | None = None,
@@ -310,6 +321,8 @@ class UnderstandAnythingRunner:
                 "auto_update": auto_update,
                 "locale": self._resolve_output_locale(locale, event),
                 "source": source_payload,
+                "job_label": job_label,
+                "started_notification_sent": False,
             },
         )
         if not github_checkout:
@@ -853,7 +866,9 @@ class UnderstandAnythingRunner:
         except Exception as exc:
             logger.error("Understand Anything job failed: %s", exc)
             failed_step = job.progress.label
+            failed_phase = job.progress.phase
             job.args["failed_step"] = failed_step
+            job.args["failed_phase"] = failed_phase
             self.jobs.mark_failed(job.job_id, str(exc))
             if event is not None:
                 await self._send_job_chat_message(
@@ -875,12 +890,11 @@ class UnderstandAnythingRunner:
         percent: int,
     ) -> None:
         self.jobs.set_progress(job_id, phase, label, percent)
-        await self._send_job_chat_message(
-            job,
-            event,
-            self._format_job_progress_message(job, label),
-            key=f"{phase}:{label}",
-        )
+        notification = self._format_job_progress_message(job, phase)
+        if notification is None:
+            return
+        key, message = notification
+        await self._send_job_chat_message(job, event, message, key=key)
 
     async def _send_job_chat_message(
         self,
@@ -889,34 +903,104 @@ class UnderstandAnythingRunner:
         message: str,
         *,
         key: str,
-    ) -> None:
+    ) -> bool:
         if event is None:
-            return
+            return False
         notified = self._chat_notification_keys.setdefault(job.job_id, set())
         if key in notified:
-            return
-        notified.add(key)
+            return True
+        chain = MessageChain().message(message)
         try:
-            await event.send(MessageChain().message(message))
+            sent = await self.host.send_message(event, chain)
         except Exception as exc:
-            logger.warning("Understand Anything chat notification failed: %s", exc)
+            logger.warning(
+                "Understand Anything proactive chat notification failed: %s",
+                exc,
+            )
             with contextlib.suppress(Exception):
-                self.jobs.append_log(job.job_id, f"Chat notification failed: {exc}")
-
-    def _format_job_progress_message(self, job: JobSnapshot, label: str) -> str:
-        snapshot = self.jobs.get(job.job_id) or job
-        percent = snapshot.progress.percent
-        return (
-            f"Understand Anything job update: {label} ({percent}%).\n"
-            f"Job: {job.job_id}\n"
-            f"Status: /understand status {job.job_id}"
+                self.jobs.append_log(
+                    job.job_id,
+                    f"Proactive chat notification failed: {exc}",
+                )
+            return False
+        if sent:
+            notified.add(key)
+            return True
+        logger.warning(
+            "Understand Anything chat notification skipped: proactive send is unavailable."
         )
+        try:
+            self.jobs.append_log(
+                job.job_id,
+                "Chat notification skipped: proactive send is unavailable.",
+            )
+        except Exception as exc:
+            logger.warning("Understand Anything chat notification log failed: %s", exc)
+        return False
+
+    def _format_job_progress_message(
+        self,
+        job: JobSnapshot,
+        phase: str,
+    ) -> tuple[str, str] | None:
+        locale = self._job_locale(job)
+        name = self._job_display_name(job)
+        if phase == "source":
+            return (
+                "progress:source",
+                self.format_job_source_started_message(
+                    job,
+                    job_label=str(job.args.get("job_label") or "analysis"),
+                ),
+            )
+        if phase == "confirmation":
+            message = self._localized(
+                locale,
+                zh=(
+                    f"需要确认扫描范围：{name}\n"
+                    "回复：继续 / 取消，或更新 .understandignore 规则。"
+                ),
+                en=(
+                    f"Scan scope needs confirmation: {name}\n"
+                    "Reply: continue / cancel, or update .understandignore rules."
+                ),
+                ru=(
+                    f"Нужно подтвердить область сканирования: {name}\n"
+                    "Ответьте: continue / cancel или обновите .understandignore."
+                ),
+            )
+            return "progress:confirmation", message
+        if phase == "agent":
+            message = self._localized(
+                locale,
+                zh=f"开始生成图谱：{name}\n这一步可能需要较长时间。",
+                en=f"Generating graph: {name}\nThis step can take a while.",
+                ru=(
+                    f"Построение графа: {name}\n"
+                    "Этот этап может занять продолжительное время."
+                ),
+            )
+            return "progress:agent", message
+        return None
 
     def _format_job_finished_message(self, job: JobSnapshot) -> str:
-        return (
-            "Understand Anything job finished.\n"
-            f"Job: {job.job_id}\n"
-            f"Status: /understand status {job.job_id}"
+        locale = self._job_locale(job)
+        name = self._job_display_name(job)
+        project_ref = self._command_status_ref(job)
+        return self._localized(
+            locale,
+            zh=(
+                f"分析完成：{name}\n"
+                f"可以使用 /understand chat --project {project_ref} <问题>"
+            ),
+            en=(
+                f"Analysis finished: {name}\n"
+                f"Ask questions with /understand chat --project {project_ref} <query>"
+            ),
+            ru=(
+                f"Анализ завершен: {name}\n"
+                f"Задавайте вопросы: /understand chat --project {project_ref} <вопрос>"
+            ),
         )
 
     def _format_job_failed_message(
@@ -1914,10 +1998,16 @@ class UnderstandAnythingRunner:
             job.job_id,
             "Resolving GitHub repository reference.",
         )
+
+        async def progress(message: str) -> None:
+            await self._set_job_progress(job, event, job.job_id, "source", message, 18)
+            self.jobs.append_log(job.job_id, message)
+
         checkout = await self.github.resolve_remote(
             repo_url,
             str(ref) if ref else None,
             self._source_github_proxy(source),
+            progress=progress,
         )
         self.jobs.append_log(
             job.job_id,
@@ -1926,15 +2016,22 @@ class UnderstandAnythingRunner:
             + (f" subpath {checkout.subpath}" if checkout.subpath else ""),
         )
 
-        async def progress(message: str) -> None:
-            await self._set_job_progress(job, event, job.job_id, "source", message, 18)
-            self.jobs.append_log(job.job_id, message)
-
-        analysis_root = await self.github.prepare(checkout, progress=progress)
+        result = await self.github.prepare_with_checkout(checkout, progress=progress)
+        checkout = result.checkout
+        analysis_root = result.path
         job.project_root = analysis_root
         job.args["project_path"] = str(analysis_root)
         job.args["graph_root"] = str(checkout.graph_root)
         job.args["project_id"] = ProjectRegistry.project_id_for(checkout.artifact_root)
+        job.args["project_display_name"] = self._initial_project_display_name(
+            analysis_root,
+            checkout,
+        )
+        job.args["status_ref"] = self._initial_status_ref(analysis_root, checkout)
+        job.args["status_aliases"] = self._initial_status_aliases(
+            analysis_root,
+            checkout,
+        )
         job.args["raw_args"] = format_job_args(
             analysis_root,
             job.args.get("flags") if isinstance(job.args.get("flags"), list) else [],
@@ -1942,12 +2039,6 @@ class UnderstandAnythingRunner:
         job.args["source"] = self._github_source_payload(checkout)
         self.jobs.append_log(
             job.job_id, f"GitHub repository ready: {checkout.worktree_path}"
-        )
-        await self._send_job_chat_message(
-            job,
-            event,
-            self._format_job_progress_message(job, "GitHub repository source ready."),
-            key="source:ready",
         )
         if checkout.subpath:
             self.jobs.append_log(
