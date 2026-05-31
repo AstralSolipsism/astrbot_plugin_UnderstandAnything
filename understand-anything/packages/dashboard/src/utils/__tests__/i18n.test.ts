@@ -82,6 +82,27 @@ describe("dashboard i18n", () => {
     );
   });
 
+  it("localizes analysis option help text", () => {
+    expect(translateLocal("zh-CN", "workspace.fullAnalysisHelp", "")).toContain(
+      "完整图谱"
+    );
+    expect(translateLocal("zh-CN", "workspace.autoUpdateHelp", "")).toContain(
+      "轮询间隔"
+    );
+    expect(translateLocal("en-US", "workspace.fullAnalysisHelp", "")).toContain(
+      "rebuild the whole graph"
+    );
+  });
+
+  it("uses soft wording for job refresh degradation", () => {
+    expect(translateLocal("zh-CN", "workspace.jobEventInterrupted", "")).not.toContain(
+      "中断"
+    );
+    expect(translateLocal("zh-CN", "workspace.jobRefreshDelayed", "")).toContain(
+      "进度刷新"
+    );
+  });
+
   it("localizes Computer Use setup guidance without unsupported routes", () => {
     const guidance = [
       translateLocal("zh-CN", "workspace.computerUseDisabledTitle", ""),

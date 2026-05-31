@@ -37,6 +37,14 @@ export interface ProjectSummary {
   auto_update?: boolean;
 }
 
+export interface ProjectIgnorePayload {
+  project: ProjectSummary;
+  ignore_path: string;
+  exists: boolean;
+  content: string;
+  summary?: JobConfirmationSummary;
+}
+
 export interface JobProgressStep {
   phase: string;
   label: string;

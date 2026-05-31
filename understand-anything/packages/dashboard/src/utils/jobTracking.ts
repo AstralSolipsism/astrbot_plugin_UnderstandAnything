@@ -6,8 +6,24 @@ export const ACTIVE_JOB_STATUSES = new Set<JobSnapshot["status"]>([
   "waiting_confirmation",
 ]);
 
+export const TERMINAL_JOB_STATUSES = new Set<JobSnapshot["status"]>([
+  "finished",
+  "failed",
+  "cancelled",
+]);
+
 export function isActiveJob(job: JobSnapshot | null | undefined): job is JobSnapshot {
   return Boolean(job && ACTIVE_JOB_STATUSES.has(job.status));
+}
+
+export function isTerminalJobStatus(
+  status: JobSnapshot["status"] | null | undefined,
+): boolean {
+  return Boolean(status && TERMINAL_JOB_STATUSES.has(status));
+}
+
+export function isTerminalJob(job: JobSnapshot | null | undefined): job is JobSnapshot {
+  return Boolean(job && isTerminalJobStatus(job.status));
 }
 
 export function jobProjectId(job: JobSnapshot | null | undefined): string {

@@ -4,6 +4,7 @@ import {
   type AstrBotPluginPageBridge,
   type JobSnapshot,
   type PluginStatus,
+  type ProjectIgnorePayload,
   type ProjectRefParams,
   type ProjectSummary,
   type ProviderSummary,
@@ -26,6 +27,7 @@ import {
 } from "../utils/analysisRequest";
 import {
   isActiveJob,
+  isTerminalJobStatus,
   jobForProject,
   projectAnalysisTarget,
   recentActivity,
@@ -64,6 +66,29 @@ function githubAlias(project: ProjectSummary): string | null {
         !alias.includes("\\") &&
         !alias.includes(":"),
     ) ?? null
+  );
+}
+
+function OptionHelp({
+  label,
+  children
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <span className="group relative inline-flex">
+      <button
+        type="button"
+        aria-label={label}
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] font-semibold leading-none text-text-muted transition-colors hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        ?
+      </button>
+      <span className="pointer-events-none invisible absolute left-0 top-full z-30 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-md border border-border bg-surface p-3 text-xs leading-relaxed text-text-secondary opacity-0 shadow-lg transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 sm:left-1/2 sm:-translate-x-1/2">
+        {children}
+      </span>
+    </span>
   );
 }
 
@@ -239,6 +264,14 @@ export default function AstrBotWorkspace({
   const [confirmationContent, setConfirmationContent] = useState("");
   const [confirmingAction, setConfirmingAction] = useState<ConfirmationAction | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [jobRefreshNotice, setJobRefreshNotice] = useState<string | null>(null);
+  const [ignorePanelOpen, setIgnorePanelOpen] = useState(false);
+  const [ignorePayload, setIgnorePayload] = useState<ProjectIgnorePayload | null>(null);
+  const [ignoreContent, setIgnoreContent] = useState("");
+  const [ignoreLoading, setIgnoreLoading] = useState(false);
+  const [ignoreSaving, setIgnoreSaving] = useState(false);
+  const [ignoreError, setIgnoreError] = useState<string | null>(null);
   const [openedFinishedJobId, setOpenedFinishedJobId] = useState<string | null>(
     null,
   );
@@ -317,22 +350,42 @@ export default function AstrBotWorkspace({
   }, [loadWorkspace]);
 
   useEffect(() => {
+    if (projects.length === 0) {
+      if (selectedProjectId) setSelectedProjectId(null);
+      return;
+    }
+    if (
+      !selectedProjectId ||
+      !projects.some((project) => project.project_id === selectedProjectId)
+    ) {
+      setSelectedProjectId(projects[0].project_id);
+    }
+  }, [projects, selectedProjectId]);
+
+  useEffect(() => {
     setConfirmationContent(currentConfirmation?.content ?? "");
   }, [currentJobId, currentConfirmation?.content]);
+
+  useEffect(() => {
+    setIgnorePanelOpen(false);
+    setIgnorePayload(null);
+    setIgnoreContent("");
+    setIgnoreError(null);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     if (
       !currentJobId ||
       !currentJobStatus ||
-      currentJobStatus === "finished" ||
-      currentJobStatus === "failed" ||
-      currentJobStatus === "cancelled"
+      isTerminalJobStatus(currentJobStatus)
     ) {
+      setJobRefreshNotice(null);
       return;
     }
     let cancelled = false;
     let intervalId: number | undefined;
     let subscriptionId: string | null = null;
+    let pollFailures = 0;
 
     const updateJob = (value: unknown) => {
       if (!cancelled && isJobSnapshot(value)) {
@@ -341,7 +394,34 @@ export default function AstrBotWorkspace({
           value,
           ...previousJobs.filter((job) => job.job_id !== value.job_id),
         ]);
+        setJobRefreshNotice(null);
       }
+    };
+
+    const pollJob = async () => {
+      try {
+        const nextJob = await pluginGet<JobSnapshot>(bridge, `jobs/${currentJobId}`);
+        pollFailures = 0;
+        updateJob(nextJob);
+      } catch {
+        pollFailures += 1;
+        if (!cancelled && pollFailures >= 3) {
+          setJobRefreshNotice(
+            t(
+              "workspace.jobRefreshDelayed",
+              "Progress refresh is temporarily delayed. The job is still tracked by AstrBot.",
+            ),
+          );
+        }
+      }
+    };
+
+    const startPolling = () => {
+      if (intervalId !== undefined) return;
+      void pollJob();
+      intervalId = window.setInterval(() => {
+        void pollJob();
+      }, 2500);
     };
 
     if (bridge.subscribeSSE) {
@@ -349,9 +429,12 @@ export default function AstrBotWorkspace({
         .subscribeSSE(
           `jobs/${currentJobId}/events`,
           {
+            onOpen: () => {
+              if (!cancelled) setJobRefreshNotice(null);
+            },
             onMessage: (event) => updateJob(event.parsed),
             onError: () => {
-              if (!cancelled) setError(t("workspace.jobEventInterrupted", "Job event stream interrupted."));
+              if (!cancelled) startPolling();
             },
           },
         )
@@ -360,19 +443,12 @@ export default function AstrBotWorkspace({
         })
         .catch((subscribeError) => {
           if (!cancelled) {
-            setError(
-              subscribeError instanceof Error
-                ? subscribeError.message
-                : String(subscribeError),
-            );
+            startPolling();
+            console.debug("Understand Anything job SSE unavailable:", subscribeError);
           }
         });
     } else {
-      intervalId = window.setInterval(() => {
-        void pluginGet<JobSnapshot>(bridge, `jobs/${currentJobId}`)
-          .then(updateJob)
-          .catch(() => {});
-      }, 1500);
+      startPolling();
     }
 
     return () => {
@@ -415,6 +491,20 @@ export default function AstrBotWorkspace({
     ];
   }, [status]);
   const githubProxyPresets = status?.github?.proxy_presets ?? [];
+  const selectedProject = useMemo(() => {
+    if (projects.length === 0) return null;
+    if (selectedProjectId) {
+      const matched = projects.find(
+        (project) => project.project_id === selectedProjectId,
+      );
+      if (matched) return matched;
+    }
+    return projects[0] ?? null;
+  }, [projects, selectedProjectId]);
+  const selectedProjectJob = selectedProject
+    ? jobForProject(selectedProject, jobs)
+    : null;
+  const focusedJob = selectedProject ? selectedProjectJob : currentJob;
 
   const subagentsReady = Boolean(subagents?.ready);
   const showSubagentGuide = Boolean(
@@ -673,6 +763,44 @@ export default function AstrBotWorkspace({
     }
   };
 
+  const loadIgnoreRules = async (project: ProjectSummary) => {
+    setIgnorePanelOpen(true);
+    setIgnoreLoading(true);
+    setIgnoreError(null);
+    try {
+      const payload = await pluginGet<ProjectIgnorePayload>(
+        bridge,
+        "projects/ignore",
+        { project_id: project.project_id },
+      );
+      setIgnorePayload(payload);
+      setIgnoreContent(payload.content);
+    } catch (loadError) {
+      setIgnoreError(errorMessage(loadError));
+    } finally {
+      setIgnoreLoading(false);
+    }
+  };
+
+  const saveIgnoreRules = async () => {
+    if (!selectedProject) return;
+    setIgnoreSaving(true);
+    setIgnoreError(null);
+    try {
+      const payload = await pluginPost<ProjectIgnorePayload>(
+        bridge,
+        "projects/ignore",
+        { project_id: selectedProject.project_id, content: ignoreContent },
+      );
+      setIgnorePayload(payload);
+      setIgnoreContent(payload.content);
+    } catch (saveError) {
+      setIgnoreError(errorMessage(saveError));
+    } finally {
+      setIgnoreSaving(false);
+    }
+  };
+
   const submitJobConfirmation = async (action: ConfirmationAction) => {
     if (!currentJob) return;
     setConfirmingAction(action);
@@ -769,9 +897,9 @@ export default function AstrBotWorkspace({
         )}
 
         {status && (
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
-            <main className="space-y-5">
-              <Panel className="p-4 sm:p-5">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
+            <main className="flex flex-col gap-5">
+              <Panel className="order-2 p-4 sm:p-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <h2 className="font-heading text-xl text-text-primary">
@@ -840,24 +968,50 @@ export default function AstrBotWorkspace({
 
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex flex-wrap gap-3">
-                      <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
-                        <input
-                          type="checkbox"
-                          checked={fullAnalysis}
-                          onChange={(event) => setFullAnalysis(event.target.checked)}
-                          className="h-4 w-4 accent-[var(--color-accent)]"
-                        />
-                        {t("workspace.fullAnalysis", "Full analysis")}
-                      </label>
-                      <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
-                        <input
-                          type="checkbox"
-                          checked={autoUpdate}
-                          onChange={(event) => setAutoUpdate(event.target.checked)}
-                          className="h-4 w-4 accent-[var(--color-accent)]"
-                        />
-                        {t("workspace.autoUpdate", "Auto update")}
-                      </label>
+                      <div className="inline-flex items-center gap-2 text-sm text-text-secondary">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={fullAnalysis}
+                            onChange={(event) => setFullAnalysis(event.target.checked)}
+                            className="h-4 w-4 accent-[var(--color-accent)]"
+                          />
+                          {t("workspace.fullAnalysis", "Full analysis")}
+                        </label>
+                        <OptionHelp
+                          label={t(
+                            "workspace.fullAnalysisHelpLabel",
+                            "What does full analysis do?",
+                          )}
+                        >
+                          {t(
+                            "workspace.fullAnalysisHelp",
+                            "Force this run to rebuild the whole graph from scratch. Leave it off to reuse the existing graph and analyze only changed files when possible.",
+                          )}
+                        </OptionHelp>
+                      </div>
+                      <div className="inline-flex items-center gap-2 text-sm text-text-secondary">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={autoUpdate}
+                            onChange={(event) => setAutoUpdate(event.target.checked)}
+                            className="h-4 w-4 accent-[var(--color-accent)]"
+                          />
+                          {t("workspace.autoUpdate", "Auto update")}
+                        </label>
+                        <OptionHelp
+                          label={t(
+                            "workspace.autoUpdateHelpLabel",
+                            "What does auto update do?",
+                          )}
+                        >
+                          {t(
+                            "workspace.autoUpdateHelp",
+                            "Save this project for background updates. When Git HEAD changes later, AstrBot can start an incremental analysis automatically.",
+                          )}
+                        </OptionHelp>
+                      </div>
                     </div>
                     <button
                       type="submit"
@@ -916,7 +1070,7 @@ export default function AstrBotWorkspace({
               </Panel>
 
               {currentJob && (
-                <Panel className="p-4 sm:p-5">
+                <Panel className="order-3 p-4 sm:p-5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h2 className="font-heading text-lg text-text-primary">
@@ -946,6 +1100,11 @@ export default function AstrBotWorkspace({
                       />
                     </div>
                   </div>
+                  {jobRefreshNotice && (
+                    <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-2 text-sm text-text-muted">
+                      {jobRefreshNotice}
+                    </div>
+                  )}
                   {currentJob.progress?.steps?.length ? (
                     <div className="mt-4 grid gap-2 sm:grid-cols-3">
                       {currentJob.progress.steps.map((step) => (
@@ -1095,12 +1254,12 @@ export default function AstrBotWorkspace({
                 </Panel>
               )}
 
-              <Panel className="p-4">
+              <Panel className="order-1 p-4 sm:p-5">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-heading text-lg text-text-primary">{t("common.projects", "Projects")}</h2>
+                    <h2 className="font-heading text-xl text-text-primary">{t("common.projects", "Projects")}</h2>
                     <p className="mt-1 text-sm text-text-secondary">
-                      {t("workspace.projectsDescription", "Open a registered graph or start a new analysis above.")}
+                      {t("workspace.projectsDescription", "Open a registered graph, inspect the latest job, or start a new analysis.")}
                     </p>
                   </div>
                   <span className="text-xs uppercase tracking-wider text-text-muted">
@@ -1110,47 +1269,41 @@ export default function AstrBotWorkspace({
 
                 {projects.length === 0 ? (
                   <div className="rounded-md border border-border-subtle bg-elevated p-4 text-sm text-text-secondary">
-                    {t("workspace.noProjects", "No registered projects yet.")}
+                    {t("workspace.noProjects", "No registered projects yet. Add a local path or GitHub repository below to start analysis.")}
                   </div>
                 ) : (
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {projects.map((project) => {
-                      const projectJob = jobForProject(project, jobs);
-                      const projectActive = isActiveJob(projectJob);
-                      const projectJobStatus = projectJob?.status ?? "";
-                      const restartTarget = projectAnalysisTarget(project);
-                      const restartGitReady =
-                        !looksLikeGitHubTarget(restartTarget) ||
-                        runtimeReadiness?.github_analysis_ready !== false;
-                      const canRestartProject =
-                        Boolean(restartTarget) &&
-                        !starting &&
-                        !subagentError &&
-                        subagentsReady &&
-                        computerUseReady &&
-                        localRuntimeReady &&
-                        restartGitReady;
-                      const deleting = deletingProjectId === project.project_id;
-                      return (
-                        <div
-                          key={project.project_id}
-                          className="rounded-md border border-border-subtle bg-elevated p-3"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold text-text-primary">
-                                {project.name}
-                              </div>
-                              {githubAlias(project) && (
-                                <div className="mt-1 truncate text-xs font-semibold text-accent">
-                                  {githubAlias(project)}
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.1fr)]">
+                    <div className="space-y-2">
+                      {projects.map((project) => {
+                        const projectJob = jobForProject(project, jobs);
+                        const projectActive = isActiveJob(projectJob);
+                        const projectJobStatus = projectJob?.status;
+                        const selected = selectedProject?.project_id === project.project_id;
+                        return (
+                          <button
+                            type="button"
+                            key={project.project_id}
+                            onClick={() => setSelectedProjectId(project.project_id)}
+                            className={`w-full rounded-md border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                              selected
+                                ? "border-accent bg-accent/10"
+                                : "border-border-subtle bg-elevated hover:border-border-medium"
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-semibold text-text-primary">
+                                  {project.name}
                                 </div>
-                              )}
-                              <div className="mt-1 truncate font-mono text-xs text-text-muted">
-                                {project.path}
+                                {githubAlias(project) && (
+                                  <div className="mt-1 truncate text-xs font-semibold text-accent">
+                                    {githubAlias(project)}
+                                  </div>
+                                )}
+                                <div className="mt-1 truncate font-mono text-xs text-text-muted">
+                                  {project.path}
+                                </div>
                               </div>
-                            </div>
-                            {projectJob && (
                               <span
                                 className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold ${
                                   projectActive
@@ -1160,48 +1313,209 @@ export default function AstrBotWorkspace({
                                       : "bg-root text-text-muted"
                                 }`}
                               >
-                                {projectJobStatus}
+                                {projectJobStatus ??
+                                  (project.last_analyzed_at
+                                    ? t("workspace.graphReady", "Ready")
+                                    : t("workspace.notAnalyzed", "Not analyzed"))}
                               </span>
+                            </div>
+                            <div className="mt-2 text-xs text-text-muted">
+                              {formatDate(project.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
+                            </div>
+                            {projectJob && (
+                              <div className="mt-2 truncate rounded-md bg-root px-2 py-1.5 text-xs text-text-secondary">
+                                {recentActivity(projectJob)}
+                              </div>
                             )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="rounded-md border border-border-subtle bg-elevated p-4">
+                      {selectedProject ? (
+                        <>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                                {t("workspace.selectedProject", "Selected project")}
+                              </div>
+                              <h3 className="mt-1 truncate font-heading text-xl text-text-primary">
+                                {selectedProject.name}
+                              </h3>
+                              <div className="mt-1 truncate font-mono text-xs text-text-muted">
+                                {selectedProject.path}
+                              </div>
+                            </div>
+                            <StatusPill
+                              ready={Boolean(selectedProject.last_analyzed_at)}
+                              label={
+                                selectedProject.last_analyzed_at
+                                  ? t("workspace.graphReady", "Ready")
+                                  : t("workspace.notAnalyzed", "Not analyzed")
+                              }
+                            />
                           </div>
-                          <div className="mt-2 text-xs text-text-muted">
-                            {formatDate(project.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
+
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            <div className="rounded-md bg-root px-3 py-2">
+                              <div className="text-xs text-text-muted">
+                                {t("workspace.lastAnalyzed", "Last analyzed")}
+                              </div>
+                              <div className="mt-1 text-sm text-text-primary">
+                                {formatDate(selectedProject.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
+                              </div>
+                            </div>
+                            <div className="rounded-md bg-root px-3 py-2">
+                              <div className="text-xs text-text-muted">
+                                {t("workspace.autoUpdate", "Auto update")}
+                              </div>
+                              <div className="mt-1 text-sm text-text-primary">
+                                {selectedProject.auto_update ? t("common.on", "On") : t("common.off", "Off")}
+                              </div>
+                            </div>
                           </div>
-                          {projectJob && (
-                            <div className="mt-2 truncate rounded-md bg-root px-2 py-1.5 text-xs text-text-secondary">
-                              {recentActivity(projectJob)}
+
+                          {focusedJob && (
+                            <div className="mt-4 rounded-md border border-border-subtle bg-root p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold text-text-primary">
+                                    {focusedJob.progress?.label || focusedJob.kind}
+                                  </div>
+                                  <div className="mt-1 truncate text-xs text-text-muted">
+                                    {recentActivity(focusedJob)}
+                                  </div>
+                                </div>
+                                <span className="shrink-0 rounded-full bg-elevated px-2 py-1 text-[11px] font-semibold text-accent">
+                                  {focusedJob.status}
+                                </span>
+                              </div>
+                              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-elevated">
+                                <div
+                                  className="h-full rounded-full bg-accent transition-[width]"
+                                  style={{ width: `${Math.round(focusedJob.progress?.percent ?? 0)}%` }}
+                                />
+                              </div>
+                              {jobRefreshNotice && focusedJob.job_id === currentJobId && (
+                                <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-2 text-xs text-text-muted">
+                                  {jobRefreshNotice}
+                                </div>
+                              )}
                             </div>
                           )}
-                          <div className="mt-3 flex flex-wrap gap-2">
+
+                          <div className="mt-4 flex flex-wrap gap-2">
                             <button
                               type="button"
-                              onClick={() => onOpenProject(projectParamsFromProject(project))}
-                              className="rounded-md bg-accent px-3 py-2 text-xs font-semibold text-root transition-[filter,opacity] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                              onClick={() => onOpenProject(projectParamsFromProject(selectedProject))}
+                              className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                             >
-                              {t("common.open", "Open")}
+                              {t("workspace.openGraph", "Open graph")}
                             </button>
                             <button
                               type="button"
-                              onClick={() => void restartProject(project)}
-                              disabled={!canRestartProject}
-                              className="rounded-md border border-border-medium bg-root px-3 py-2 text-xs font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                              onClick={() => void restartProject(selectedProject)}
+                              disabled={
+                                !projectAnalysisTarget(selectedProject) ||
+                                starting ||
+                                Boolean(subagentError) ||
+                                !subagentsReady ||
+                                !computerUseReady ||
+                                !localRuntimeReady ||
+                                (looksLikeGitHubTarget(projectAnalysisTarget(selectedProject)) &&
+                                  runtimeReadiness?.github_analysis_ready === false)
+                              }
+                              className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                             >
                               {t("workspace.reanalyzeProject", "Reanalyze")}
                             </button>
                             <button
                               type="button"
-                              onClick={() => void deleteProject(project)}
-                              disabled={deleting || projectActive}
-                              className="rounded-md border border-red-700/60 bg-red-900/20 px-3 py-2 text-xs font-semibold text-red-200 transition-colors hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+                              onClick={() => void loadIgnoreRules(selectedProject)}
+                              className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                             >
-                              {deleting
+                              {t("workspace.scanRules", "Scan rules")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteProject(selectedProject)}
+                              disabled={
+                                deletingProjectId === selectedProject.project_id ||
+                                isActiveJob(selectedProjectJob)
+                              }
+                              className="rounded-md border border-red-700/60 bg-red-900/20 px-3 py-2 text-sm font-semibold text-red-200 transition-colors hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+                            >
+                              {deletingProjectId === selectedProject.project_id
                                 ? t("workspace.deletingProject", "Deleting")
                                 : t("workspace.deleteProject", "Delete")}
                             </button>
                           </div>
+
+                          {ignorePanelOpen && (
+                            <div className="mt-4 rounded-md border border-border-subtle bg-root p-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-semibold text-text-primary">
+                                    {t("workspace.scanRulesTitle", "Scan exclusion rules")}
+                                  </div>
+                                  <div className="mt-1 text-xs leading-relaxed text-text-muted">
+                                    {ignorePayload?.exists
+                                      ? t("workspace.scanRulesExisting", "These rules are active for the next scan.")
+                                      : t("workspace.scanRulesSuggested", "These are commented suggestions. Save only the rules you want to activate.")}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setIgnorePanelOpen(false)}
+                                  className="rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                >
+                                  {t("common.close", "Close")}
+                                </button>
+                              </div>
+                              {ignoreLoading ? (
+                                <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-3 text-sm text-text-secondary">
+                                  {t("common.loading", "Loading")}
+                                </div>
+                              ) : (
+                                <>
+                                  <textarea
+                                    value={ignoreContent}
+                                    onChange={(event) => setIgnoreContent(event.target.value)}
+                                    rows={10}
+                                    className="mt-3 w-full rounded-md border border-border-subtle bg-elevated px-3 py-2 font-mono text-xs leading-relaxed text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                  />
+                                  {ignoreError && (
+                                    <div className="mt-2 text-sm text-red-200">
+                                      {ignoreError}
+                                    </div>
+                                  )}
+                                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => void saveIgnoreRules()}
+                                      disabled={ignoreSaving}
+                                      className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                    >
+                                      {ignoreSaving
+                                        ? t("workspace.savingScanRules", "Saving")
+                                        : t("workspace.saveScanRules", "Save scan rules")}
+                                    </button>
+                                    <span className="truncate font-mono text-xs text-text-muted">
+                                      {ignorePayload?.ignore_path}
+                                    </span>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="rounded-md border border-border-subtle bg-root p-4 text-sm text-text-secondary">
+                          {t("workspace.noProjects", "No registered projects yet. Add a local path or GitHub repository below to start analysis.")}
                         </div>
-                      );
-                    })}
+                      )}
+                    </div>
                   </div>
                 )}
               </Panel>

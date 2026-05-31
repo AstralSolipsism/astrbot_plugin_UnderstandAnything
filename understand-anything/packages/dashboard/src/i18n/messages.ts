@@ -113,7 +113,9 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
           workspace: {
             subtitle: "Plugin workspace",
             notAnalyzed: "Not analyzed",
-            jobEventInterrupted: "Job event stream interrupted.",
+            jobEventInterrupted: "Progress refresh is temporarily delayed.",
+            jobRefreshDelayed:
+              "Progress refresh is temporarily delayed. The job is still tracked by AstrBot.",
             analysisTracking: "Analysis Tracking",
             showRawLogs: "Show raw logs",
             hideRawLogs: "Hide raw logs",
@@ -187,11 +189,24 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             computerUseDashboardUses: "Dashboard uses",
             computerUseDefaultBadge: "Default",
             registeredProjects: "{count} registered",
-            noProjects: "No registered projects yet.",
+            noProjects:
+              "No registered projects yet. Add a local path or GitHub repository below to start analysis.",
+            graphReady: "Ready",
+            selectedProject: "Selected project",
+            lastAnalyzed: "Last analyzed",
+            openGraph: "Open graph",
+            scanRules: "Scan rules",
+            scanRulesTitle: "Scan exclusion rules",
+            scanRulesExisting: "These rules are active for the next scan.",
+            scanRulesSuggested:
+              "These are commented suggestions. Save only the rules you want to activate.",
+            saveScanRules: "Save scan rules",
+            savingScanRules: "Saving",
             analyzeProject: "Analyze Project",
             analyzeProjectDescription:
               "Start with a local project directory or GitHub repository URL. Finished jobs open directly into the graph view.",
-            projectsDescription: "Open a registered graph or start a new analysis above.",
+            projectsDescription:
+              "Open a registered graph, inspect the latest job, or start a new analysis.",
             currentJob: "Current job",
             gitUnavailable: "Git is unavailable on this AstrBot host.",
             projectTarget: "Project Target",
@@ -202,7 +217,13 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             githubProxyDescription:
               "Direct GitHub is tried first. If it fails with a network error, AstrBot falls back to bundled proxy presets.",
             fullAnalysis: "Full analysis",
+            fullAnalysisHelpLabel: "What does full analysis do?",
+            fullAnalysisHelp:
+              "Force this run to rebuild the whole graph from scratch. Leave it off to reuse the existing graph and analyze only changed files when possible.",
             autoUpdate: "Auto update",
+            autoUpdateHelpLabel: "What does auto update do?",
+            autoUpdateHelp:
+              "Save this project for background updates. It only runs when the plugin setting for the auto-update polling interval is set above 0 minutes; AstrBot then checks for new Git commits on that schedule.",
             starting: "Starting",
             startAnalysis: "Start Analysis"
           },
@@ -664,7 +685,9 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
           workspace: {
             subtitle: "插件工作区",
             notAnalyzed: "尚未分析",
-            jobEventInterrupted: "Job 事件流已中断。",
+            jobEventInterrupted: "进度刷新暂时受影响。",
+            jobRefreshDelayed:
+              "进度刷新暂时受影响。任务仍由 AstrBot 继续跟踪。",
             analysisTracking: "分析追踪",
             showRawLogs: "显示原始日志",
             hideRawLogs: "隐藏原始日志",
@@ -735,11 +758,21 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             computerUseDashboardUses: "Dashboard 使用",
             computerUseDefaultBadge: "默认",
             registeredProjects: "已注册 {count} 个",
-            noProjects: "还没有注册项目。",
+            noProjects: "还没有注册项目。请在下方添加本地路径或 GitHub 仓库并开始分析。",
+            graphReady: "可查看",
+            selectedProject: "当前项目",
+            lastAnalyzed: "最近分析",
+            openGraph: "进入图谱",
+            scanRules: "扫描规则",
+            scanRulesTitle: "扫描排除规则",
+            scanRulesExisting: "这些规则会在下次扫描时生效。",
+            scanRulesSuggested: "这些是注释状态的建议。只保存你需要启用的规则。",
+            saveScanRules: "保存扫描规则",
+            savingScanRules: "保存中",
             analyzeProject: "分析项目",
             analyzeProjectDescription:
               "输入本地项目目录或 GitHub 仓库 URL；分析完成后会直接打开图谱视图。",
-            projectsDescription: "打开已注册图谱，或在上方启动新的分析。",
+            projectsDescription: "打开已注册图谱、查看最近任务，或启动新的分析。",
             currentJob: "当前任务",
             gitUnavailable: "当前 AstrBot 主机无法使用 Git。",
             projectTarget: "项目目标",
@@ -750,7 +783,13 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             githubProxyDescription:
               "优先直连 GitHub；如果出现网络错误，AstrBot 会自动切换内置代理预设。",
             fullAnalysis: "完整分析",
+            fullAnalysisHelpLabel: "完整分析有什么作用？",
+            fullAnalysisHelp:
+              "强制本次从头重建完整图谱。关闭时会尽量复用已有图谱，并在可行时只分析变更文件。",
             autoUpdate: "自动更新",
+            autoUpdateHelpLabel: "自动更新有什么作用？",
+            autoUpdateHelp:
+              "为该项目保存后台更新设置。还需要在插件配置里把自动更新轮询间隔设置为大于 0 的分钟数；之后 AstrBot 会按该间隔检查新的 Git commit，并自动启动增量分析。",
             starting: "启动中",
             startAnalysis: "开始分析"
           },
@@ -1211,7 +1250,9 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
           workspace: {
             subtitle: "Рабочая область плагина",
             notAnalyzed: "Не анализировалось",
-            jobEventInterrupted: "Поток событий job прерван.",
+            jobEventInterrupted: "Обновление прогресса временно задерживается.",
+            jobRefreshDelayed:
+              "Обновление прогресса временно задерживается. AstrBot продолжает отслеживать задачу.",
             analysisTracking: "Analysis Tracking",
             showRawLogs: "Show raw logs",
             hideRawLogs: "Hide raw logs",
@@ -1285,11 +1326,24 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             computerUseDashboardUses: "Dashboard uses",
             computerUseDefaultBadge: "Default",
             registeredProjects: "Зарегистрировано: {count}",
-            noProjects: "Зарегистрированных проектов пока нет.",
+            noProjects:
+              "Зарегистрированных проектов пока нет. Добавьте локальный путь или GitHub-репозиторий ниже и запустите анализ.",
+            graphReady: "Готов",
+            selectedProject: "Выбранный проект",
+            lastAnalyzed: "Последний анализ",
+            openGraph: "Открыть граф",
+            scanRules: "Правила сканирования",
+            scanRulesTitle: "Правила исключения сканирования",
+            scanRulesExisting: "Эти правила активны для следующего сканирования.",
+            scanRulesSuggested:
+              "Это закомментированные предложения. Сохраните только правила, которые хотите активировать.",
+            saveScanRules: "Сохранить правила",
+            savingScanRules: "Сохранение",
             analyzeProject: "Анализ проекта",
             analyzeProjectDescription:
               "Start with a local project directory or GitHub repository URL. Finished jobs open directly into the graph view.",
-            projectsDescription: "Open a registered graph or start a new analysis above.",
+            projectsDescription:
+              "Откройте зарегистрированный граф, проверьте последнюю задачу или запустите новый анализ.",
             currentJob: "Current job",
             gitUnavailable: "Git недоступен на этом хосте AstrBot.",
             projectTarget: "Цель проекта",
@@ -1300,7 +1354,13 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             githubProxyDescription:
               "Direct GitHub is tried first. If it fails with a network error, AstrBot falls back to bundled proxy presets.",
             fullAnalysis: "Полный анализ",
+            fullAnalysisHelpLabel: "Что делает полный анализ?",
+            fullAnalysisHelp:
+              "Принудительно перестраивает весь граф с нуля для этого запуска. Если выключено, существующий граф переиспользуется, а измененные файлы анализируются инкрементально, когда это возможно.",
             autoUpdate: "Автообновление",
+            autoUpdateHelpLabel: "Что делает автообновление?",
+            autoUpdateHelp:
+              "Сохраняет проект для фоновых обновлений. Оно запускается только если в настройках плагина интервал автообновления больше 0 минут; затем AstrBot проверяет новые Git commits по этому расписанию.",
             starting: "Запуск",
             startAnalysis: "Запустить анализ"
           },

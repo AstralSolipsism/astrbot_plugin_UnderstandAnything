@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { JobSnapshot, ProjectSummary } from "../astrbotBridge";
 import {
   isActiveJob,
+  isTerminalJob,
+  isTerminalJobStatus,
   jobForProject,
   projectAnalysisTarget,
   recentActivity,
@@ -55,6 +57,9 @@ describe("dashboard job tracking helpers", () => {
     expect(jobForProject(project, [job("j1", "running", "p1")])?.job_id).toBe("j1");
     expect(isActiveJob(job("j-confirm", "waiting_confirmation", "p1"))).toBe(true);
     expect(isActiveJob(job("j2", "failed", "p1"))).toBe(false);
+    expect(isTerminalJob(job("j2", "failed", "p1"))).toBe(true);
+    expect(isTerminalJobStatus("finished")).toBe(true);
+    expect(isTerminalJobStatus("running")).toBe(false);
   });
 
   it("uses raw logs first and structured progress as recent activity", () => {
