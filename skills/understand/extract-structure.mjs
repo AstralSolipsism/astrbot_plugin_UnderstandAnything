@@ -19,7 +19,7 @@
 import { createRequire } from 'node:module';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // skills/understand/ -> plugin root is two dirs up
@@ -134,6 +134,9 @@ async function main() {
   };
 
   writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+  if (!existsSync(outputPath)) {
+    throw new Error(`output file missing after write: ${outputPath}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,11 +306,24 @@ export function buildResult(file, totalLines, nonEmptyLines, analysis, callGraph
 // ---------------------------------------------------------------------------
 // Run only when executed directly as a CLI; importing the module (e.g. from
 // tests) must not trigger main().
+//
+// Canonicalize both sides through realpathSync. Node ESM resolves
+// import.meta.url through symlinks but pathToFileURL(process.argv[1]) preserves
+// them, so a raw equality check silently no-ops when the script is invoked via
+// a symlinked plugin install path.
 // ---------------------------------------------------------------------------
-const isCli =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+function isCliEntry() {
+  if (!process.argv[1]) return false;
+  try {
+    const modulePath = realpathSync(fileURLToPath(import.meta.url));
+    const argvPath = realpathSync(process.argv[1]);
+    return modulePath === argvPath;
+  } catch {
+    return false;
+  }
+}
 
-if (isCli) {
+if (isCliEntry()) {
   try {
     await main();
   } catch (err) {
