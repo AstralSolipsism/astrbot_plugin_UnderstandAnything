@@ -80,18 +80,28 @@ export interface IgnoreFilter {
  *
  * Pattern load order (later entries can override earlier ones via ! negation):
  * 1. Hardcoded defaults
- * 2. .understand-anything/.understandignore (if exists)
+ * 2. graphRoot/.understandignore or .understand-anything/.understandignore
  * 3. .understandignore at project root (if exists)
  */
-export function createIgnoreFilter(projectRoot: string): IgnoreFilter {
+export function createIgnoreFilter(
+  projectRoot: string,
+  graphRoot = join(projectRoot, ".understand-anything"),
+): IgnoreFilter {
   const ig: Ignore = ignore();
 
   // Layer 1: hardcoded defaults
   ig.add(DEFAULT_IGNORE_PATTERNS);
 
-  // Layer 2: .understand-anything/.understandignore
+  // Layer 2: graph output .understandignore
+  const graphIgnorePath = join(graphRoot, ".understandignore");
+  if (existsSync(graphIgnorePath)) {
+    const content = readFileSync(graphIgnorePath, "utf-8");
+    ig.add(content);
+  }
+
+  // Layer 2.5: legacy/default project graph path for non-AstrBot callers
   const projectIgnorePath = join(projectRoot, ".understand-anything", ".understandignore");
-  if (existsSync(projectIgnorePath)) {
+  if (projectIgnorePath !== graphIgnorePath && existsSync(projectIgnorePath)) {
     const content = readFileSync(projectIgnorePath, "utf-8");
     ig.add(content);
   }

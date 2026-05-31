@@ -108,6 +108,22 @@ describe("IgnoreFilter", () => {
       expect(filter.isIgnored("src/index.ts")).toBe(false);
     });
 
+    it("reads patterns from an explicit graph root", () => {
+      const graphRoot = join(tmpdir(), `ignore-filter-graph-${Date.now()}`);
+      mkdirSync(graphRoot, { recursive: true });
+      try {
+        writeFileSync(
+          join(graphRoot, ".understandignore"),
+          "generated/\n"
+        );
+        const filter = createIgnoreFilter(testDir, graphRoot);
+        expect(filter.isIgnored("generated/client.ts")).toBe(true);
+        expect(filter.isIgnored("src/index.ts")).toBe(false);
+      } finally {
+        rmSync(graphRoot, { recursive: true, force: true });
+      }
+    });
+
     it("handles # comments and blank lines", () => {
       writeFileSync(
         join(testDir, ".understand-anything", ".understandignore"),

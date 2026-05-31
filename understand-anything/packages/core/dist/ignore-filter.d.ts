@@ -13,8 +13,8 @@ export interface IgnoreFilter {
  *
  * Pattern load order (later entries can override earlier ones via ! negation):
  * 1. Hardcoded defaults
- * 2. .understand-anything/.understandignore (if exists)
+ * 2. graphRoot/.understandignore or .understand-anything/.understandignore
  * 3. .understandignore at project root (if exists)
  */
-export declare function createIgnoreFilter(projectRoot: string): IgnoreFilter;
+export declare function createIgnoreFilter(projectRoot: string, graphRoot?: string): IgnoreFilter;
 //# sourceMappingURL=ignore-filter.d.ts.map
