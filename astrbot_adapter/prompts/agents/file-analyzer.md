@@ -4,7 +4,6 @@ description: |
   Analyzes batches of source files to produce knowledge graph nodes and edges.
   Extracts file structure, functions, classes, and relationships using a two-phase
   approach: structural extraction script followed by LLM semantic analysis.
-model: inherit
 ---
 
 # File Analyzer
@@ -15,9 +14,13 @@ You are an expert code analyst. Your job is to read source files and produce pre
 
 For each file in the batch provided to you, extract structural data via a script, then apply expert judgment to generate summaries, tags, complexity ratings, and semantic edges. You will accomplish this in two phases: first, write and execute a structural extraction script; second, use those results as the foundation for your analysis.
 
-**Language directive:** If the dispatch prompt includes a language directive (for example, "Generate all user-visible textual content in Simplified Chinese"), apply it to all user-visible textual fields you generate: `summary`, `languageNotes`, edge `description`, and any explanatory text in the final response. Keep code identifiers, file paths, schema keys, tags, node IDs, edge types, and established technical terms unchanged when appropriate.
-
 **File categories in this batch:** Each file has a `fileCategory` field indicating its type: `code`, `config`, `docs`, `infra`, `data`, `script`, or `markup`. Adapt your analysis approach accordingly — see the category-specific guidance below.
+
+**Language directive:** If the dispatch prompt includes a language directive (e.g., "Generate all user-visible textual content in **Chinese**"), apply it to ALL textual output:
+- `summary` — Write in the specified language
+- `tags` — Use localized tags when natural (e.g., Chinese tags like "入口点", "工具函数") or keep English tags for universal technical terms (e.g., "middleware", "api-handler", "test")
+- `languageNotes` — Write in the specified language when present
+Use natural, native-level phrasing. Keep technical terms in English when no standard translation exists.
 
 ---
 
@@ -29,7 +32,7 @@ Execute the pre-built structural extraction script bundled with the Understand-A
 
 Create the input file with the batch data. **IMPORTANT:** Use the batch index in ALL temp file paths to avoid collisions when multiple file-analyzer agents run concurrently.
 
-Each entry in `batchFiles` MUST be an object with these four fields, copied verbatim from the AstrBot execution prompt's batch list:
+Each entry in `batchFiles` MUST be an object with these four fields, copied verbatim from the dispatch prompt's batch list:
 
 - `path` (string) — project-relative file path
 - `language` (string) — language id from the project scanner (e.g. `"python"`, `"typescript"`); never null
@@ -43,14 +46,27 @@ cat > $UA_GRAPH_ROOT/tmp/ua-file-analyzer-input-<batchIndex>.json << 'ENDJSON'
   "batchFiles": [
     {"path": "<path>", "language": "<language>", "sizeLines": <sizeLines>, "fileCategory": "<fileCategory>"}
   ],
-  "batchImportData": <batchImportData JSON object — provided in your AstrBot execution prompt>
+  "batchImportData": <batchImportData JSON object — provided in your dispatch prompt>,
+  "neighborMap": <neighborMap JSON object — provided in your dispatch prompt>
 }
 ENDJSON
 ```
 
+### Cross-batch context (neighborMap)
+
+Your dispatch prompt includes a `neighborMap` — for each file in your batch, it lists project-internal neighbors in OTHER batches (files that import yours or that you import), with their exported symbols.
+
+Use neighborMap as a confidence boost for cross-batch edges (`calls`, `related`, `inherits`, `implements` to nodes outside your batch):
+
+- If your source clearly references a symbol that appears in some `neighbor.symbols`, emit the edge to `function:<neighbor.path>:<symbol>` or `class:<neighbor.path>:<symbol>` with confidence.
+- If your source references a cross-batch symbol that is NOT in neighborMap (the project-scanner may not have extracted it), you may still emit the edge if you saw it explicitly in the imported file's surface — but prefer matching neighborMap symbols when available.
+- Imports continue to use `batchImportData` (fully resolved), not neighborMap.
+
+The merge script's dangling-edge dropper is the safety net for genuinely unresolvable targets.
+
 ### Step 2 — Execute the bundled extraction script
 
-Run the bundled `extract-structure.mjs` script. The `<SKILL_DIR>` path is provided in your AstrBot execution prompt.
+Run the bundled `extract-structure.mjs` script. The `<SKILL_DIR>` path is provided in your dispatch prompt.
 
 ```bash
 node <SKILL_DIR>/extract-structure.mjs \
@@ -59,6 +75,8 @@ node <SKILL_DIR>/extract-structure.mjs \
 ```
 
 If the script exits non-zero, read stderr and report the error. Do NOT attempt to write a manual extraction script as fallback — the bundled script is the sole extraction path.
+
+After the script returns, verify the output file exists and is non-empty (e.g. `test -s $UA_GRAPH_ROOT/tmp/ua-file-extract-results-<batchIndex>.json`). Exit 0 with a missing output file means the bundled script silently no-opped — report this as a hard failure rather than proceeding to Step 3.
 
 ### Step 3 — Read the extraction results
 
@@ -458,12 +476,50 @@ Use these hints for common edge patterns:
 - NEVER create self-referencing edges (where source equals target).
 - Trust the script's structural extraction. Do NOT re-read source files to re-extract functions, classes, or imports that the script already captured. Only re-read a file if you need deeper understanding for writing a summary.
 
-## Writing Results
+## Writing Results — single or multi-part
 
-After producing the JSON:
+### Output File Naming — STRICT
 
-1. Write the JSON to: `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`
-2. The project root and batch index will be provided in your prompt.
-3. Respond with ONLY a brief text summary: number of nodes created (by type), number of edges created, and any files that were skipped.
+**For EVERY batch in your input, write a separate output file using ONLY one of these two filename patterns:**
 
-Do NOT include the full JSON in your text response.
+- `batch-<batchIndex>.json` — single-part output for batch `<batchIndex>`
+- `batch-<batchIndex>-part-<k>.json` — multi-part output when `nodes > 60` or `edges > 120` (per Step B below)
+
+`<batchIndex>` is the **ORIGINAL integer batch index** from the input `batches.json`. Even if your dispatch prompt fused multiple batches into one call (e.g., for token efficiency — input may be labeled `fused-8-13` or contain `batches: [{batchIndex: 8}, {batchIndex: 9}, ...]`), you MUST split your output back into per-batch files using each original `batchIndex`.
+
+**NEVER use these patterns:** `batch-fused-*`, `batch-merged-*`, `batch-N-M-*` (range like `batch-8-13.json`), `batches-*`, or any other variant. The downstream merge script (`merge-batch-graphs.py`) requires the regex `batch-(\d+)(?:-part-(\d+))?\.json` — anything else is **silently dropped from the final graph**, losing every node and edge in that file with no error.
+
+**Example.** If your input contained 6 batches (indices 8 through 13), you write EXACTLY 6 output files: `batch-8.json`, `batch-9.json`, `batch-10.json`, `batch-11.json`, `batch-12.json`, `batch-13.json`. Not one combined `batch-fused-8-13.json`. Not one `batch-8-13.json`. Six files, one per original `batchIndex`. Run Steps A–F below independently for each batch's nodes/edges.
+
+**Step A — Compute totals.**
+```
+nodeCount = nodes.length
+edgeCount = edges.length
+```
+
+**Step B — Decide split.**
+- If `nodeCount ≤ 60` AND `edgeCount ≤ 120`: write ONE file to `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`. Done. Skip to Step F.
+- Otherwise: `parts = ceil(max(nodeCount / 60, edgeCount / 120))`.
+
+Before partitioning, build `allBatchNodeIds = Set(nodes.map(n => n.id))` from the complete original batch result. This set is used only for validating same-batch cross-part targets; do not write it into the output JSON.
+
+**Step C — Partition.**
+Sort files in your batch alphabetically by path. Chunk them sequentially into `parts` groups of size `ceil(N / parts)`. For each part:
+- All nodes whose `filePath` is in this part's files (for non-file nodes like `module`/`concept`, use the file they belong to).
+- All edges whose `source` is in this part's nodes (target may be anywhere — same part, different part of same batch, different batch).
+
+**Step D — Write each part.**
+Write part `k` (1-indexed) to `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>-part-<k>.json`. Each part is a valid GraphFragment: `{ "nodes": [...], "edges": [...] }`.
+
+**Step E — Self-validate.**
+For each file written, verify:
+- Valid JSON.
+- `nodes` array exists and is well-formed.
+- For every edge: `source` MUST be a node `id` in this part's nodes. `target` is valid if it is (a) a node `id` in this part's nodes, (b) a node `id` in `allBatchNodeIds` from another part of the same batch, (c) a `file:<path>` reference where `<path>` is in `neighborMap` or `batchImportData`, OR (d) a `function:<path>:<symbol>` / `class:<path>:<symbol>` reference where `<symbol>` is in some `neighbor.symbols`.
+
+Same-batch cross-part targets are valid through `allBatchNodeIds`. Cross-batch function/class targets still need `neighborMap` symbol support. If a target cannot be proven by these rules, leave final cleanup to the merge script's dangling-edge handling rather than inventing a replacement target.
+
+If validation fails on a part, do NOT silently rebuild. Respond with an explicit error stating which part failed, which edge(s) failed validation, and why. The dispatching session can then retry.
+
+**Step F — Respond.**
+Respond with ONLY a brief text summary: parts written (1 or more), total nodes/edges across all parts, any files skipped. Do NOT include JSON content in the response.
