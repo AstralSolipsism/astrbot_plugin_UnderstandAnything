@@ -49,6 +49,26 @@ from astrbot_adapter.subagent_registry import (
 from astrbot_adapter.web_api import UnderstandAnythingWebApi
 
 
+def _sample_fingerprints(commit: str = "abc") -> dict[str, object]:
+    return {
+        "version": "1.0.0",
+        "gitCommitHash": commit,
+        "generatedAt": "2026-03-14T00:00:00.000Z",
+        "files": {
+            "src/index.ts": {
+                "filePath": "src/index.ts",
+                "contentHash": "deadbeef",
+                "functions": [],
+                "classes": [],
+                "imports": [],
+                "exports": [],
+                "totalLines": 1,
+                "hasStructuralAnalysis": False,
+            }
+        },
+    }
+
+
 def test_plugin_main_uses_package_relative_adapter_imports() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
@@ -433,7 +453,8 @@ async def test_runner_source_message_uses_project_status_ref_not_job_id(
     message = runner.format_job_source_started_message(job)
 
     assert "正在获取源码：AstrBot" in message
-    assert "确认扫描范围后才会开始生成图谱" in message
+    assert "源码准备完成后将进入分析流程" in message
+    assert "确认扫描范围" not in message
     assert "已开始分析" not in message
     assert "/understand status AstrBot" in message
     assert job.job_id not in message
@@ -471,13 +492,14 @@ async def test_runner_sends_source_notification_before_background_task(
 
     assert events[0].startswith("send:正在获取源码：project")
     assert "已开始分析" not in events[0]
-    assert "确认扫描范围后才会开始生成图谱" in events[0]
+    assert "源码准备完成后将进入分析流程" in events[0]
+    assert "确认扫描范围" not in events[0]
     assert events[1] == "run"
     assert job.args["started_notification_sent"] is True
 
 
 @pytest.mark.asyncio
-async def test_runner_tool_message_is_phase_safe_before_scope_confirmation(
+async def test_runner_tool_message_is_phase_safe_after_source_notification(
     tmp_path: Path,
 ) -> None:
     runner = UnderstandAnythingRunner(
@@ -495,8 +517,8 @@ async def test_runner_tool_message_is_phase_safe_before_scope_confirmation(
 
     banned = ["提交", "后台执行", "已开始分析", "submitted", "Started analysis"]
     assert "源码准备" in message
-    assert "确认扫描范围" in message
-    assert "确认后才开始生成图谱" in message
+    assert "确认扫描范围" not in message
+    assert "确认后才开始生成图谱" not in message
     for phrase in banned:
         assert phrase not in message
 
@@ -742,7 +764,7 @@ def test_structured_job_request_keeps_path_with_spaces(tmp_path: Path) -> None:
     assert parsed.flags == ["--full"]
 
 
-def test_runner_prompt_delegates_understandignore_confirmation_to_host(
+def test_runner_prompt_treats_understandignore_as_non_blocking(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -767,9 +789,10 @@ def test_runner_prompt_delegates_understandignore_confirmation_to_host(
 
     prompt = runner._build_skill_execution_prompt(job)
 
-    assert "host adapter handles `.understandignore` confirmation" in prompt
+    assert "Do not pause for `.understandignore` review or confirmation" in prompt
+    assert "bundled default ignore rules" in prompt
+    assert "host adapter handles `.understandignore` confirmation" not in prompt
     assert "non-interactive AstrBot host run" not in prompt
-    assert "Do not pause for `.understandignore` review" not in prompt
     assert "Generate all user-visible textual content in Simplified Chinese" in prompt
     assert "Keep code identifiers, file paths, schema keys, tags" in prompt
 
@@ -893,11 +916,13 @@ def test_ignore_review_generates_confirmation_from_project_scan(tmp_path: Path) 
     assert "node_modules/" not in confirmation["summary"]["gitignore_patterns"]
     assert "tests" in confirmation["summary"]["detected_dirs"]
     assert "*.test.*" in confirmation["summary"]["test_file_patterns"]
-    assert "custom-cache/" in content
-    assert "tests/" in content
+    assert "# custom-cache/" in content
+    assert "# tests/" in content
+    assert "\ncustom-cache/" not in content
+    assert "\ntests/" not in content
 
 
-def test_ignore_review_existing_understandignore_still_requires_confirmation(
+def test_ignore_review_existing_understandignore_is_loaded_for_advanced_review(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -1699,12 +1724,10 @@ async def test_runner_understandignore_prompt_uses_context_proactive_send(
 
 
 @pytest.mark.asyncio
-async def test_runner_github_notifications_follow_source_confirmation_agent_order(
+async def test_runner_github_notifications_start_agent_without_scope_confirmation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from astrbot.core.utils.session_waiter import SessionWaiter
-
     class DummyDispatcher:
         async def run_with_local_tools(self, **kwargs):
             marker = "UA graph output root:\n"
@@ -1713,6 +1736,14 @@ async def test_runner_github_notifications_follow_source_confirmation_agent_orde
             graph_root.mkdir(parents=True, exist_ok=True)
             (graph_root / "knowledge-graph.json").write_text(
                 json.dumps({"project": {"name": "AstrBot"}, "nodes": [], "edges": []}),
+                encoding="utf-8",
+            )
+            (graph_root / "meta.json").write_text(
+                json.dumps({"gitCommitHash": "abc"}),
+                encoding="utf-8",
+            )
+            (graph_root / "fingerprints.json").write_text(
+                json.dumps(_sample_fingerprints("abc")),
                 encoding="utf-8",
             )
             return "analysis complete"
@@ -1769,46 +1800,22 @@ async def test_runner_github_notifications_follow_source_confirmation_agent_orde
         unified_msg_origin="webchat:FriendMessage:session-1",
         message_str="/understand analyze https://github.com/AstrBotDevs/AstrBot",
     )
-    replies: list[str] = []
-
-    async def reply_send(message):
-        replies.append(message.get_plain_text())
-
-    reply_event = SimpleNamespace(
-        unified_msg_origin=event.unified_msg_origin,
-        message_str="continue",
-        send=reply_send,
-        stop_event=lambda: None,
-    )
-
     job = await runner.start_skill_job(
         skill_name="understand",
         repo_url="https://github.com/AstrBotDevs/AstrBot",
         event=event,  # type: ignore[arg-type]
     )
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        snapshot = runner.jobs.get(job.job_id)
-        if snapshot and snapshot.status is JobStatus.WAITING_CONFIRMATION:
-            break
-    else:
-        runner._tasks[job.job_id].cancel()
-        await asyncio.gather(runner._tasks[job.job_id], return_exceptions=True)
-        pytest.fail("Job did not enter scan scope confirmation.")
-
-    await SessionWaiter.trigger(event.unified_msg_origin, reply_event)  # type: ignore[arg-type]
     await runner._tasks[job.job_id]
 
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FINISHED
     assert messages[0].startswith("正在获取源码：AstrBot")
-    assert "已开始分析" not in "\n".join(messages[:2])
-    confirmation_index = next(
-        index for index, message in enumerate(messages) if "扫描范围确认：AstrBot" in message
-    )
     agent_index = next(
         index for index, message in enumerate(messages) if "开始生成图谱：AstrBot" in message
     )
-    assert 0 < confirmation_index < agent_index
-    assert any("已确认，开始分析。" in reply for reply in replies)
+    assert 0 < agent_index
+    assert "扫描范围确认：AstrBot" not in "\n".join(messages)
 
 
 @pytest.mark.asyncio
@@ -2424,6 +2431,44 @@ async def test_web_api_confirms_dashboard_understandignore_job(
     assert payload["status"] == "ok"
     assert payload["data"]["status"] == "cancelled"
     assert runner._confirmation_futures[cancel_job.job_id].done()
+
+
+@pytest.mark.asyncio
+async def test_web_api_ignore_rules_are_advanced_and_save_only(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    graph_root = project / ".understand-anything"
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(project, graph_root=graph_root)
+    runner = SimpleNamespace(config={}, registry=registry, jobs=JobStore())
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        f"/astrbot_plugin_UnderstandAnything/projects/ignore?project_id={record.project_id}",
+    ):
+        response = await api.project_ignore()
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["exists"] is False
+    assert "# tests/" in payload["data"]["content"]
+    assert not (graph_root / ".understandignore").exists()
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/projects/ignore",
+        method="POST",
+        json={"project_id": record.project_id, "content": "tests/\n"},
+    ):
+        response = await api.project_ignore()
+
+    payload = await response.get_json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["exists"] is True
+    assert payload["data"]["content"] == "tests/\n"
+    assert (graph_root / ".understandignore").read_text(encoding="utf-8") == "tests/\n"
 
 
 @pytest.mark.asyncio
@@ -3084,23 +3129,174 @@ async def test_runner_fails_graph_job_when_required_graph_is_missing(
     )
 
     task = asyncio.create_task(runner._run_skill_job(job, event=None))
-    for _ in range(100):
-        await asyncio.sleep(0.01)
-        snapshot = runner.jobs.get(job.job_id)
-        if snapshot and snapshot.status is JobStatus.WAITING_CONFIRMATION:
-            break
-    else:
-        pytest.fail("Job did not enter .understandignore confirmation.")
-    runner.confirm_job(job.job_id, action="continue", source="test")
     await task
 
     snapshot = runner.jobs.get(job.job_id)
     assert snapshot is not None
     assert snapshot.status is JobStatus.FAILED
     assert "knowledge-graph.json" in (snapshot.error or "")
+    assert "meta.json" in (snapshot.error or "")
+    assert "fingerprints.json" in (snapshot.error or "")
     assert "did not produce required graph file" in (snapshot.error or "")
-    assert (graph_root / ".understandignore").is_file()
+    assert not (graph_root / ".understandignore").exists()
     assert dispatcher.called is True
+
+
+def test_runner_rejects_fingerprints_with_mismatched_commit(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    graph_root = project_root / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    (graph_root / "knowledge-graph.json").write_text(
+        json.dumps({"project": {"name": "Demo"}, "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    (graph_root / "meta.json").write_text(
+        json.dumps({"gitCommitHash": "meta-commit"}),
+        encoding="utf-8",
+    )
+    (graph_root / "fingerprints.json").write_text(
+        json.dumps(_sample_fingerprints("fingerprint-commit")),
+        encoding="utf-8",
+    )
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {"graph_root": str(graph_root)},
+    )
+
+    with pytest.raises(RuntimeError, match="gitCommitHash must match meta.json"):
+        runner._validate_required_outputs(job)
+
+
+def test_runner_rejects_empty_fingerprint_files(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    graph_root = project_root / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    (graph_root / "knowledge-graph.json").write_text(
+        json.dumps({"project": {"name": "Demo"}, "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    (graph_root / "meta.json").write_text(
+        json.dumps({"gitCommitHash": "abc"}),
+        encoding="utf-8",
+    )
+    fingerprints = _sample_fingerprints("abc")
+    fingerprints["files"] = {}
+    (graph_root / "fingerprints.json").write_text(
+        json.dumps(fingerprints),
+        encoding="utf-8",
+    )
+    runner = UnderstandAnythingRunner(
+        context=None,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {"graph_root": str(graph_root)},
+    )
+
+    with pytest.raises(RuntimeError, match="files must be non-empty"):
+        runner._validate_required_outputs(job)
+
+
+def _run_build_fingerprints_script(
+    tmp_path: Path,
+    source_file_paths: list[str],
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    project_root = tmp_path / "project"
+    graph_root = tmp_path / "artifact" / ".understand-anything"
+    (project_root / "src").mkdir(parents=True)
+    (project_root / "src" / "index.ts").write_text(
+        "export function hello(name: string) { return name; }\n",
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "fingerprint-input.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "projectRoot": str(project_root),
+                "graphRoot": str(graph_root),
+                "sourceFilePaths": source_file_paths,
+                "gitCommitHash": "abc",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "node",
+            str(PLUGIN_ROOT / "skills" / "understand" / "build-fingerprints.mjs"),
+            str(input_path),
+            f"--graph-root={graph_root}",
+        ],
+        cwd=PLUGIN_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, project_root, graph_root
+
+
+def test_build_fingerprints_script_writes_to_graph_root(tmp_path: Path) -> None:
+    result, project_root, graph_root = _run_build_fingerprints_script(
+        tmp_path,
+        ["src/index.ts"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Fingerprints baseline: 1 files" in result.stdout
+    assert not (project_root / ".understand-anything" / "fingerprints.json").exists()
+    payload = json.loads(
+        (graph_root / "fingerprints.json").read_text(encoding="utf-8")
+    )
+    assert payload["gitCommitHash"] == "abc"
+    assert "src/index.ts" in payload["files"]
+
+
+@pytest.mark.parametrize(
+    ("source_file_paths", "expected_error"),
+    [
+        ([], "at least one file"),
+        (["../secret.ts"], "escapes project root"),
+        (["src/missing.ts"], "do not exist under projectRoot"),
+    ],
+)
+def test_build_fingerprints_script_rejects_invalid_sources(
+    tmp_path: Path,
+    source_file_paths: list[str],
+    expected_error: str,
+) -> None:
+    result, _project_root, graph_root = _run_build_fingerprints_script(
+        tmp_path,
+        source_file_paths,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert not (graph_root / "fingerprints.json").exists()
+
+
+def test_build_fingerprints_script_rejects_absolute_sources(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    absolute_source = project_root / "src" / "index.ts"
+    result, _project_root, graph_root = _run_build_fingerprints_script(
+        tmp_path,
+        [str(absolute_source)],
+    )
+
+    assert result.returncode != 0
+    assert "entry is absolute" in result.stderr
+    assert not (graph_root / "fingerprints.json").exists()
 
 
 @pytest.mark.asyncio
@@ -3153,6 +3349,8 @@ def test_conf_schema_exposes_subagent_parallelism_controls() -> None:
     assert schema["subagent_provider_id"]["_special"] == "select_provider"
     assert schema["cleanup_github_cache_after_analysis"]["default"] is False
     assert schema["github_command_timeout_seconds"]["default"] == 300
+    assert schema["auto_update_poll_interval"]["default"] == 0
+    assert "minutes" in schema["auto_update_poll_interval"]["description"].lower()
     assert schema["output_locale"]["default"] == "auto"
     assert schema["output_locale"]["options"] == ["auto", "zh-CN", "en-US", "ru-RU"]
     assert schema["output_locale"]["labels"] == [
@@ -3161,6 +3359,14 @@ def test_conf_schema_exposes_subagent_parallelism_controls() -> None:
         "English",
         "Russian",
     ]
+
+
+def test_auto_update_poll_interval_is_configured_in_minutes() -> None:
+    assert UnderstandAnythingRunner._auto_update_poll_seconds(0) == 0
+    assert UnderstandAnythingRunner._auto_update_poll_seconds("0") == 0
+    assert UnderstandAnythingRunner._auto_update_poll_seconds(1) == 60
+    assert UnderstandAnythingRunner._auto_update_poll_seconds("30") == 1800
+    assert UnderstandAnythingRunner._auto_update_poll_seconds("invalid") == 0
 
 
 def test_plugin_i18n_covers_config_page_and_dashboard_ui() -> None:
@@ -3230,6 +3436,25 @@ def test_ru_i18n_has_readable_output_locale_text() -> None:
     ]
 
 
+def test_dashboard_workspace_exposes_project_center_and_soft_job_refresh() -> None:
+    source = (
+        PLUGIN_ROOT
+        / "understand-anything"
+        / "packages"
+        / "dashboard"
+        / "src"
+        / "components"
+        / "AstrBotWorkspace.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "workspace.initialConfiguration" in source
+    assert "order-1 p-4 sm:p-5" in source
+    assert "workspace.selectedProject" in source
+    assert "projects/ignore" in source
+    assert "workspace.jobRefreshDelayed" in source
+    assert 'setError(t("workspace.jobEventInterrupted"' not in source
+
+
 def test_astrbot_internal_access_is_centralized() -> None:
     helper_path = PLUGIN_ROOT / "astrbot_adapter" / "astrbot_host.py"
     assert helper_path.is_file()
@@ -3279,6 +3504,23 @@ def test_skill_prompts_require_internal_subagent_tools() -> None:
     assert "$PROJECT_ROOT/.understand-anything/intermediate" not in domain
 
 
+def test_understand_skill_documents_incremental_and_review_fingerprint_flow() -> None:
+    understand = (PLUGIN_ROOT / "skills" / "understand" / "SKILL.md").read_text(
+        encoding="utf-8",
+    )
+
+    assert "$ANALYSIS_MODE" in understand
+    assert "## Phase 1 — SCAN (Full and incremental only)" in understand
+    assert "Run Phase 1 when `$ANALYSIS_MODE` is `full` or `incremental`" in understand
+    assert "--changed-files=\"$UA_GRAPH_ROOT/tmp/changed-files.txt\"" in understand
+    assert "Do not recompute batches in Phase 2" in understand
+    assert "preserve existing fingerprints" in understand
+    assert "sourceFilePaths` must contain the analyzed project-relative file paths" in understand
+    assert "build a fallback `sourceFilePaths` list from unique `filePath` values" in understand
+    assert "empty baseline, an absolute path, a `..` path, or a missing path" in understand
+    assert "Review-only cannot create fingerprints from the existing graph" in understand
+
+
 def test_agent_prompts_include_language_directives() -> None:
     required_agents = [
         "project-scanner",
@@ -3295,6 +3537,31 @@ def test_agent_prompts_include_language_directives() -> None:
         ).read_text(encoding="utf-8")
         assert "**Language directive:**" in prompt
         assert "Generate all user-visible textual content" in prompt
+
+
+def test_project_scanner_infers_infrastructure_frameworks_after_scan() -> None:
+    prompt = (
+        PLUGIN_ROOT / "astrbot_adapter" / "prompts" / "agents" / "project-scanner.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Do NOT infer Docker, Terraform, or CI frameworks in Step A" in prompt
+    assert "derive infrastructure frameworks from Step B's `files[]` only" in prompt
+    assert "`Dockerfile` or `Dockerfile.*` -> `Docker`" in prompt
+    assert "`docker-compose.yml` or `docker-compose.yaml` -> `Docker Compose`" in prompt
+    assert "any `*.tf` file -> `Terraform`" in prompt
+    assert "`.github/workflows/*.yml` or `.github/workflows/*.yaml` file -> `GitHub Actions`" in prompt
+    assert "Step A manifest frameworks plus Step B file-derived infrastructure frameworks" in prompt
+
+
+def test_file_analyzer_allows_same_batch_cross_part_targets() -> None:
+    prompt = (
+        PLUGIN_ROOT / "astrbot_adapter" / "prompts" / "agents" / "file-analyzer.md"
+    ).read_text(encoding="utf-8")
+
+    assert "allBatchNodeIds = Set(nodes.map(n => n.id))" in prompt
+    assert "same-batch cross-part targets" in prompt
+    assert "a node `id` in `allBatchNodeIds` from another part of the same batch" in prompt
+    assert "Cross-batch function/class targets still need `neighborMap` symbol support" in prompt
 
 
 class _NoToolManager:
@@ -3765,6 +4032,34 @@ def test_subagent_registry_uses_selected_provider_without_response_leak() -> Non
     assert "plugin-subagent-provider" not in json.dumps(payload, ensure_ascii=False)
 
 
+def test_subagent_registry_accepts_existing_provider_without_metadata() -> None:
+    config = _DummyConfig()
+    context = _RegistryContext(
+        config,
+        providers=[_DummyProvider("selected-provider", model="claude-sonnet-4-5")],
+    )
+    registry = UnderstandAnythingSubAgentRegistry(context, {})
+    asyncio.run(
+        registry.register_required_subagents(
+            provider_id="selected-provider",
+            provider_id_provided=True,
+        )
+    )
+    config["subagent_orchestrator"].pop("metadata")
+
+    status = registry.status_payload()
+
+    assert status["ready"] is True
+    assert status["stale_roles"] == []
+    assert status["provider_override_configured"] is True
+
+    payload = asyncio.run(registry.register_required_subagents())
+    agents = config["subagent_orchestrator"]["agents"]
+
+    assert payload["ready"] is True
+    assert all(agent["provider_id"] == "selected-provider" for agent in agents)
+
+
 def test_subagent_registry_rejects_unavailable_selected_provider() -> None:
     config = _DummyConfig()
     context = _RegistryContext(config, providers=[_DummyProvider("available")])
@@ -3985,6 +4280,120 @@ def test_mock_subagent_batches_feed_existing_merge_script(tmp_path: Path) -> Non
     )
     assert len(assembled["nodes"]) == 2
     assert {node["complexity"] for node in assembled["nodes"]} == {"simple"}
+
+
+def test_subagent_batch_output_accepts_part_files(tmp_path: Path) -> None:
+    intermediate = tmp_path / "graph" / "intermediate"
+    intermediate.mkdir(parents=True)
+    expected = intermediate / "batch-7.json"
+    part_1 = intermediate / "batch-7-part-1.json"
+    part_2 = intermediate / "batch-7-part-2.json"
+    invalid_part = intermediate / "batch-7-part-final.json"
+
+    async def fake_handoff(_handoff, _run_context, _tool_args):
+        part_2.write_text('{"nodes": [], "edges": []}', encoding="utf-8")
+        part_1.write_text('{"nodes": [], "edges": []}', encoding="utf-8")
+        invalid_part.write_text('{"nodes": [], "edges": []}', encoding="utf-8")
+        return "wrote parts"
+
+    dispatcher = UnderstandAnythingSubAgentDispatcher(
+        _DummyContext(),  # type: ignore[arg-type]
+        handoff_executor=fake_handoff,
+    )
+
+    result = asyncio.run(
+        dispatcher.run_batches(
+            _dummy_event(),  # type: ignore[arg-type]
+            role="file-analyzer",
+            batches=[
+                {
+                    "id": "7",
+                    "input": "batch 7",
+                    "expected_output_path": str(expected),
+                }
+            ],
+        )
+    )
+
+    assert result["status"] == "ok"
+    output = result["results"][0]["output"]
+    assert output["exists"] is True
+    assert output["output_mode"] == "parts"
+    assert output["part_files"] == [
+        str(part_1.resolve(strict=False)),
+        str(part_2.resolve(strict=False)),
+    ]
+
+
+def test_subagent_batch_output_ignores_non_numeric_part_files(
+    tmp_path: Path,
+) -> None:
+    intermediate = tmp_path / "graph" / "intermediate"
+    intermediate.mkdir(parents=True)
+    expected = intermediate / "batch-7.json"
+    invalid_part = intermediate / "batch-7-part-final.json"
+
+    async def fake_handoff(_handoff, _run_context, _tool_args):
+        invalid_part.write_text('{"nodes": [], "edges": []}', encoding="utf-8")
+        return "wrote invalid part"
+
+    dispatcher = UnderstandAnythingSubAgentDispatcher(
+        _DummyContext(),  # type: ignore[arg-type]
+        handoff_executor=fake_handoff,
+    )
+
+    result = asyncio.run(
+        dispatcher.run_batches(
+            _dummy_event(),  # type: ignore[arg-type]
+            role="file-analyzer",
+            batches=[
+                {
+                    "id": "7",
+                    "input": "batch 7",
+                    "expected_output_path": str(expected),
+                }
+            ],
+        )
+    )
+
+    assert result["status"] == "missing_output"
+    output = result["results"][0]["output"]
+    assert output["exists"] is False
+    assert "part_files" not in output
+
+
+def test_subagent_batch_output_still_reports_missing_without_file_or_parts(
+    tmp_path: Path,
+) -> None:
+    expected = tmp_path / "graph" / "intermediate" / "batch-8.json"
+    expected.parent.mkdir(parents=True)
+
+    async def fake_handoff(_handoff, _run_context, _tool_args):
+        return "no output"
+
+    dispatcher = UnderstandAnythingSubAgentDispatcher(
+        _DummyContext(),  # type: ignore[arg-type]
+        handoff_executor=fake_handoff,
+    )
+
+    result = asyncio.run(
+        dispatcher.run_batches(
+            _dummy_event(),  # type: ignore[arg-type]
+            role="file-analyzer",
+            batches=[
+                {
+                    "id": "8",
+                    "input": "batch 8",
+                    "expected_output_path": str(expected),
+                }
+            ],
+        )
+    )
+
+    assert result["status"] == "missing_output"
+    output = result["results"][0]["output"]
+    assert output["exists"] is False
+    assert "part_files" not in output
 
 
 def test_subagent_batches_stop_when_continue_on_error_is_false() -> None:
