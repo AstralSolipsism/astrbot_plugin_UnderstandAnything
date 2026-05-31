@@ -119,9 +119,14 @@ Determine whether to run a full analysis or incremental update.
    | Existing graph + unchanged commit hash | Ask the user: "The graph is up to date at this commit. Would you like to: **(a)** run a full rebuild (`--full`), **(b)** run the LLM graph reviewer (`--review`), or **(c)** do nothing?" Then follow their choice. If they pick (c), STOP. |
    | Existing graph + changed files | Incremental update (re-analyze changed files only) |
 
-   **Review-only path:** Copy the existing `knowledge-graph.json` to `$UA_GRAPH_ROOT/intermediate/assembled-graph.json`, then jump directly to Phase 6 step 3.
+   Set `$ANALYSIS_MODE` immediately after the decision:
+   - `full`: full rebuild (`--full`, missing graph, or missing meta)
+   - `incremental`: existing graph with changed files
+   - `review-only`: `--review` with an existing graph and unchanged commit hash
 
-   For incremental updates, get the changed file list:
+   **Review-only path:** Set `$ANALYSIS_MODE="review-only"`, copy the existing `knowledge-graph.json` to `$UA_GRAPH_ROOT/intermediate/assembled-graph.json`, then jump directly to Phase 6 step 3.
+
+   For incremental updates, set `$ANALYSIS_MODE="incremental"` and get the changed file list:
    ```bash
    git diff <lastCommitHash>..HEAD --name-only
    ```
@@ -141,17 +146,26 @@ Determine whether to run a full analysis or incremental update.
 
 ## Phase 0.5 — Ignore Configuration
 
-The AstrBot host adapter handles `.understandignore` generation, review, and user confirmation before this skill workflow starts.
+The AstrBot host adapter treats `.understandignore` as an optional advanced scan rule file. This phase is non-interactive.
 
-1. Use the existing `$UA_GRAPH_ROOT/.understandignore` as the confirmed scan scope.
-2. Do not ask the user to review `.understandignore` inside this skill.
+1. If `$UA_GRAPH_ROOT/.understandignore` or project-root `.understandignore` exists, use it as user-authored scan rules.
+2. If no user-authored file exists, continue with the bundled default ignore rules only.
+3. Do not generate, review, or ask the user to confirm `.understandignore` inside this skill workflow.
 3. Proceed directly to Phase 1.
 
 ---
 
-## Phase 1 — SCAN (Full analysis only)
+## Phase 1 — SCAN (Full and incremental only)
+
+Run Phase 1 when `$ANALYSIS_MODE` is `full` or `incremental`. Skip Phase 1 only when `$ANALYSIS_MODE` is `review-only`.
 
 Call `ua_run_subagent_role` with `role="project-scanner"`. Build the `input` from the project-scanner prompt context below and set `expected_output_path` to `$UA_GRAPH_ROOT/intermediate/scan-result.json`.
+
+The project-scanner SubAgent must use the bundled deterministic scripts in `<SKILL_DIR>`:
+- `scan-project.mjs` for file enumeration, language detection, category assignment, line counts, complexity, and `.understandignore` filtering
+- `extract-import-map.mjs` for project-internal import resolution
+
+Do not ask the SubAgent to write an ad-hoc scanner or import resolver.
 
 > **Additional context from main session:**
 >
@@ -171,6 +185,8 @@ Include these parameters in the SubAgent input:
 
 > Scan this project directory to discover all project files (including non-code files like configs, docs, infrastructure), detect languages and frameworks.
 > Project root: `$PROJECT_ROOT`
+> Graph output root: `$UA_GRAPH_ROOT`
+> Skill directory: `<SKILL_DIR>`
 > Write output to: `$UA_GRAPH_ROOT/intermediate/scan-result.json`
 
 After the SubAgent tool completes, read `$UA_GRAPH_ROOT/intermediate/scan-result.json` to get:
@@ -190,35 +206,48 @@ If the scan result includes `filteredByIgnore > 0`, report:
 
 ---
 
+## Phase 1.5 — BATCH
+
+Run the bundled semantic batching script for full and incremental modes. Skip Phase 1.5 only when `$ANALYSIS_MODE` is `review-only`.
+
+For `$ANALYSIS_MODE="full"`:
+
+```bash
+node <SKILL_DIR>/compute-batches.mjs "$PROJECT_ROOT" --graph-root="$UA_GRAPH_ROOT"
+```
+
+For `$ANALYSIS_MODE="incremental"`, first write the changed files captured in Phase 0 to `$UA_GRAPH_ROOT/tmp/changed-files.txt`, one project-relative path per line, then run:
+
+```bash
+node <SKILL_DIR>/compute-batches.mjs "$PROJECT_ROOT" \
+  --graph-root="$UA_GRAPH_ROOT" \
+  --changed-files="$UA_GRAPH_ROOT/tmp/changed-files.txt"
+```
+
+The script reads `$UA_GRAPH_ROOT/intermediate/scan-result.json` and writes `$UA_GRAPH_ROOT/intermediate/batches.json`. In incremental mode, `batches.json` contains only batches with changed files while preserving full-graph batch indexes and neighbor context.
+
+Capture stderr. Append any line starting with `Warning:` to `$PHASE_WARNINGS`. If the script exits non-zero, treat Phase 1.5 as a hard failure; do not fall back to manual batching.
+
+After the script completes, read `$UA_GRAPH_ROOT/intermediate/batches.json`. Store:
+- `$BATCHES` from `batches[]`
+- each batch's `batchImportData`
+- each batch's `neighborMap`
+
+---
+
 ## Phase 2 — ANALYZE
 
 ### Full analysis path
 
-Batch the file list from Phase 1 into groups of **20-30 files each** (aim for ~25 files per batch for balanced sizes).
+Load `$UA_GRAPH_ROOT/intermediate/batches.json` from Phase 1.5 and iterate the `batches[]` array. Do not re-batch manually.
 
-**Batching strategy for non-code files:**
-- Group related non-code files together in the same batch when possible:
-  - Dockerfile + docker-compose.yml + .dockerignore → same batch
-  - SQL migration files → same batch (ordered by filename)
-  - CI/CD config files (.github/workflows/*) → same batch
-  - Documentation files (docs/*.md) → same batch
-- This allows the file-analyzer to create cross-file edges (e.g., docker-compose `depends_on` Dockerfile)
-- Non-code files can be mixed with code files in the same batch if batch sizes are small
-- Each file's `fileCategory` from Phase 1 must be included in the batch file list
-
-For the file-analyzer phase, build one batch object per batch and call `ua_run_subagent_batches` with `role="file-analyzer"`, the `max_concurrency` value from AstrBot host rules, and `continue_on_error=true`. Each batch `input` must include the file-analyzer prompt context below and each `expected_output_path` must be `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`.
+For the file-analyzer phase, build one batch object per item in `batches[]` and call `ua_run_subagent_batches` with `role="file-analyzer"`, the max concurrency value from AstrBot host rules, and `continue_on_error=true`. Each batch `input` must include the file-analyzer prompt context below and each `expected_output_path` must be `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`.
 
 > **Additional context from main session:**
 >
 > Project: `<projectName>` — `<projectDescription>`
 > Languages: `<languages from Phase 1>`
-
-Before running each batch, construct `batchImportData` from `$IMPORT_MAP`:
-```json
-batchImportData = {}
-for each file in this batch:
-  batchImportData[file.path] = $IMPORT_MAP[file.path] ?? []
-```
+> `$LANGUAGE_DIRECTIVE`
 
 Fill in batch-specific parameters below inside each batch input:
 
@@ -230,9 +259,14 @@ Fill in batch-specific parameters below inside each batch input:
 > Skill directory (for bundled scripts): `<SKILL_DIR>`
 > Write output to: `$UA_GRAPH_ROOT/intermediate/batch-<batchIndex>.json`
 >
-> Pre-resolved import data for this batch (use this for all import edge creation — do NOT re-resolve imports from source):
+> Pre-resolved import data for this batch (use directly — do NOT re-resolve imports from source):
 > ```json
-> <batchImportData JSON>
+> <batchImportData JSON from batches.json[i].batchImportData>
+> ```
+>
+> Cross-batch neighbors with their exported symbols:
+> ```json
+> <neighborMap JSON from batches.json[i].neighborMap>
 > ```
 >
 > Files to analyze in this batch (every entry MUST be passed through to `batchFiles` with all four fields — `path`, `language`, `sizeLines`, `fileCategory`):
@@ -240,12 +274,14 @@ Fill in batch-specific parameters below inside each batch input:
 > 2. `<path>` (<sizeLines> lines, language: `<language>`, fileCategory: `<fileCategory>`)
 > ...
 
+Output naming is per original `batchIndex`. If a dispatch contains more than one batch for token efficiency, the SubAgent must still write one output file per original batch index using `batch-<batchIndex>.json` or `batch-<batchIndex>-part-<partIndex>.json`. After each dispatch returns, verify that each `batchIndex` has a matching output file or part files on disk.
+
 After ALL batches complete, run the merge-and-normalize script bundled with this skill (located next to this SKILL.md file — use the skill directory path, not the project root):
 ```bash
 python <SKILL_DIR>/merge-batch-graphs.py "$PROJECT_ROOT" "$UA_GRAPH_ROOT"
 ```
 
-This script reads all `batch-*.json` files from `$UA_GRAPH_ROOT/intermediate/`, then in one pass:
+This script reads all `batch-*.json` files from `$UA_GRAPH_ROOT/intermediate/`, including `batch-<batchIndex>-part-<partIndex>.json`, then in one pass:
 - Combines all nodes and edges across batches
 - Normalizes node IDs (strips double prefixes, project-name prefixes, adds missing prefixes)
 - Normalizes complexity values (`low`→`simple`, `medium`→`moderate`, `high`→`complex`, etc.)
@@ -262,7 +298,7 @@ Include the script's warnings in `$PHASE_WARNINGS` for the reviewer.
 
 ### Incremental update path
 
-Use the changed files list from Phase 0. Batch and call `ua_run_subagent_batches` using the same process as above (20-30 files per batch, host-configured file-agent concurrency, with batchImportData constructed from $IMPORT_MAP), but only for changed files.
+Use the changed-file `batches.json` produced by Phase 1.5. Do not recompute batches in Phase 2. Batch indexes retain their full-graph assignment so `neighborMap` can still reference unchanged files. Dispatch file-analyzer SubAgents using the same template as the full path.
 
 After batches complete:
 1. Remove old nodes whose `filePath` matches any changed file from the existing graph
@@ -611,7 +647,38 @@ Include these parameters in the SubAgent input:
 
 1. Write the final knowledge graph to `$UA_GRAPH_ROOT/knowledge-graph.json`.
 
-2. Write metadata to `$UA_GRAPH_ROOT/meta.json`:
+2. **Ensure structural fingerprints** exist for the saved graph. Fingerprints must be valid before metadata is written, so automatic updates never see a fresh commit hash without a matching fingerprint baseline.
+
+   Determine the fingerprint action from `$ANALYSIS_MODE`:
+   - `full` or `incremental`: generate fingerprints from Phase 1 `$FILE_LIST`; `sourceFilePaths` must contain the analyzed project-relative file paths from the current scan, including code files and analyzed non-code files.
+   - `review-only` with an existing `$UA_GRAPH_ROOT/fingerprints.json`: preserve existing fingerprints and do not regenerate them.
+   - `review-only` with no fingerprints file: build a fallback `sourceFilePaths` list from unique `filePath` values on final graph nodes, normalize them to project-relative paths, keep only paths that exist on disk under `$PROJECT_ROOT`, and generate one baseline from that list.
+
+   If the review-only fallback cannot find any existing source file paths, abort Phase 7 with a clear message: `Review-only cannot create fingerprints from the existing graph; run /understand --full to rebuild the baseline.` Do not write `meta.json` after this failure.
+   If fingerprint input contains an empty baseline, an absolute path, a `..` path, or a missing path, treat Phase 7 as a hard failure. Do not write `meta.json` after this failure.
+
+   When generation is required, write the input file:
+   ```bash
+   cat > $UA_GRAPH_ROOT/intermediate/fingerprint-input.json <<EOF
+   {
+     "projectRoot": "$PROJECT_ROOT",
+     "graphRoot": "$UA_GRAPH_ROOT",
+     "sourceFilePaths": [<full/incremental: analyzed project-relative file paths from Phase 1 $FILE_LIST; review-only fallback: normalized existing filePath values from final graph nodes>],
+     "gitCommitHash": "<current commit hash>"
+   }
+   EOF
+   ```
+
+   Then invoke the bundled script:
+   ```bash
+   node <SKILL_DIR>/build-fingerprints.mjs \
+     "$UA_GRAPH_ROOT/intermediate/fingerprint-input.json" \
+     --graph-root="$UA_GRAPH_ROOT"
+   ```
+
+   The script uses the same `TreeSitterPlugin + PluginRegistry` pipeline as `extract-structure.mjs`. If it exits non-zero or stdout does not include `Fingerprints baseline:`, abort Phase 7 and report the error. Do not write `meta.json` after a fingerprint failure.
+
+3. Write metadata to `$UA_GRAPH_ROOT/meta.json`:
    ```json
    {
      "lastAnalyzedAt": "<ISO 8601 timestamp>",
@@ -621,28 +688,13 @@ Include these parameters in the SubAgent input:
    }
    ```
 
-2.5. **Generate structural fingerprints** for all analyzed files and save to `$UA_GRAPH_ROOT/fingerprints.json`. This creates the baseline for future automatic incremental updates.
-
-   Write and execute a Node.js script that uses the core fingerprint module (tree-sitter-based, not regex):
-   ```javascript
-   import { buildFingerprintStore } from '@understand-anything/core';
-
-   const store = await buildFingerprintStore('<PROJECT_ROOT>', sourceFilePaths);
-   const fs = await import('node:fs');
-   const path = await import('node:path');
-   const graphRoot = '<UA_GRAPH_ROOT>';
-   fs.mkdirSync(graphRoot, { recursive: true });
-   fs.writeFileSync(path.join(graphRoot, 'fingerprints.json'), JSON.stringify(store, null, 2), 'utf-8');
-   ```
-   Where `sourceFilePaths` is the list of all analyzed source file paths from Phase 1. This uses the same tree-sitter analysis pipeline as the main fingerprint engine, ensuring the baseline matches the comparison logic used during auto-updates.
-
-3. Clean up intermediate files:
+4. Clean up intermediate files:
    ```bash
    rm -rf $UA_GRAPH_ROOT/intermediate
    rm -rf $UA_GRAPH_ROOT/tmp
    ```
 
-4. Report a summary to the user containing:
+5. Report a summary to the user containing:
    - Project name and description
    - Files analyzed / total files (with breakdown by fileCategory: code, config, docs, infra, data, script, markup)
    - Nodes created (broken down by type: file, function, class, config, document, service, table, endpoint, pipeline, schema, resource)
