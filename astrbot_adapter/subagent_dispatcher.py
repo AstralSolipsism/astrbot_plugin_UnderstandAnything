@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -406,11 +407,49 @@ class UnderstandAnythingSubAgentDispatcher:
         if not path:
             return {"path": "", "exists": False}
         resolved = Path(path).expanduser().resolve(strict=False)
-        return {
+        state: dict[str, Any] = {
             "path": str(resolved),
             "exists": resolved.exists(),
             "is_file": resolved.is_file(),
         }
+        if state["exists"]:
+            return state
+
+        match = re.fullmatch(r"batch-(\d+)\.json", resolved.name)
+        if not match:
+            return state
+
+        part_files: list[Path] = []
+        for item in resolved.parent.glob(f"batch-{match.group(1)}-part-*.json"):
+            if not item.is_file():
+                continue
+            resolved_item = item.resolve(strict=False)
+            if (
+                UnderstandAnythingSubAgentDispatcher._batch_part_index(resolved_item)
+                is None
+            ):
+                continue
+            part_files.append(resolved_item)
+        part_files.sort(key=UnderstandAnythingSubAgentDispatcher._batch_part_sort_key)
+        if part_files:
+            state["exists"] = True
+            state["output_mode"] = "parts"
+            state["part_files"] = [str(item) for item in part_files]
+        return state
+
+    @staticmethod
+    def _batch_part_index(path: Path) -> int | None:
+        match = re.fullmatch(r"batch-\d+-part-(\d+)\.json", path.name)
+        if not match:
+            return None
+        return int(match.group(1))
+
+    @staticmethod
+    def _batch_part_sort_key(path: Path) -> tuple[int, str]:
+        part_index = UnderstandAnythingSubAgentDispatcher._batch_part_index(path)
+        if part_index is None:
+            return (0, path.name)
+        return (part_index, path.name)
 
     def _log(self, message: str) -> None:
         if self.log_fn is not None:
