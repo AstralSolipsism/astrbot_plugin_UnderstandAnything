@@ -109,6 +109,10 @@ def build_ignore_confirmation(
     }
 
 
+def starter_ignore_content(project_root: Path) -> str:
+    return _starter_content(summarize_project_for_ignore(project_root))
+
+
 def summarize_project_for_ignore(project_root: Path) -> dict[str, Any]:
     gitignore_patterns = _gitignore_suggestions(project_root)
     detected_dirs = [
@@ -194,7 +198,8 @@ def append_ignore_patterns(graph_root: Path, patterns: list[str]) -> str:
 def _starter_content(summary: dict[str, Any]) -> str:
     lines = [
         "# .understandignore - patterns for files/dirs to exclude from analysis",
-        "# Syntax follows .gitignore. Review the generated suggestions before analysis.",
+        "# Syntax follows .gitignore. Suggested rules are commented out by default.",
+        "# Uncomment a suggestion to activate it.",
         "# Use !pattern to force-include something excluded by defaults.",
         "",
         "# Built-in defaults are always excluded unless negated:",
@@ -204,15 +209,15 @@ def _starter_content(summary: dict[str, Any]) -> str:
     gitignore_patterns = summary.get("gitignore_patterns", [])
     if gitignore_patterns:
         lines += ["# --- From .gitignore ---", ""]
-        lines += [str(pattern) for pattern in gitignore_patterns]
+        lines += [f"# {pattern}" for pattern in gitignore_patterns]
         lines.append("")
     detected_dirs = summary.get("detected_dirs", [])
     if detected_dirs:
         lines += ["# --- Detected optional directories ---", ""]
-        lines += [f"{dirname}/" for dirname in detected_dirs]
+        lines += [f"# {dirname}/" for dirname in detected_dirs]
         lines.append("")
     lines += ["# --- Test file patterns ---", ""]
-    lines += [f"{pattern}" for pattern in TEST_FILE_PATTERNS]
+    lines += [f"# {pattern}" for pattern in TEST_FILE_PATTERNS]
     return "\n".join(lines).rstrip() + "\n"
 
 

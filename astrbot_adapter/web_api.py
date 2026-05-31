@@ -25,6 +25,12 @@ from .constants import (
     UNDERSTAND_ANYTHING_ROOT,
 )
 from .github_repo import DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS, GITHUB_PROXY_PRESETS
+from .ignore_review import (
+    starter_ignore_content,
+    summarize_current_exclusions,
+    summarize_project_for_ignore,
+    write_ignore_content,
+)
 from .job_store import JobStatus
 from .path_security import PathSecurityError
 from .runner import UnderstandAnythingRunner
@@ -82,6 +88,12 @@ class UnderstandAnythingWebApi:
                 self.delete_project,
                 ["POST"],
                 "Delete registered project graph data",
+            ),
+            (
+                f"{prefix}/projects/ignore",
+                self.project_ignore,
+                ["GET", "POST"],
+                "Read or update project .understandignore rules",
             ),
             (f"{prefix}/graph", self.graph, ["GET"], "Read knowledge graph"),
             (f"{prefix}/meta", self.meta, ["GET"], "Read analysis metadata"),
@@ -302,6 +314,52 @@ class UnderstandAnythingWebApi:
                     "data": {
                         "project": deleted.to_dict() if deleted else record.to_dict(),
                         "graph_deleted": graph_deleted,
+                    },
+                }
+            )
+        except Exception as exc:
+            return self._error(exc)
+
+    async def project_ignore(self):
+        try:
+            body = await self._json_body() if request.method == "POST" else {}
+            record = self._project_record_from_ref(
+                self._body_project_ref(body)
+                if request.method == "POST"
+                else self._query_project_ref()
+            )
+            project_root = Path(record.path).resolve(strict=False)
+            graph_root = self._safe_project_graph_root(record.to_dict())
+            ignore_path = graph_root / ".understandignore"
+            if request.method == "POST":
+                content = body.get("content")
+                if not isinstance(content, str):
+                    raise ValueError("Missing .understandignore content.")
+                saved_content = write_ignore_content(graph_root, content)
+                exists = True
+            else:
+                exists = ignore_path.is_file()
+                saved_content = (
+                    ignore_path.read_text(encoding="utf-8")
+                    if exists
+                    else starter_ignore_content(project_root)
+                )
+            summary = summarize_project_for_ignore(project_root)
+            return jsonify(
+                {
+                    "status": "ok",
+                    "data": {
+                        "project": record.to_dict(),
+                        "ignore_path": str(ignore_path),
+                        "exists": exists,
+                        "content": saved_content,
+                        "summary": summary
+                        | {
+                            "current_exclusions": summarize_current_exclusions(
+                                project_root,
+                                saved_content,
+                            ),
+                        },
                     },
                 }
             )
@@ -604,6 +662,20 @@ class UnderstandAnythingWebApi:
             }:
                 return job
         return None
+
+    def _project_record_from_ref(self, ref: dict[str, Any]):
+        record = self.runner.registry.get(
+            project_id=self._string_or_none(ref.get("project_id")),
+            project_name=self._string_or_none(ref.get("project_name")),
+            project_ref=self._string_or_none(ref.get("project_ref")),
+        )
+        if record is None and ref.get("project_path"):
+            record = self.runner.registry.get(
+                project_ref=self._string_or_none(ref.get("project_path"))
+            )
+        if record is None:
+            raise ValueError("Project not found.")
+        return record
 
     @staticmethod
     def _safe_project_graph_root(record: dict[str, Any]) -> Path:
