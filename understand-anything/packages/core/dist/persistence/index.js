@@ -13,6 +13,16 @@ function ensureDir(projectRoot) {
     }
     return dir;
 }
+function ensureGraphDir(projectRoot, options) {
+    if (options?.graphRoot) {
+        mkdirSync(options.graphRoot, { recursive: true });
+        return options.graphRoot;
+    }
+    return ensureDir(projectRoot);
+}
+function graphFilePath(projectRoot, fileName, options) {
+    return join(options?.graphRoot ?? join(projectRoot, UA_DIR), fileName);
+}
 /**
  * Sanitise every node's filePath before writing to disk.
  *
@@ -85,12 +95,12 @@ export function loadMeta(projectRoot) {
         return null;
     return JSON.parse(readFileSync(filePath, "utf-8"));
 }
-export function saveFingerprints(projectRoot, store) {
-    const dir = ensureDir(projectRoot);
+export function saveFingerprints(projectRoot, store, options) {
+    const dir = ensureGraphDir(projectRoot, options);
     writeFileSync(join(dir, FINGERPRINT_FILE), JSON.stringify(store, null, 2), "utf-8");
 }
-export function loadFingerprints(projectRoot) {
-    const filePath = join(projectRoot, UA_DIR, FINGERPRINT_FILE);
+export function loadFingerprints(projectRoot, options) {
+    const filePath = graphFilePath(projectRoot, FINGERPRINT_FILE, options);
     if (!existsSync(filePath))
         return null;
     try {

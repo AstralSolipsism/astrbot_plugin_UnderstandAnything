@@ -10,12 +10,32 @@ const META_FILE = "meta.json";
 const FINGERPRINT_FILE = "fingerprints.json";
 const CONFIG_FILE = "config.json";
 
+export interface GraphRootOptions {
+  graphRoot?: string;
+}
+
 function ensureDir(projectRoot: string): string {
   const dir = join(projectRoot, UA_DIR);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
   return dir;
+}
+
+function ensureGraphDir(projectRoot: string, options?: GraphRootOptions): string {
+  if (options?.graphRoot) {
+    mkdirSync(options.graphRoot, { recursive: true });
+    return options.graphRoot;
+  }
+  return ensureDir(projectRoot);
+}
+
+function graphFilePath(
+  projectRoot: string,
+  fileName: string,
+  options?: GraphRootOptions,
+): string {
+  return join(options?.graphRoot ?? join(projectRoot, UA_DIR), fileName);
 }
 
 /**
@@ -115,13 +135,20 @@ export function loadMeta(projectRoot: string): AnalysisMeta | null {
   return JSON.parse(readFileSync(filePath, "utf-8")) as AnalysisMeta;
 }
 
-export function saveFingerprints(projectRoot: string, store: FingerprintStore): void {
-  const dir = ensureDir(projectRoot);
+export function saveFingerprints(
+  projectRoot: string,
+  store: FingerprintStore,
+  options?: GraphRootOptions,
+): void {
+  const dir = ensureGraphDir(projectRoot, options);
   writeFileSync(join(dir, FINGERPRINT_FILE), JSON.stringify(store, null, 2), "utf-8");
 }
 
-export function loadFingerprints(projectRoot: string): FingerprintStore | null {
-  const filePath = join(projectRoot, UA_DIR, FINGERPRINT_FILE);
+export function loadFingerprints(
+  projectRoot: string,
+  options?: GraphRootOptions,
+): FingerprintStore | null {
+  const filePath = graphFilePath(projectRoot, FINGERPRINT_FILE, options);
   if (!existsSync(filePath)) return null;
   try {
     return JSON.parse(readFileSync(filePath, "utf-8")) as FingerprintStore;

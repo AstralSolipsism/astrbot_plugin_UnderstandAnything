@@ -162,6 +162,19 @@ describe("persistence", () => {
       expect(loaded).toEqual(sampleFingerprints);
     });
 
+    it("should save and load fingerprints from an explicit graph root", () => {
+      const graphRoot = join(tempDir, "artifact", ".understand-anything");
+
+      saveFingerprints(tempDir, sampleFingerprints, { graphRoot });
+      const loaded = loadFingerprints(tempDir, { graphRoot });
+
+      expect(loaded).toEqual(sampleFingerprints);
+      expect(existsSync(join(graphRoot, "fingerprints.json"))).toBe(true);
+      expect(
+        existsSync(join(tempDir, ".understand-anything", "fingerprints.json")),
+      ).toBe(false);
+    });
+
     it("should return null when no fingerprints file exists", () => {
       const loaded = loadFingerprints(tempDir);
       expect(loaded).toBeNull();
