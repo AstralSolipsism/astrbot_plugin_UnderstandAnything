@@ -451,7 +451,37 @@ class UnderstandAnythingSubAgentRegistry:
             or self.plugin_config.get("provider_id")
             or ""
         ).strip()
-        return provider_id or None
+        if provider_id:
+            return provider_id
+        return self._inferred_registered_provider_id(data)
+
+    def _inferred_registered_provider_id(
+        self,
+        data: dict[str, Any] | None,
+    ) -> str | None:
+        if not isinstance(data, dict):
+            return None
+        agents = data.get("agents")
+        if not isinstance(agents, list):
+            return None
+
+        ua_names = {spec.agent_name for spec in self.specs()}
+        providers: list[str | None] = []
+        for item in agents:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name not in ua_names:
+                continue
+            provider_id = item.get("provider_id")
+            providers.append(str(provider_id).strip() if provider_id else None)
+
+        if len(providers) != len(ua_names):
+            return None
+        unique_providers = set(providers)
+        if len(unique_providers) != 1:
+            return None
+        return next(iter(unique_providers))
 
     def _validate_provider_id(self, provider_id: str) -> None:
         if not provider_id:
