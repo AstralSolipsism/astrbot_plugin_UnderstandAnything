@@ -2,8 +2,6 @@
 
 一个独立的 AstrBot 插件，用内置 `understand-anything/` 逻辑依赖为 AstrBot 提供项目理解、知识图谱、差异分析、领域图谱、知识库分析和 Dashboard 交互能力。
 
-仓库地址：<https://github.com/AstralSolipsism/astrbot_plugin_UnderstandAnything>
-
 ## 目录约定
 
 - `understand-anything/`：裁剪后的 Understand Anything 运行时依赖，包含 core、dashboard 源码、根 skill runtime 源码、lockfile 和必要 dist。
@@ -92,7 +90,7 @@ Dashboard 保留参考项目 React 体验，只调整数据访问层：
 - `max_parallel_article_agents`
 - `subagent_provider_id`
 - `auto_build`
-- `auto_update_poll_interval`
+- `auto_update_poll_interval`：自动更新后台检查间隔，单位为分钟；`0` 表示关闭后台轮询。
 - `default_write_mode`
 - `cleanup_github_cache_after_analysis`
 

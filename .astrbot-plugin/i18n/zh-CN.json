@@ -48,8 +48,8 @@
       "hint": "启用后，首次使用可在插件 understand-anything 目录内运行 pnpm install/build，修复缺失的依赖或 dist 文件。"
     },
     "auto_update_poll_interval": {
-      "description": "自动更新轮询间隔（秒）",
-      "hint": "0 表示禁用后台轮询。需要更新时可使用聊天命令手动触发。"
+      "description": "自动更新轮询间隔（分钟）",
+      "hint": "0 表示禁用后台轮询。建议设置为分钟级间隔，例如 30 或 60，用于检查已启用自动更新的项目是否出现新的 Git commit。"
     },
     "default_write_mode": {
       "description": "默认图谱输出模式",

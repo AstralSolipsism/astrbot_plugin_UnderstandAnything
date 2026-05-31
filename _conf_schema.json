@@ -63,10 +63,10 @@
     "hint": "When enabled, the first use can run pnpm install/build inside the plugin's understand-anything directory if dependencies or dist files are missing."
   },
   "auto_update_poll_interval": {
-    "description": "Auto-update polling interval in seconds",
+    "description": "Auto-update polling interval in minutes",
     "type": "int",
     "default": 0,
-    "hint": "0 disables background polling. Use chat commands for explicit updates."
+    "hint": "0 disables background polling. Set this to a practical minute-level interval, such as 30 or 60, to check enabled projects for new Git commits."
   },
   "default_write_mode": {
     "description": "Default graph output mode",
