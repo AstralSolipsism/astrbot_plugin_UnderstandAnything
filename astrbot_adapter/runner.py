@@ -49,7 +49,7 @@ from .subagent_dispatcher import UnderstandAnythingSubAgentDispatcher
 from .subagent_registry import UnderstandAnythingSubAgentRegistry
 
 REQUIRED_GRAPH_OUTPUTS_BY_JOB = {
-    "understand": ("knowledge-graph.json",),
+    "understand": ("knowledge-graph.json", "meta.json", "fingerprints.json"),
     "understand-domain": ("domain-graph.json",),
     "understand-knowledge": ("knowledge-graph.json",),
 }
@@ -123,10 +123,9 @@ class UnderstandAnythingRunner:
         self.registry = ProjectRegistry(Path(registry_path) if registry_path else None)
 
     async def initialize(self) -> None:
-        try:
-            interval = int(self.config.get("auto_update_poll_interval") or 0)
-        except (TypeError, ValueError):
-            interval = 0
+        interval = self._auto_update_poll_seconds(
+            self.config.get("auto_update_poll_interval"),
+        )
         if interval > 0:
             self._discover_auto_update_projects()
             self._auto_update_task = asyncio.create_task(
@@ -505,28 +504,6 @@ class UnderstandAnythingRunner:
         stage = self._source_stage_label(job, locale)
         status_command = self._status_command(job)
         label = self._job_label(job_label, locale)
-        if self._job_requires_scope_confirmation(job):
-            if locale == "en-US":
-                return (
-                    f"Preparing source: {name}\n"
-                    f"Stage: {stage}\n"
-                    "Graph generation will start only after scan scope confirmation.\n"
-                    f"Progress: {status_command}"
-                )
-            if locale == "ru-RU":
-                return (
-                    f"Подготовка исходного кода: {name}\n"
-                    f"Этап: {stage}\n"
-                    "Построение графа начнется только после подтверждения "
-                    "области сканирования.\n"
-                    f"Статус: {status_command}"
-                )
-            return (
-                f"正在获取源码：{name}\n"
-                f"阶段：{stage}\n"
-                "确认扫描范围后才会开始生成图谱。\n"
-                f"查看进度：{status_command}"
-            )
         if locale == "en-US":
             return (
                 f"Preparing source: {name}\n"
@@ -556,26 +533,6 @@ class UnderstandAnythingRunner:
             )
         locale = self._job_locale(job)
         name = self._job_display_name(job)
-        if self._job_requires_scope_confirmation(job):
-            return self._localized(
-                locale,
-                zh=(
-                    f"内部状态：{name} 源码准备中；插件会先确认扫描范围，"
-                    "确认后才开始生成图谱。不要复述为分析正在运行。"
-                ),
-                en=(
-                    f"Internal status: source preparation for {name} is in progress; "
-                    "the plugin will confirm scan scope first, and graph generation "
-                    "starts only after confirmation. Do not describe the analysis as "
-                    "running."
-                ),
-                ru=(
-                    f"Внутренний статус: идет подготовка исходного кода для {name}; "
-                    "плагин сначала подтвердит область сканирования, а построение "
-                    "графа начнется только после подтверждения. Не описывайте "
-                    "анализ как выполняющийся."
-                ),
-            )
         return self._localized(
             locale,
             zh=(
@@ -749,10 +706,6 @@ class UnderstandAnythingRunner:
             await self._prepare_job_source(job, event)
             self.jobs.append_log(job.job_id, f"Target project root: {job.project_root}")
             self._ensure_graph_root_defaults(job)
-            if job.kind == "understand":
-                confirmed = await self._confirm_understandignore(job, event)
-                if not confirmed:
-                    return
 
             async with self._job_semaphore:
                 self.jobs.mark_running(job.job_id)
@@ -1121,9 +1074,10 @@ class UnderstandAnythingRunner:
             "Use `$PROJECT_ROOT` only for reading source files and git state.\n"
             "- Write graph files, meta, fingerprints, config, intermediate, and "
             "tmp outputs under `$UA_GRAPH_ROOT`.\n"
-            "- The AstrBot host adapter handles `.understandignore` confirmation "
-            "before this prompt is executed. Do not ask for another confirmation "
-            "inside the skill workflow.\n"
+            "- Do not pause for `.understandignore` review or confirmation. "
+            "Use existing `$UA_GRAPH_ROOT/.understandignore` or project-root "
+            "`.understandignore` files if present; otherwise continue with the "
+            "bundled default ignore rules.\n"
             "- Preserve Understand Anything JSON schema and Dashboard compatibility.\n"
         )
 
@@ -1681,8 +1635,33 @@ class UnderstandAnythingRunner:
                 + f". Expected under: {graph_root}"
             )
         store = ProjectStore(job.project_root, graph_root=graph_root)
+        payloads: dict[str, dict[str, Any]] = {}
         for file_name in required:
-            store.read_json(file_name)
+            payloads[file_name] = store.read_json(file_name)
+        if job.kind == "understand":
+            self._validate_understand_fingerprints(payloads)
+
+    @staticmethod
+    def _validate_understand_fingerprints(
+        payloads: dict[str, dict[str, Any]],
+    ) -> None:
+        meta = payloads.get("meta.json") or {}
+        fingerprints = payloads.get("fingerprints.json") or {}
+        if fingerprints.get("version") != "1.0.0":
+            raise RuntimeError("Invalid fingerprints.json: version must be 1.0.0.")
+        fingerprint_commit = fingerprints.get("gitCommitHash")
+        if not isinstance(fingerprint_commit, str):
+            raise RuntimeError(
+                "Invalid fingerprints.json: gitCommitHash must be a string."
+            )
+        files = fingerprints.get("files")
+        if not isinstance(files, dict) or not files:
+            raise RuntimeError("Invalid fingerprints.json: files must be non-empty.")
+        meta_commit = meta.get("gitCommitHash")
+        if fingerprint_commit != meta_commit:
+            raise RuntimeError(
+                "Invalid fingerprints.json: gitCommitHash must match meta.json."
+            )
 
     @staticmethod
     def _job_graph_root(job: JobSnapshot) -> Path:
@@ -2082,10 +2061,6 @@ class UnderstandAnythingRunner:
             ru="чтение локального проекта",
         )
 
-    @staticmethod
-    def _job_requires_scope_confirmation(job: JobSnapshot) -> bool:
-        return job.kind == "understand"
-
     def _format_status_not_found(self, project_ref: str, locale: str) -> str:
         available = self._available_status_refs()
         suffix = ""
@@ -2468,6 +2443,14 @@ class UnderstandAnythingRunner:
         if "--no-auto-update" in tokens:
             return False
         return None
+
+    @staticmethod
+    def _auto_update_poll_seconds(value: Any) -> int:
+        try:
+            minutes = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, minutes) * 60
 
     def _discover_auto_update_projects(self) -> None:
         candidates = {
