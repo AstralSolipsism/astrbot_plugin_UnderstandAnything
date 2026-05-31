@@ -8,8 +8,12 @@ Run from this directory:
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -936,6 +940,90 @@ class MergeIntegrationTests(unittest.TestCase):
         # Production node tagged
         prod_node = next(n for n in assembled["nodes"] if n["id"] == "file:src/foo.ts")
         self.assertIn("tested", prod_node["tags"])
+
+
+class MainBatchFileDiscoveryTests(unittest.TestCase):
+    """CLI-level discovery of single-part, multi-part, and invalid batch files."""
+
+    def _write_batch(self, path: Path, file_path: str) -> None:
+        path.write_text(
+            json.dumps({"nodes": [_file_node(file_path)], "edges": []}),
+            encoding="utf-8",
+        )
+
+    def _run_main(self, project_root: Path, graph_root: Path) -> str:
+        old_argv = sys.argv[:]
+        stderr = io.StringIO()
+        try:
+            sys.argv = [
+                "merge-batch-graphs.py",
+                str(project_root),
+                str(graph_root),
+            ]
+            with contextlib.redirect_stderr(stderr):
+                mbg.main()
+        finally:
+            sys.argv = old_argv
+        return stderr.getvalue()
+
+    def test_main_merges_parts_and_reports_invalid_files_under_graph_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_root = root / "project"
+            graph_root = root / "external-graph"
+            intermediate = graph_root / "intermediate"
+            project_root.mkdir()
+            intermediate.mkdir(parents=True)
+            (intermediate / "scan-result.json").write_text(
+                json.dumps({"importMap": {}}),
+                encoding="utf-8",
+            )
+
+            self._write_batch(intermediate / "batch-1-part-1.json", "src/a.py")
+            self._write_batch(intermediate / "batch-1-part-3.json", "src/c.py")
+            self._write_batch(intermediate / "batch-2.json", "src/b.py")
+            self._write_batch(intermediate / "batch-fused-3-4.json", "src/d.py")
+
+            stderr = self._run_main(project_root, graph_root)
+
+            assembled_path = intermediate / "assembled-graph.json"
+            self.assertTrue(assembled_path.is_file())
+            assembled = json.loads(assembled_path.read_text(encoding="utf-8"))
+            node_ids = {node["id"] for node in assembled["nodes"]}
+            self.assertIn("file:src/a.py", node_ids)
+            self.assertIn("file:src/b.py", node_ids)
+            self.assertIn("file:src/c.py", node_ids)
+            self.assertNotIn("file:src/d.py", node_ids)
+            self.assertIn("missing part [2]", stderr)
+            self.assertIn("unrecognized filenames", stderr)
+            self.assertIn(str(assembled_path), stderr)
+
+    def test_main_keeps_incremental_existing_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_root = root / "project"
+            graph_root = root / "external-graph"
+            intermediate = graph_root / "intermediate"
+            project_root.mkdir()
+            intermediate.mkdir(parents=True)
+            (intermediate / "scan-result.json").write_text(
+                json.dumps({"importMap": {}}),
+                encoding="utf-8",
+            )
+
+            self._write_batch(intermediate / "batch-existing.json", "src/old.py")
+            self._write_batch(intermediate / "batch-1.json", "src/new.py")
+
+            stderr = self._run_main(project_root, graph_root)
+
+            assembled = json.loads(
+                (intermediate / "assembled-graph.json").read_text(encoding="utf-8")
+            )
+            node_ids = {node["id"] for node in assembled["nodes"]}
+            self.assertIn("file:src/old.py", node_ids)
+            self.assertIn("file:src/new.py", node_ids)
+            self.assertNotIn("unrecognized filenames", stderr)
+            self.assertIn("1 existing", stderr)
 
 
 if __name__ == "__main__":

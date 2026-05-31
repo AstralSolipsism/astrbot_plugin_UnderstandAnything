@@ -28,6 +28,9 @@ from typing import Any
 
 # ── Configuration ─────────────────────────────────────────────────────────
 
+_BATCH_FILE_RE = re.compile(r"batch-(\d+)(?:-part-(\d+))?\.json")
+_EXISTING_BATCH_FILE = "batch-existing.json"
+
 VALID_NODE_PREFIXES = {
     "file",
     "func",
@@ -1057,6 +1060,18 @@ def recover_imports_from_scan(
 # ── Main ──────────────────────────────────────────────────────────────────
 
 
+def classify_batch_file(path: Path) -> tuple[str, int | None, int | None]:
+    """Classify merge input files by the batch naming contract."""
+    if path.name == _EXISTING_BATCH_FILE:
+        return "existing", None, None
+    match = _BATCH_FILE_RE.fullmatch(path.name)
+    if not match:
+        return "invalid", None, None
+    batch_index = int(match.group(1))
+    part = int(match.group(2)) if match.group(2) else None
+    return ("part" if part is not None else "single"), batch_index, part
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(
@@ -1090,11 +1105,72 @@ def main() -> None:
         print("Error: no batch-*.json files found in intermediate/", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Found {len(batch_files)} batch files:", file=sys.stderr)
+    # Group by logical batch index so the report distinguishes single-batch
+    # files from multi-part file-analyzer outputs. Files that don't match the
+    # `batch-<N>.json` / `batch-<N>-part-<K>.json` pattern would otherwise be
+    # silently dropped during load. Flag them loudly and keep them out of the
+    # merged graph.
+    from collections import defaultdict as _dd
+
+    by_batch = _dd(list)
+    existing_batch_files: list[str] = []
+    unrecognized_batch_files: list[str] = []
+    for f in batch_files:
+        kind, batch_index, part = classify_batch_file(f)
+        if kind == "existing":
+            existing_batch_files.append(f.name)
+        elif kind in {"single", "part"} and batch_index is not None:
+            by_batch[batch_index].append((f.name, part))
+        else:
+            unrecognized_batch_files.append(f.name)
+
+    if unrecognized_batch_files:
+        preview = ", ".join(unrecognized_batch_files[:5])
+        suffix = (
+            f" (+{len(unrecognized_batch_files) - 5} more)"
+            if len(unrecognized_batch_files) > 5
+            else ""
+        )
+        print(
+            f"Warning: merge-batch-graphs: {len(unrecognized_batch_files)} "
+            f"batch file(s) with unrecognized filenames will be DROPPED — "
+            f"files: {preview}{suffix} — fix the file-analyzer agent to use "
+            f"only batch-<N>.json or batch-<N>-part-<K>.json patterns",
+            file=sys.stderr,
+        )
+
+    logical_count = len(by_batch)
+    multi_part = sum(1 for entries in by_batch.values() if len(entries) > 1)
+    print(
+        f"Found {len(batch_files)} batch files "
+        f"({logical_count} logical batches, {multi_part} multi-part, "
+        f"{len(existing_batch_files)} existing):",
+        file=sys.stderr,
+    )
+
+    missing_part_warnings: list[str] = []
+    for idx, entries in by_batch.items():
+        part_nums = [p for (_n, p) in entries if p is not None]
+        if not part_nums:
+            continue
+        present = set(part_nums)
+        expected = set(range(1, max(part_nums) + 1))
+        missing = sorted(expected - present)
+        if missing:
+            msg = (
+                f"batch {idx} has parts {sorted(present)} but "
+                f"missing part {missing} — possible truncated write — "
+                f"affected nodes/edges may be lost"
+            )
+            print(f"Warning: merge: {msg}", file=sys.stderr)
+            missing_part_warnings.append(msg)
 
     # Load batches
+    unrecognized_set = set(unrecognized_batch_files)
     batches: list[dict[str, Any]] = []
     for f in batch_files:
+        if f.name in unrecognized_set:
+            continue
         batch = load_batch(f)
         if batch is not None:
             batches.append(batch)
@@ -1108,6 +1184,31 @@ def main() -> None:
 
     # Merge and normalize
     assembled, report = merge_and_normalize(batches)
+
+    if missing_part_warnings:
+        report.append("")
+        report.append(
+            f"Warning: {len(missing_part_warnings)} batch(es) with missing parts "
+            f"— some nodes/edges silently dropped:"
+        )
+        for warning in missing_part_warnings:
+            report.append(f"  - {warning}")
+
+    if unrecognized_batch_files:
+        preview = ", ".join(unrecognized_batch_files[:5])
+        suffix = (
+            f" (+{len(unrecognized_batch_files) - 5} more)"
+            if len(unrecognized_batch_files) > 5
+            else ""
+        )
+        report.append("")
+        report.append(
+            f"Warning: dropped {len(unrecognized_batch_files)} batch file(s) "
+            f"with unrecognized filenames — files: {preview}{suffix} — "
+            f"fix the file-analyzer agent to use only batch-<N>.json or "
+            f"batch-<N>-part-<K>.json patterns (every node/edge in these "
+            f"files was excluded from the final graph)"
+        )
 
     # Recover any imports edges file-analyzer batches dropped despite
     # `batchImportData` containing them. The project-scanner's importMap
