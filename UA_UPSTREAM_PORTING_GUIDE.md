@@ -1,5 +1,51 @@
 # UA 上游能力移植执行文档
 
+## 2026-06-02 UnderstandingSelf Dashboard 与受控产物迁移附录
+
+本附录对应 `docs/superpowers/plans/2026-06-02-astrbot-understandingself-dashboard-port.md`，优先级高于本文后续早期移植记录中关于 Dashboard 只做必要 cherry-pick 的限制。
+
+本轮迁移基线：
+
+- 目标 AstrBot 插件仓库：`astrbot_plugin_UnderstandAnything`
+- 目标提交：`5495c30ce68bee46188c44b6485a8442520d9059`
+- 参考仓库：`D:\AboutDEV\understanding\UnderstandingSelf`
+- 参考提交：`2be9118c726c3833c670c00a9f0091e0a3f4801e`
+- 参考插件根：`D:\AboutDEV\understanding\UnderstandingSelf\understand-anything-plugin`
+
+本轮必须保留的 AstrBot 边界：
+
+- `main.py`、`metadata.yaml`、`_conf_schema.json`、`requirements.txt` 继续作为 AstrBot 插件宿主和分发入口。
+- `astrbot_adapter/web_api.py` 继续作为 AstrBot Plugin Page 的 API 边界。
+- `astrbot_adapter/runner.py` 继续负责 AstrBot job 编排、Provider/SubAgent 调度、确认流程、GitHub/local source 处理。
+- `astrbot_adapter/runtime.py` 与 `astrbot_adapter/node/bridge.mjs` 继续作为 Python 到 Node runtime action 的执行边界。
+- `astrbot_adapter/job_store.py` 与 `astrbot_adapter/project_registry.py` 可以扩展状态和 observations，但不能被 UnderstandingSelf server store 直接替换。
+- `astrbot_adapter/prompts/agents/` 保留 AstrBot SubAgent prompt 布局，按需迁入 UnderstandingSelf 的角色约束。
+- 根目录 `skills/` 保留 AstrBot 可见 skill 布局。
+- `pages/dashboard/` 保留 AstrBot 插件页构建产物布局。
+
+本轮可复用的 UnderstandingSelf 内容：
+
+- 新版 `packages/dashboard/src/` 作为 Dashboard 主体基线，但所有数据访问必须适配 AstrBot `pluginGet` / `pluginPost`。
+- `packages/server/src/quality.ts`、`domain-analysis-ir.ts`、`assistant-context.ts`、`assistant-context-bundle.ts` 中的确定性校验、Domain IR、上下文净化能力，迁入 `understand-anything/` runtime，不迁入 server 宿主。
+- `packages/assistant/src/` 的 assistant prompt/context builder，迁入或复用为 AstrBot runtime 能力，并替换 KimiCode 文案。
+- `agents/domain-analyzer.md` 与 `skills/understand-domain/SKILL.md` 的 IR-first domain 工作流，适配 `$UA_GRAPH_ROOT/intermediate/domain-analysis.json`。
+
+本轮禁止引入：
+
+- KimiCode 进程探测、Kimi server 管理 API、Kimi container runner。
+- `UnderstandingSelf/understand-anything-plugin/packages/server` 作为运行时宿主。
+- 与 AstrBot 插件页无关的 standalone management routes。
+- 覆盖 AstrBot 现有配置、Provider/SubAgent 注册、Runner、WebAPI 或 graphRoot 路径模型的上游宿主逻辑。
+
+贡献者落点约定：
+
+- 可复用 runtime 代码放入 `understand-anything/`，优先用 TypeScript action 暴露给 Python runner。
+- AstrBot 需要执行的 agent prompt 放入 `astrbot_adapter/prompts/agents/`。
+- 用户可见 skill 指令放入根目录 `skills/`。
+- Dashboard 源码放入 `understand-anything/packages/dashboard/`。
+- AstrBot 插件页构建产物放入 `pages/dashboard/`。
+- 不提交 `node_modules/`、缓存、本地插件数据或机器相关临时文件。
+
 ## 目标与原则
 
 目标是将上游 Understand-Anything 截至 `26edf61856fa476e466bda1814819a266a293c47` 的核心分析能力移植到 `astrbot_plugin_UnderstandAnything`，并形成 AstrBot 插件内统一、清晰、可持续维护的分析架构。
