@@ -11,7 +11,6 @@ import type { HeadingFont, PresetId, ThemeConfig, ThemePreset } from "./types.ts
 import { DEFAULT_THEME_CONFIG } from "./types.ts";
 import { getPreset } from "./presets.ts";
 import { applyTheme } from "./theme-engine.ts";
-import { getStorageItem, setStorageItem } from "../utils/safeBrowser.ts";
 
 const STORAGE_KEY = "ua-theme";
 
@@ -27,7 +26,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 function loadFromLocalStorage(): ThemeConfig | null {
   try {
-    const raw = getStorageItem("local", STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed.presetId === "string" && typeof parsed.accentId === "string") {
@@ -40,7 +39,11 @@ function loadFromLocalStorage(): ThemeConfig | null {
 }
 
 function saveToLocalStorage(config: ThemeConfig): void {
-  setStorageItem("local", STORAGE_KEY, JSON.stringify(config));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Storage full or unavailable — ignore
+  }
 }
 
 function resolveInitialTheme(metaTheme?: ThemeConfig | null): ThemeConfig {

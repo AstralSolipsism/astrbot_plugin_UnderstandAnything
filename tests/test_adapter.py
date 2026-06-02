@@ -28,7 +28,11 @@ from astrbot_adapter.ignore_review import (
 from astrbot_adapter.job_request import format_job_args, parse_job_args
 from astrbot_adapter.job_store import JobStatus, JobStore
 from astrbot_adapter.path_security import PathSecurity, PathSecurityError
-from astrbot_adapter.project_registry import ProjectRegistry, ProjectRegistryError
+from astrbot_adapter.project_registry import (
+    ProjectRegistry,
+    ProjectRegistryError,
+    ProjectStatus,
+)
 from astrbot_adapter.project_store import ProjectStore
 from astrbot_adapter.runner import UnderstandAnythingRunner
 from astrbot_adapter.runtime import UnderstandAnythingRuntime
@@ -67,6 +71,17 @@ def _sample_fingerprints(commit: str = "abc") -> dict[str, object]:
             }
         },
     }
+
+
+def _write_validation_sidecars(graph_root: Path) -> None:
+    (graph_root / "source-inventory.json").write_text(
+        json.dumps({}),
+        encoding="utf-8",
+    )
+    (graph_root / "quality-report.json").write_text(
+        json.dumps({}),
+        encoding="utf-8",
+    )
 
 
 def test_plugin_main_uses_package_relative_adapter_imports() -> None:
@@ -159,7 +174,8 @@ def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
     page_html = (PLUGIN_ROOT / "pages" / "dashboard" / "index.html").read_text(
         encoding="utf-8",
     )
-    js_assets = list((PLUGIN_ROOT / "pages" / "dashboard" / "assets").glob("*.js"))
+    page_assets_dir = PLUGIN_ROOT / "pages" / "dashboard" / "assets"
+    js_assets = list(page_assets_dir.glob("*.js"))
 
     bridge_index = source_html.index("/api/plugin/page/bridge-sdk.js")
     app_index = source_html.index("/src/main.tsx")
@@ -174,7 +190,16 @@ def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
     assert "asset_token" in source_html
     assert "asset_token" in page_html
     assert 'rel="modulepreload"' not in page_html
-    assert len(js_assets) == 1
+    assert './assets/index-' in page_html
+    assert len(js_assets) >= 1
+    assert any(asset.name.startswith("index-") for asset in js_assets)
+    assert not list((PLUGIN_ROOT / "pages" / "dashboard").rglob("*.map"))
+    for asset in js_assets:
+        assert page_assets_dir in asset.parents
+        content = asset.read_text(encoding="utf-8", errors="ignore")
+        assert "D:/AboutDEV" not in content
+        assert "D:\\AboutDEV" not in content
+        assert "file://" not in content
 
 
 def test_path_security_allows_paths_inside_allowed_root(tmp_path: Path) -> None:
@@ -379,6 +404,49 @@ def test_job_store_tracks_structured_progress_and_cancellation() -> None:
     assert snapshot is not None
     assert snapshot.status is JobStatus.CANCELLED
     assert snapshot.progress.phase == "cancelled"
+
+
+def test_job_store_serializes_structured_observations() -> None:
+    jobs = JobStore()
+
+    job = jobs.create("understand", Path("D:/project"), {"project_id": "p1"})
+    observation = jobs.append_observation(
+        job.job_id,
+        kind="validation",
+        level="warning",
+        title="产物校验",
+        message="quality-report.json 有警告。",
+        stage="validate",
+        status="warning",
+        details={"artifact": "quality-report.json", "warnings": 1},
+    )
+
+    payload = jobs.get(job.job_id).to_dict()  # type: ignore[union-attr]
+
+    assert payload["terminal"] is False
+    assert payload["observations"] == [
+        {
+            "id": observation.id,
+            "timestamp": observation.timestamp,
+            "createdAt": observation.timestamp,
+            "kind": "validation",
+            "level": "warning",
+            "title": "产物校验",
+            "message": "quality-report.json 有警告。",
+            "stage": "validate",
+            "status": "warning",
+            "details": {"artifact": "quality-report.json", "warnings": 1},
+        }
+    ]
+
+    jobs.mark_failed(job.job_id, "Invalid graph.")
+    failed_payload = jobs.get(job.job_id).to_dict()  # type: ignore[union-attr]
+
+    assert failed_payload["terminal"] is True
+    assert failed_payload["observations"][-1]["kind"] == "error"
+    assert failed_payload["observations"][-1]["level"] == "error"
+    assert failed_payload["observations"][-1]["stage"] == "validate"
+    assert failed_payload["observations"][-1]["message"] == "Invalid graph."
 
 
 def test_runner_formats_compact_chat_job_status(tmp_path: Path) -> None:
@@ -686,6 +754,63 @@ def test_project_registry_registers_and_resolves_by_id_name_alias(
     assert deleted is not None
     assert deleted.project_id == updated.project_id
     assert registry.get(project_id=updated.project_id) is None
+
+
+def test_project_registry_serializes_dashboard_project_state(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "Project With State"
+    graph_root = project / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    (graph_root / "knowledge-graph.json").write_text(
+        json.dumps(
+            {
+                "project": {"name": "Stateful Project"},
+                "nodes": [{"id": "file:src/app.py"}],
+                "edges": [{"source": "a", "target": "b"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(project)
+
+    registry.update_status(
+        record.project_id,
+        ProjectStatus.ANALYZING,
+        current_job_id="job-1",
+    )
+    registry.update_status(
+        record.project_id,
+        ProjectStatus.READY,
+        current_job_id=None,
+        last_job_id="job-1",
+        last_error=None,
+        node_count=1,
+        edge_count=1,
+    )
+    payload = registry.get(project_id=record.project_id).to_dict()  # type: ignore[union-attr]
+
+    assert payload["status"] == "ready"
+    assert payload["current_job_id"] is None
+    assert payload["last_job_id"] == "job-1"
+    assert payload["last_error"] is None
+    assert payload["last_analyzed_at"] is not None
+    assert payload["node_count"] == 1
+    assert payload["edge_count"] == 1
+    assert payload["graph_root"] == str(graph_root.resolve())
+    assert payload["id"] == payload["project_id"]
+    assert payload["currentJobId"] is None
+    assert payload["lastAnalyzedAt"] is not None
+    assert payload["nodeCount"] == 1
+    assert payload["edgeCount"] == 1
+
+    reloaded = ProjectRegistry(tmp_path / "projects.json")
+    reloaded_payload = reloaded.get(project_id=record.project_id).to_dict()  # type: ignore[union-attr]
+
+    assert reloaded_payload["status"] == "ready"
+    assert reloaded_payload["node_count"] == 1
+    assert reloaded_payload["edge_count"] == 1
 
 
 def test_project_registry_records_separate_source_and_graph_root(
@@ -1752,6 +1877,26 @@ async def test_runner_github_notifications_start_agent_without_scope_confirmatio
         async def ensure_ready(self):
             return None
 
+        async def run_action(self, action: str, payload: dict[str, object]):
+            graph_root = Path(str(payload["graphRoot"]))
+            if action == "preflight_inventory":
+                return {"ok": True, "artifacts": [], "observations": [], "warnings": []}
+            if action == "validate_outputs":
+                _write_validation_sidecars(graph_root)
+                return {
+                    "ok": True,
+                    "artifacts": [
+                        "knowledge-graph.json",
+                        "meta.json",
+                        "source-inventory.json",
+                        "fingerprints.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            raise AssertionError(f"Unexpected action: {action}")
+
     class DummySubAgentRegistry:
         def __init__(self, *_args, **_kwargs):
             pass
@@ -2274,46 +2419,70 @@ async def test_web_api_chat_explain_diff_and_onboard_pass_locale(
     async with app.test_request_context(
         "/astrbot_plugin_UnderstandAnything/chat",
         method="POST",
-        json={"query": "what changed?", "locale": "ru-RU"},
+        json={
+            "query": "what changed?",
+            "locale": "ru-RU",
+            "contextItems": [{"type": "file", "path": "src/app.py"}],
+        },
         headers={"Accept-Language": "zh-CN"},
     ):
         response = await api.chat()
     assert (await response.get_json())["data"]["answer"] == "chat answer"
     assert runner.calls[-1]["method"] == "chat"
     assert runner.calls[-1]["locale"] == "ru-RU"
+    assert runner.calls[-1]["context_items"] == [
+        {"type": "file", "path": "src/app.py"},
+    ]
+    assert runner.calls[-1]["include_context"] is True
 
     async with app.test_request_context(
         "/astrbot_plugin_UnderstandAnything/explain",
         method="POST",
-        json={"target": "src/app.py"},
+        json={
+            "target": "src/app.py",
+            "context_items": [{"type": "code-range", "path": "src/app.py"}],
+        },
         headers={"Accept-Language": "zh-CN"},
     ):
         response = await api.explain()
     assert (await response.get_json())["data"]["answer"] == "explain answer"
     assert runner.calls[-1]["method"] == "explain"
     assert runner.calls[-1]["locale"] == "zh-CN"
+    assert runner.calls[-1]["context_items"] == [
+        {"type": "code-range", "path": "src/app.py"},
+    ]
 
     async with app.test_request_context(
         "/astrbot_plugin_UnderstandAnything/diff",
         method="POST",
-        json={"changed_files": ["src/app.py"], "locale": "en-US"},
+        json={
+            "changed_files": ["src/app.py"],
+            "locale": "en-US",
+            "contextItems": [{"type": "diff-file", "path": "src/app.py"}],
+        },
         headers={"Accept-Language": "ru-RU"},
     ):
         response = await api.diff()
     assert (await response.get_json())["data"]["answer"] == "diff answer"
     assert runner.calls[-1]["method"] == "diff"
     assert runner.calls[-1]["locale"] == "en-US"
+    assert runner.calls[-1]["context_items"] == [
+        {"type": "diff-file", "path": "src/app.py"},
+    ]
 
     async with app.test_request_context(
         "/astrbot_plugin_UnderstandAnything/onboard",
         method="POST",
-        json={},
+        json={"contextItems": [{"type": "node", "nodeId": "root"}]},
         headers={"Accept-Language": "ru-RU"},
     ):
         response = await api.onboard()
     assert (await response.get_json())["data"]["markdown"] == "onboard markdown"
     assert runner.calls[-1]["method"] == "onboard"
     assert runner.calls[-1]["locale"] == "ru-RU"
+    assert runner.calls[-1]["context_items"] == [
+        {"type": "node", "nodeId": "root"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -2344,6 +2513,84 @@ async def test_web_api_lists_jobs_with_project_and_status_filters(
     assert len(payload["data"]["jobs"]) == 1
     assert payload["data"]["jobs"][0]["job_id"] == first.job_id
     assert payload["data"]["jobs"][0]["progress"]["phase"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_web_api_serializes_job_observations_in_list_and_detail(
+    tmp_path: Path,
+) -> None:
+    jobs = JobStore()
+    job = jobs.create("understand", tmp_path / "project", {"project_id": "p1"})
+    jobs.append_observation(
+        job.job_id,
+        kind="stage",
+        level="info",
+        title="准备源码",
+        message="项目源码准备中。",
+        stage="source",
+        status="running",
+    )
+    runner = SimpleNamespace(
+        config={},
+        registry=ProjectRegistry(tmp_path / "projects.json"),
+        jobs=jobs,
+    )
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/jobs?project_id=p1",
+    ):
+        response = await api.jobs()
+
+    list_payload = await response.get_json()
+    observation = list_payload["data"]["jobs"][0]["observations"][0]
+    assert observation["kind"] == "stage"
+    assert observation["stage"] == "source"
+    assert observation["createdAt"] == observation["timestamp"]
+
+    async with app.test_request_context(
+        f"/astrbot_plugin_UnderstandAnything/jobs/{job.job_id}",
+    ):
+        response = await api.get_job(job.job_id)
+
+    detail_payload = await response.get_json()
+    assert detail_payload["data"]["observations"][0]["message"] == "项目源码准备中。"
+
+
+@pytest.mark.asyncio
+async def test_web_api_projects_include_dashboard_status_fields(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    graph_root = project / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(project)
+    registry.update_status(
+        record.project_id,
+        ProjectStatus.FAILED,
+        current_job_id="job-1",
+        last_job_id="job-1",
+        last_error="Invalid graph.",
+        node_count=2,
+        edge_count=3,
+    )
+    runner = SimpleNamespace(config={}, registry=registry, jobs=JobStore())
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    async with app.test_request_context("/astrbot_plugin_UnderstandAnything/projects"):
+        response = await api.projects()
+
+    payload = await response.get_json()
+    project_payload = payload["data"]["projects"][0]
+    assert project_payload["status"] == "failed"
+    assert project_payload["current_job_id"] == "job-1"
+    assert project_payload["last_job_id"] == "job-1"
+    assert project_payload["last_error"] == "Invalid graph."
+    assert project_payload["node_count"] == 2
+    assert project_payload["edge_count"] == 3
 
 
 @pytest.mark.asyncio
@@ -2501,6 +2748,41 @@ async def test_web_api_delete_project_removes_registry_and_graph_not_source(
     assert source_root.exists()
     assert not graph_root.exists()
     assert registry.get(project_id=record.project_id) is None
+
+
+@pytest.mark.asyncio
+async def test_web_api_delete_project_restores_previous_status_when_delete_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "project"
+    graph_root = source_root / ".understand-anything"
+    graph_root.mkdir(parents=True)
+    registry = ProjectRegistry(tmp_path / "projects.json")
+    record = registry.register(source_root, status=ProjectStatus.READY)
+    runner = SimpleNamespace(config={}, registry=registry, jobs=JobStore())
+    api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
+    app = Quart(__name__)
+
+    def fail_rmtree(path: Path) -> None:
+        raise OSError(f"cannot delete {path}")
+
+    monkeypatch.setattr("astrbot_adapter.web_api.shutil.rmtree", fail_rmtree)
+
+    async with app.test_request_context(
+        "/astrbot_plugin_UnderstandAnything/projects/delete",
+        method="POST",
+        json={"project_id": record.project_id},
+    ):
+        response, status_code = await api.delete_project()
+
+    payload = await response.get_json()
+    assert status_code == 500
+    assert payload["status"] == "error"
+    restored = registry.get(project_id=record.project_id)
+    assert restored is not None
+    assert restored.status is ProjectStatus.READY
+    assert graph_root.exists()
 
 
 @pytest.mark.asyncio
@@ -3077,6 +3359,11 @@ async def test_runner_fails_graph_job_when_required_graph_is_missing(
         async def ensure_ready(self):
             return None
 
+        async def run_action(self, action: str, _payload: dict[str, object]):
+            if action in {"preflight_inventory", "validate_outputs"}:
+                return {"ok": True, "artifacts": [], "observations": [], "warnings": []}
+            raise AssertionError(f"Unexpected action: {action}")
+
     class DummySubAgentRegistry:
         def __init__(self, *_args, **_kwargs):
             pass
@@ -3142,6 +3429,416 @@ async def test_runner_fails_graph_job_when_required_graph_is_missing(
     assert dispatcher.called is True
 
 
+@pytest.mark.asyncio
+async def test_runner_runs_runtime_validation_around_agent_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            events.append("runtime:ready")
+
+        async def run_action(self, action: str, payload: dict[str, object]):
+            events.append(f"runtime:{action}")
+            assert payload["projectRoot"] == str(project_root)
+            assert payload["graphRoot"] == str(graph_root)
+            assert payload["jobId"] == job.job_id
+            assert payload["jobKind"] == "understand"
+            assert payload["locale"] == "zh-CN"
+            assert payload["strictVisibleLanguage"] == "auto"
+            if action == "preflight_inventory":
+                return {
+                    "ok": True,
+                    "artifacts": ["source-inventory.json"],
+                    "observations": [
+                        {
+                            "kind": "artifact",
+                            "level": "success",
+                            "title": "源码清单已生成",
+                            "message": "已记录 1 个文件。",
+                            "stage": "source",
+                            "status": "succeeded",
+                        }
+                    ],
+                    "warnings": [],
+                }
+            if action == "validate_outputs":
+                (graph_root / "source-inventory.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                (graph_root / "fingerprints.json").write_text(
+                    json.dumps(_sample_fingerprints("abc")),
+                    encoding="utf-8",
+                )
+                (graph_root / "quality-report.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                return {
+                    "ok": True,
+                    "artifacts": [
+                        "knowledge-graph.json",
+                        "meta.json",
+                        "source-inventory.json",
+                        "fingerprints.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [
+                        {
+                            "kind": "quality",
+                            "level": "success",
+                            "title": "分析产物校验通过",
+                            "message": "质量报告通过。",
+                            "stage": "validate",
+                            "status": "succeeded",
+                        }
+                    ],
+                    "warnings": [],
+                }
+            raise AssertionError(f"Unexpected action: {action}")
+
+    class DummyDispatcher:
+        async def run_with_local_tools(self, **_kwargs):
+            events.append("agent")
+            graph_root.mkdir(parents=True, exist_ok=True)
+            (graph_root / "knowledge-graph.json").write_text(
+                json.dumps(
+                    {
+                        "project": {"name": "Demo", "gitCommitHash": "abc"},
+                        "nodes": [],
+                        "edges": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (graph_root / "meta.json").write_text(
+                json.dumps({"gitCommitHash": "abc"}),
+                encoding="utf-8",
+            )
+            return "analysis complete"
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    graph_root = project_root / ".understand-anything"
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "local"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+    project_id = ProjectRegistry.project_id_for(project_root)
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "project_id": project_id,
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+            "locale": "zh-CN",
+        },
+    )
+    runner.registry.register(
+        project_root,
+        job_id=job.job_id,
+        graph_root=graph_root,
+        status=ProjectStatus.ANALYZING,
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    project = runner.registry.get(project_id=project_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FINISHED
+    assert events == [
+        "runtime:ready",
+        "runtime:preflight_inventory",
+        "agent",
+        "runtime:validate_outputs",
+    ]
+    assert [item.kind for item in snapshot.observations].count("quality") == 1
+    assert project is not None
+    assert project.status is ProjectStatus.READY
+    assert project.current_job_id is None
+    assert project.node_count == 0
+    assert project.edge_count == 0
+
+
+@pytest.mark.asyncio
+async def test_runner_fails_when_runtime_validation_returns_not_ok(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyRuntime:
+        async def ensure_ready(self):
+            return None
+
+        async def run_action(self, action: str, _payload: dict[str, object]):
+            if action == "preflight_inventory":
+                return {"ok": True, "artifacts": [], "observations": [], "warnings": []}
+            if action == "validate_outputs":
+                return {
+                    "ok": False,
+                    "fatal": "Invalid knowledge-graph.json.",
+                    "artifacts": [],
+                    "observations": [
+                        {
+                            "kind": "error",
+                            "level": "error",
+                            "title": "分析产物校验失败",
+                            "message": "Invalid knowledge-graph.json.",
+                            "stage": "validate",
+                            "status": "failed",
+                        }
+                    ],
+                    "warnings": [],
+                }
+            raise AssertionError(f"Unexpected action: {action}")
+
+    class DummyDispatcher:
+        async def run_with_local_tools(self, **_kwargs):
+            graph_root.mkdir(parents=True, exist_ok=True)
+            (graph_root / "knowledge-graph.json").write_text(
+                json.dumps({"project": {"name": "Demo"}, "nodes": [], "edges": []}),
+                encoding="utf-8",
+            )
+            (graph_root / "meta.json").write_text(
+                json.dumps({"gitCommitHash": "abc"}),
+                encoding="utf-8",
+            )
+            return "analysis complete"
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    graph_root = project_root / ".understand-anything"
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "local"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+    project_id = ProjectRegistry.project_id_for(project_root)
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "project_id": project_id,
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+            "locale": "zh-CN",
+        },
+    )
+    runner.registry.register(
+        project_root,
+        job_id=job.job_id,
+        graph_root=graph_root,
+        status=ProjectStatus.ANALYZING,
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    project = runner.registry.get(project_id=project_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FAILED
+    assert snapshot.error == "Invalid knowledge-graph.json."
+    assert not (graph_root / "fingerprints.json").exists()
+    assert snapshot.observations[-1].level == "error"
+    assert snapshot.observations[-1].stage == "validate"
+    assert project is not None
+    assert project.status is ProjectStatus.FAILED
+    assert project.last_error == "Invalid knowledge-graph.json."
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_compile_domain_ir_action_for_domain_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actions: list[str] = []
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            return None
+
+        async def run_action(self, action: str, payload: dict[str, object]):
+            actions.append(action)
+            assert payload["jobKind"] == "understand-domain"
+            if action == "preflight_inventory":
+                return {"ok": True, "artifacts": [], "observations": [], "warnings": []}
+            if action == "compile_domain_ir":
+                (graph_root / "domain-graph.json").write_text(
+                    json.dumps({"nodes": [], "edges": []}),
+                    encoding="utf-8",
+                )
+                (graph_root / "quality-report.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                return {
+                    "ok": True,
+                    "artifacts": [
+                        "intermediate/domain-analysis.json",
+                        "domain-graph.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            raise AssertionError(f"Unexpected action: {action}")
+
+    class DummyDispatcher:
+        async def run_with_local_tools(self, **_kwargs):
+            intermediate = graph_root / "intermediate"
+            intermediate.mkdir(parents=True, exist_ok=True)
+            (graph_root / "knowledge-graph.json").write_text(
+                json.dumps({"project": {"name": "Demo"}, "nodes": [], "edges": []}),
+                encoding="utf-8",
+            )
+            (graph_root / "meta.json").write_text(
+                json.dumps({"gitCommitHash": "abc"}),
+                encoding="utf-8",
+            )
+            (intermediate / "domain-analysis.json").write_text(
+                json.dumps({"version": "1.0.0", "domains": []}),
+                encoding="utf-8",
+            )
+            return "domain complete"
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    graph_root = project_root / ".understand-anything"
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "local"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+    project_id = ProjectRegistry.project_id_for(project_root)
+    job = runner.jobs.create(
+        "understand-domain",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "project_id": project_id,
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+            "locale": "zh-CN",
+        },
+    )
+    runner.registry.register(
+        project_root,
+        job_id=job.job_id,
+        graph_root=graph_root,
+        status=ProjectStatus.ANALYZING,
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FINISHED
+    assert actions == ["preflight_inventory", "compile_domain_ir"]
+
+
 def test_runner_rejects_fingerprints_with_mismatched_commit(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     graph_root = project_root / ".understand-anything"
@@ -3158,6 +3855,7 @@ def test_runner_rejects_fingerprints_with_mismatched_commit(tmp_path: Path) -> N
         json.dumps(_sample_fingerprints("fingerprint-commit")),
         encoding="utf-8",
     )
+    _write_validation_sidecars(graph_root)
     runner = UnderstandAnythingRunner(
         context=None,  # type: ignore[arg-type]
         config={},
@@ -3191,6 +3889,7 @@ def test_runner_rejects_empty_fingerprint_files(tmp_path: Path) -> None:
         json.dumps(fingerprints),
         encoding="utf-8",
     )
+    _write_validation_sidecars(graph_root)
     runner = UnderstandAnythingRunner(
         context=None,  # type: ignore[arg-type]
         config={},
@@ -3502,6 +4201,31 @@ def test_skill_prompts_require_internal_subagent_tools() -> None:
     assert "UA_GRAPH_ROOT" in domain
     assert "$PROJECT_ROOT/.understand-anything/intermediate" not in understand
     assert "$PROJECT_ROOT/.understand-anything/intermediate" not in domain
+
+
+def test_domain_skill_and_prompt_require_ir_only_output() -> None:
+    skill = (PLUGIN_ROOT / "skills" / "understand-domain" / "SKILL.md").read_text(
+        encoding="utf-8",
+    )
+    prompt = (
+        PLUGIN_ROOT / "astrbot_adapter" / "prompts" / "agents" / "domain-analyzer.md"
+    ).read_text(encoding="utf-8")
+    combined = f"{skill}\n{prompt}"
+
+    assert "DomainAnalysisIR" in combined
+    assert "$UA_GRAPH_ROOT/intermediate/domain-analysis.json" in skill
+    assert "$UA_GRAPH_ROOT/intermediate/domain-analysis.json" in prompt
+    assert 'expected_output_path="$UA_GRAPH_ROOT/intermediate/domain-analysis.json"' in skill
+    assert "compile_domain_ir" in skill
+    assert "Do not create or edit `domain-graph.json`" in prompt
+    assert '"nodes": [' not in prompt
+    assert '"edges": [' not in prompt
+    assert '"layers":' not in prompt
+    assert '"tour":' not in prompt
+    assert "Save to `$UA_GRAPH_ROOT/domain-graph.json`" not in skill
+    assert "Clean up `$UA_GRAPH_ROOT/intermediate/domain-analysis.json`" not in skill
+    assert "model: inherit" not in combined
+    assert "Kimi" not in combined
 
 
 def test_understand_skill_documents_incremental_and_review_fingerprint_flow() -> None:
@@ -3835,6 +4559,13 @@ async def test_runner_llm_actions_include_language_directive(
 
         async def run_action(self, action: str, payload: dict[str, object]):
             self.calls.append((action, payload))
+            if action == "assistant_context_bundle":
+                return {
+                    "ok": True,
+                    "prompt": f"assistant context for {payload.get('mode')}",
+                    "context": {"items": payload.get("contextItems", [])},
+                    "warnings": [],
+                }
             if action == "diff_markdown":
                 return {
                     "markdown": "diff prompt",
@@ -3849,8 +4580,10 @@ async def test_runner_llm_actions_include_language_directive(
     class Dispatcher:
         def __init__(self) -> None:
             self.system_prompts: list[str] = []
+            self.prompts: list[str] = []
 
         async def generate(self, *, prompt, event=None, system_prompt=""):
+            self.prompts.append(str(prompt))
             self.system_prompts.append(system_prompt)
             return system_prompt
 
@@ -3864,26 +4597,58 @@ async def test_runner_llm_actions_include_language_directive(
     runner.runtime = runtime  # type: ignore[assignment]
     runner.dispatcher = dispatcher  # type: ignore[assignment]
 
-    await runner.chat(query="What does this do?", project_path=project, locale="zh-CN")
-    await runner.explain(target="src/app.py", project_path=project, locale="zh-CN")
+    await runner.chat(
+        query="What does this do?",
+        project_path=project,
+        context_items=[{"type": "file", "path": "src/app.py"}],
+        locale="zh-CN",
+    )
+    await runner.explain(
+        target="src/app.py",
+        project_path=project,
+        context_items=[{"type": "code-range", "path": "src/app.py"}],
+        locale="zh-CN",
+    )
     await runner.diff(
         project_path=project,
         changed_files=["src/app.py"],
+        context_items=[{"type": "diff-file", "path": "src/app.py"}],
         locale="zh-CN",
     )
-    onboard = await runner.onboard(project_path=project, locale="zh-CN")
+    onboard = await runner.onboard(
+        project_path=project,
+        context_items=[{"type": "node", "nodeId": "root"}],
+        locale="zh-CN",
+    )
 
     assert onboard == "onboard markdown"
     assert [call[0] for call in runtime.calls] == [
+        "assistant_context_bundle",
         "chat_prompt",
+        "assistant_context_bundle",
         "explain_prompt",
+        "assistant_context_bundle",
         "diff_markdown",
+        "assistant_context_bundle",
         "onboard_markdown",
     ]
     for _action, payload in runtime.calls:
         assert payload["targetLanguage"] == "Simplified Chinese"
         assert "Keep code identifiers" in str(payload["languageDirective"])
+    assert [call[1]["mode"] for call in runtime.calls[0::2]] == [
+        "chat",
+        "explain",
+        "diff",
+        "onboarding",
+    ]
+    assert runtime.calls[0][1]["contextItems"] == [
+        {"type": "file", "path": "src/app.py"},
+    ]
     assert len(dispatcher.system_prompts) == 3
+    assert len(dispatcher.prompts) == 3
+    for prompt in dispatcher.prompts:
+        assert "assistant context for" in prompt
+        assert "## Existing Graph Prompt" in prompt
     for system_prompt in dispatcher.system_prompts:
         assert "Generate all user-visible textual content in Simplified Chinese" in (
             system_prompt

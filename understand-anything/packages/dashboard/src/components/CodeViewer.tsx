@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { Highlight, themes } from "prism-react-renderer";
-import { useI18n } from "../i18n";
+import { Plus } from "lucide-react";
 import { useDashboardStore } from "../store";
-import type { AstrBotWindow } from "../utils/astrbotBridge";
+import { useI18n } from "../contexts/I18nContext";
+import { toUserErrorMessage } from "../utils/userErrors";
+import {
+  type AstrBotWindow,
+  type ProjectRefParams,
+  pluginGet,
+} from "../utils/astrbotBridge";
+import { isAstrBotPluginPageContext } from "../utils/pluginPageContext";
+import {
+  buildCodeLineAssistantContextItem,
+  buildFileAssistantContextItem,
+} from "../utils/assistantContextActions";
 
 interface CodeViewerProps {
   accessToken: string;
+  projectId?: string;
+  projectParams?: ProjectRefParams;
   presentation?: "sidebar" | "modal";
   onClose?: () => void;
   onExpand?: () => void;
@@ -24,41 +37,14 @@ type SourceState =
   | { status: "loaded"; source: SourceFile; error: null }
   | { status: "error"; source: null; error: string };
 
+const MULTI_PROJECT_MODE = import.meta.env.VITE_MULTI_PROJECT_MODE === "true" || import.meta.env.MODE === "multi";
+
 function fileContentUrl(filePath: string, token: string): string {
+  if (MULTI_PROJECT_MODE) {
+    throw new Error("项目上下文缺失，无法读取源码。");
+  }
   const params = new URLSearchParams({ token, path: filePath });
   return `/file-content.json?${params.toString()}`;
-}
-
-function bridgeFileParams(filePath: string): Record<string, string> {
-  const params = new URLSearchParams(window.location.search);
-  const fileParams: Record<string, string> = { path: filePath };
-  for (const key of ["project_id", "project_name", "project_path", "project"]) {
-    const value = params.get(key);
-    if (value) fileParams[key] = value;
-  }
-  return fileParams;
-}
-
-async function loadSourceFile(
-  filePath: string,
-  token: string,
-  signal: AbortSignal,
-): Promise<SourceFile> {
-  const bridge = (window as AstrBotWindow).AstrBotPluginPage;
-  if (token === "__astrbot__" && bridge) {
-    await bridge.ready();
-    return (await bridge.apiGet(
-      "file-content",
-      bridgeFileParams(filePath),
-    )) as SourceFile;
-  }
-
-  const res = await fetch(fileContentUrl(filePath, token), { signal });
-  const data = (await res.json()) as SourceFile | { error?: string };
-  if (!res.ok) {
-    throw new Error("error" in data && data.error ? data.error : "Source unavailable");
-  }
-  return data as SourceFile;
 }
 
 function fallbackLanguage(filePath: string | undefined): string {
@@ -91,16 +77,18 @@ function formatBytes(bytes: number): string {
 
 export default function CodeViewer({
   accessToken,
+  projectId,
+  projectParams,
   presentation = "sidebar",
   onClose,
   onExpand,
 }: CodeViewerProps) {
-  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const domainGraph = useDashboardStore((s) => s.domainGraph);
   const viewMode = useDashboardStore((s) => s.viewMode);
   const codeViewerNodeId = useDashboardStore((s) => s.codeViewerNodeId);
   const closeCodeViewer = useDashboardStore((s) => s.closeCodeViewer);
+  const addAssistantContextItem = useDashboardStore((s) => s.addAssistantContextItem);
   const activeGraph = viewMode === "domain" && domainGraph ? domainGraph : graph;
   // Files tab always builds its tree from the structural graph, so a node ID opened from
   // there may not exist in the active (domain) graph — fall back to the structural graph.
@@ -113,10 +101,11 @@ export default function CodeViewer({
     source: null,
     error: null,
   });
+  const { t } = useI18n();
 
   useEffect(() => {
     if (!node?.filePath) {
-      setState({ status: "error", source: null, error: t("codeViewer.noPath", "This node does not have a file path.") });
+      setState({ status: "error", source: null, error: "该节点没有关联的文件路径。" });
       return;
     }
 
@@ -124,29 +113,49 @@ export default function CodeViewer({
       setState({
         status: "error",
         source: null,
-        error: t("codeViewer.sourcePreview", "Source preview for this node is unavailable."),
+        error: "源码预览仅在本地仪表盘服务运行时可用。",
       });
       return;
     }
 
     const controller = new AbortController();
+    let disposed = false;
     setState({ status: "loading", source: null, error: null });
 
-    loadSourceFile(node.filePath, accessToken, controller.signal)
-      .then((data) => {
-        setState({ status: "loaded", source: data, error: null });
+    const bridge = (window as AstrBotWindow).AstrBotPluginPage;
+    const loadSource = isAstrBotPluginPageContext() && bridge
+      ? pluginGet<SourceFile>(bridge, "file-content", {
+          ...(projectParams ?? (projectId ? { project_id: projectId } : {})),
+          path: node.filePath,
+        })
+      : fetch(fileContentUrl(node.filePath, accessToken), {
+          signal: controller.signal,
+        }).then(async (res) => {
+          const data = (await res.json()) as SourceFile | { error?: string };
+          if (!res.ok) {
+            throw new Error("error" in data && data.error ? data.error : "源码不可用");
+          }
+          return data as SourceFile;
+        });
+
+    loadSource
+      .then((source) => {
+        if (!disposed) setState({ status: "loaded", source, error: null });
       })
       .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || disposed) return;
         setState({
           status: "error",
           source: null,
-          error: err instanceof Error ? err.message : String(err),
+          error: toUserErrorMessage(err, "源码读取失败，请稍后重试。"),
         });
       });
 
-    return () => controller.abort();
-  }, [accessToken, node?.filePath, t]);
+    return () => {
+      disposed = true;
+      controller.abort();
+    };
+  }, [accessToken, node?.filePath, projectId, projectParams]);
 
   const highlightedRange = useMemo(() => {
     if (!node?.lineRange) return null;
@@ -156,7 +165,7 @@ export default function CodeViewer({
   if (!node) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-surface">
-        <p className="text-text-muted text-sm">{t("codeViewer.noFileSelected", "No file selected")}</p>
+        <p className="text-text-muted text-sm">{t.codeViewer.noFile}</p>
       </div>
     );
   }
@@ -164,10 +173,32 @@ export default function CodeViewer({
   const source = state.source;
   const language = source?.language ?? fallbackLanguage(node.filePath);
   const lineInfo = highlightedRange
-    ? `${t("codeViewer.lines", "Lines")} ${highlightedRange.start}-${highlightedRange.end}`
-    : t("codeViewer.fullFile", "Full file");
+    ? `${t.codeViewer.lines} ${highlightedRange.start}-${highlightedRange.end}`
+    : t.codeViewer.fullFile;
   const isModal = presentation === "modal";
   const handleClose = onClose ?? closeCodeViewer;
+  const contextGraphKind = viewMode === "domain" && domainGraph?.nodes.some((candidate) => candidate.id === node.id)
+    ? "domain"
+    : "knowledge";
+
+  const handleAddCurrentFile = () => {
+    if (!node.filePath) return;
+    addAssistantContextItem(buildFileAssistantContextItem({
+      path: node.filePath,
+      nodeId: node.id,
+      graphKind: contextGraphKind,
+    }));
+  };
+
+  const handleAddLine = (lineNumber: number) => {
+    if (!node.filePath) return;
+    addAssistantContextItem(buildCodeLineAssistantContextItem({
+      path: node.filePath,
+      lineNumber,
+      nodeId: node.id,
+      graphKind: contextGraphKind,
+    }));
+  };
 
   return (
     <div className="h-full w-full flex flex-col bg-surface overflow-hidden">
@@ -196,13 +227,23 @@ export default function CodeViewer({
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleAddCurrentFile}
+            disabled={!node.filePath}
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-accent/30 px-2 py-1 text-[11px] font-semibold text-accent transition-colors hover:border-accent/60 hover:text-accent-bright disabled:cursor-not-allowed disabled:opacity-40"
+            title="加入当前文件到会话上下文"
+          >
+            <Plus className="h-3 w-3" />
+            加入当前文件
+          </button>
           {onExpand && (
             <button
               type="button"
               onClick={onExpand}
               className="text-text-muted hover:text-text-primary transition-colors"
-              title={t("codeViewer.openTitle", "Open source preview")}
-              aria-label={t("codeViewer.openTitle", "Open source preview")}
+              title={t.codeViewer.openLarger}
+              aria-label={t.codeViewer.openLarger}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6" />
@@ -213,8 +254,8 @@ export default function CodeViewer({
             type="button"
             onClick={handleClose}
             className="text-text-muted hover:text-text-primary transition-colors"
-            title={t("codeViewer.closeTitle", "Close source preview")}
-            aria-label={t("codeViewer.closeTitle", "Close source preview")}
+            title={isModal ? t.codeViewer.closeExpanded : t.codeViewer.closeViewer}
+            aria-label={isModal ? t.codeViewer.closeExpanded : t.codeViewer.closeViewer}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -225,13 +266,13 @@ export default function CodeViewer({
 
       <div className="flex-1 min-h-0 overflow-auto bg-root">
         {state.status === "loading" && (
-          <div className="p-5 text-sm text-text-muted">{t("codeViewer.loadingSource", "Loading source...")}</div>
+          <div className="p-5 text-sm text-text-muted">{t.codeViewer.loading}</div>
         )}
 
         {state.status === "error" && (
           <div className="p-5">
             <div className="rounded-lg border border-border-subtle bg-elevated p-4">
-              <div className="text-sm font-medium text-text-primary mb-2">{t("common.sourceUnavailable", "Source unavailable")}</div>
+              <div className="text-sm font-medium text-text-primary mb-2">{t.codeViewer.sourceUnavailable}</div>
               <p className="text-sm text-text-secondary leading-relaxed">{state.error}</p>
             </div>
           </div>
@@ -240,7 +281,7 @@ export default function CodeViewer({
         {source && (
           <>
             <div className="px-4 py-2 border-b border-border-subtle bg-surface text-[11px] text-text-muted flex items-center justify-between">
-              <span>{t("codeViewer.lineCount", "{count} lines", { count: source.lineCount })}</span>
+              <span>{source.lineCount} {t.codeViewer.linesLabel}</span>
               <span>{formatBytes(source.sizeBytes)}</span>
             </div>
             <Highlight code={source.content} language={language} theme={themes.vsDark}>
@@ -266,8 +307,17 @@ export default function CodeViewer({
                           isHighlighted ? "bg-accent/15" : "hover:bg-elevated/40"
                         }`}
                       >
-                        <span className="w-12 shrink-0 select-none border-r border-border-subtle pr-3 text-right text-text-muted bg-surface/60">
-                          {lineNumber}
+                        <span className="flex w-14 shrink-0 select-none items-center justify-end gap-1 border-r border-border-subtle pr-2 text-right text-text-muted bg-surface/60">
+                          <button
+                            type="button"
+                            onClick={() => handleAddLine(lineNumber)}
+                            className="inline-flex h-4 w-4 items-center justify-center rounded border border-border-subtle text-text-muted transition-colors hover:border-accent/50 hover:text-accent"
+                            title="加入该行到会话上下文"
+                            aria-label={`加入第 ${lineNumber} 行到会话上下文`}
+                          >
+                            <Plus className="h-3 w-3" />
+                          </button>
+                          <span>{lineNumber}</span>
                         </span>
                         <span className="pl-3 pr-6 whitespace-pre">
                           {line.map((token, key) => (

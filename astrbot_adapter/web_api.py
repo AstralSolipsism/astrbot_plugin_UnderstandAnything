@@ -33,6 +33,7 @@ from .ignore_review import (
 )
 from .job_store import JobStatus
 from .path_security import PathSecurityError
+from .project_registry import ProjectStatus
 from .runner import UnderstandAnythingRunner
 from .runtime_tools import detect_runtime_tools, runtime_readiness
 from .subagent_registry import UnderstandAnythingSubAgentRegistry
@@ -303,11 +304,17 @@ class UnderstandAnythingWebApi:
                     "Project analysis is still running. Wait for the job to finish before deleting it."
                 )
             graph_root = self._safe_project_graph_root(record.to_dict())
-            graph_deleted = False
-            if graph_root.exists():
-                shutil.rmtree(graph_root)
-                graph_deleted = True
-            deleted = self.runner.registry.delete(project_id)
+            previous_status = record.status
+            self.runner.registry.update_status(project_id, ProjectStatus.DELETING)
+            try:
+                graph_deleted = False
+                if graph_root.exists():
+                    shutil.rmtree(graph_root)
+                    graph_deleted = True
+                deleted = self.runner.registry.delete(project_id)
+            except Exception:
+                self.runner.registry.update_status(project_id, previous_status)
+                raise
             return jsonify(
                 {
                     "status": "ok",
@@ -511,10 +518,12 @@ class UnderstandAnythingWebApi:
             body = await self._json_body()
             answer = await self.runner.chat(
                 query=str(body.get("query") or ""),
+                context_items=self._body_context_items(body),
+                include_context=True,
                 locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
-            return jsonify({"status": "ok", "data": {"answer": answer}})
+            return jsonify({"status": "ok", "data": self._assistant_data(answer, "answer")})
         except Exception as exc:
             return self._error(exc)
 
@@ -523,10 +532,12 @@ class UnderstandAnythingWebApi:
             body = await self._json_body()
             answer = await self.runner.explain(
                 target=str(body.get("target") or body.get("path") or ""),
+                context_items=self._body_context_items(body),
+                include_context=True,
                 locale=self._request_locale(body),
                 **self._body_project_ref(body, allow_path_alias=False),
             )
-            return jsonify({"status": "ok", "data": {"answer": answer}})
+            return jsonify({"status": "ok", "data": self._assistant_data(answer, "answer")})
         except Exception as exc:
             return self._error(exc)
 
@@ -534,16 +545,13 @@ class UnderstandAnythingWebApi:
         try:
             body = await self._json_body()
             answer = await self.runner.diff(
-                changed_files=[
-                    str(item)
-                    for item in body.get("changed_files", [])
-                    if isinstance(item, str)
-                ]
-                or None,
+                changed_files=self._body_changed_files(body),
+                context_items=self._body_context_items(body),
+                include_context=True,
                 locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
-            return jsonify({"status": "ok", "data": {"answer": answer}})
+            return jsonify({"status": "ok", "data": self._assistant_data(answer, "answer")})
         except Exception as exc:
             return self._error(exc)
 
@@ -551,10 +559,14 @@ class UnderstandAnythingWebApi:
         try:
             body = await self._json_body()
             markdown = await self.runner.onboard(
+                context_items=self._body_context_items(body),
+                include_context=True,
                 locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
-            return jsonify({"status": "ok", "data": {"markdown": markdown}})
+            return jsonify(
+                {"status": "ok", "data": self._assistant_data(markdown, "markdown")},
+            )
         except Exception as exc:
             return self._error(exc)
 
@@ -571,6 +583,28 @@ class UnderstandAnythingWebApi:
     async def _json_body(self) -> dict[str, Any]:
         body = await request.get_json(silent=True)
         return body if isinstance(body, dict) else {}
+
+    @staticmethod
+    def _body_context_items(body: dict[str, Any]) -> list[Any] | None:
+        items = body.get("contextItems")
+        if items is None:
+            items = body.get("context_items")
+        return items if isinstance(items, list) else None
+
+    @staticmethod
+    def _body_changed_files(body: dict[str, Any]) -> list[str] | None:
+        raw = body.get("changedFiles")
+        if raw is None:
+            raw = body.get("changed_files", [])
+        if not isinstance(raw, list):
+            return None
+        return [str(item) for item in raw if isinstance(item, str)] or None
+
+    @staticmethod
+    def _assistant_data(payload: Any, value_key: str) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            return payload
+        return {value_key: payload}
 
     @staticmethod
     def _request_locale(body: dict[str, Any] | None = None) -> str | None:

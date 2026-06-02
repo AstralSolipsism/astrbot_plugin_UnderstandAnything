@@ -355,7 +355,11 @@ const DomainMetaSchema = z.object({
   businessRules: z.array(z.string()).optional(),
   crossDomainInteractions: z.array(z.string()).optional(),
   entryPoint: z.string().optional(),
-  entryType: z.enum(["http", "cli", "event", "cron", "manual"]).optional(),
+  entryType: z.enum(["http", "cli", "event", "cron", "manual", "document"]).optional(),
+  scopePath: z.string().optional(),
+  sourceNodeIds: z.array(z.string()).optional(),
+  sourceFilePaths: z.array(z.string()).optional(),
+  evidence: z.union([z.array(z.string()), z.string()]).optional(),
 }).passthrough();
 
 const KnowledgeMetaSchema = z.object({

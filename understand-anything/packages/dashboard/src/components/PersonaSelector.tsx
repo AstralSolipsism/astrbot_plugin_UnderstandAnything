@@ -1,35 +1,29 @@
-import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 import type { Persona } from "../store";
 
-const personas: { id: Persona; labelKey: string; fallback: string; descriptionKey: string; description: string }[] = [
-  {
-    id: "non-technical",
-    labelKey: "persona.overview",
-    fallback: "Overview",
-    descriptionKey: "persona.overviewDescription",
-    description: "High-level architecture view",
-  },
-  {
-    id: "junior",
-    labelKey: "persona.learn",
-    fallback: "Learn",
-    descriptionKey: "persona.learnDescription",
-    description: "Full dashboard with guided learning",
-  },
-  {
-    id: "experienced",
-    labelKey: "persona.deepDive",
-    fallback: "Deep Dive",
-    descriptionKey: "persona.deepDiveDescription",
-    description: "Code-focused with chat",
-  },
-];
-
 export default function PersonaSelector() {
-  const { t } = useI18n();
   const persona = useDashboardStore((s) => s.persona);
   const setPersona = useDashboardStore((s) => s.setPersona);
+  const { t } = useI18n();
+
+  const personas: { id: Persona; label: string; description: string }[] = [
+    {
+      id: "non-technical",
+      label: t.personaSelector.overview,
+      description: t.personaSelector.overviewDesc,
+    },
+    {
+      id: "junior",
+      label: t.personaSelector.learn,
+      description: t.personaSelector.learnDesc,
+    },
+    {
+      id: "experienced",
+      label: t.personaSelector.deepDive,
+      description: t.personaSelector.deepDiveDesc,
+    },
+  ];
 
   return (
     <div className="flex items-center gap-1 bg-elevated rounded-lg p-0.5">
@@ -37,14 +31,14 @@ export default function PersonaSelector() {
         <button
           key={p.id}
           onClick={() => setPersona(p.id)}
-          title={t(p.descriptionKey, p.description)}
+          title={p.description}
           className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
             persona === p.id
               ? "bg-accent/20 text-accent"
               : "text-text-muted hover:text-text-secondary hover:bg-surface"
           }`}
         >
-          {t(p.labelKey, p.fallback)}
+          {p.label}
         </button>
       ))}
     </div>

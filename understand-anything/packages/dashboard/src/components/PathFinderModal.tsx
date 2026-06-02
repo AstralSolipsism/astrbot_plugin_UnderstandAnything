@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { formatDisplayKey, useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { nodeTypeLabel } from "../utils/displayLabels";
 
 interface PathFinderModalProps {
   isOpen: boolean;
@@ -8,7 +8,6 @@ interface PathFinderModalProps {
 }
 
 export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProps) {
-  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const selectNode = useDashboardStore((s) => s.selectNode);
   const [fromNodeId, setFromNodeId] = useState("");
@@ -126,7 +125,7 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
                 d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
               />
             </svg>
-            <h2 className="font-heading text-xl text-text-primary">{t("pathFinder.title", "Dependency Path Finder")}</h2>
+            <h2 className="font-heading text-xl text-text-primary">依赖路径查找</h2>
           </div>
           <button
             onClick={onClose}
@@ -141,13 +140,13 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
         {/* Body */}
         <div className="p-5 space-y-4 overflow-y-auto max-h-[calc(80vh-180px)]">
           <p className="text-sm text-text-secondary">
-            {t("pathFinder.description", "Find the shortest path between two nodes in the graph.")}
+            在依赖图谱中查找两个节点之间的最短路径。
           </p>
 
           {/* From Node */}
           <div>
             <label className="block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-              {t("pathFinder.fromNode", "From Node")}
+              起点节点
             </label>
             <select
               value={fromNodeId}
@@ -157,10 +156,10 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
               }}
               className="w-full bg-elevated text-text-primary text-sm rounded-lg px-3 py-2 border border-border-subtle focus:outline-none focus:border-gold/50"
             >
-              <option value="">{t("pathFinder.selectNode", "Select a node...")}</option>
+              <option value="">请选择节点...</option>
               {nodes.map((node) => (
                 <option key={node.id} value={node.id}>
-                  {node.name} ({node.type})
+                  {node.name}（{nodeTypeLabel(node.type)}）
                 </option>
               ))}
             </select>
@@ -169,7 +168,7 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
           {/* To Node */}
           <div>
             <label className="block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-              {t("pathFinder.toNode", "To Node")}
+              终点节点
             </label>
             <select
               value={toNodeId}
@@ -179,10 +178,10 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
               }}
               className="w-full bg-elevated text-text-primary text-sm rounded-lg px-3 py-2 border border-border-subtle focus:outline-none focus:border-gold/50"
             >
-              <option value="">{t("pathFinder.selectNode", "Select a node...")}</option>
+              <option value="">请选择节点...</option>
               {nodes.map((node) => (
                 <option key={node.id} value={node.id}>
-                  {node.name} ({node.type})
+                  {node.name}（{nodeTypeLabel(node.type)}）
                 </option>
               ))}
             </select>
@@ -194,7 +193,7 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
             disabled={!fromNodeId || !toNodeId || fromNodeId === toNodeId || searching}
             className="w-full bg-gold/10 border border-gold/30 text-gold text-sm font-medium py-2.5 px-4 rounded-lg hover:bg-gold/20 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {searching ? t("pathFinder.searching", "Searching...") : t("pathFinder.findPath", "Find Path")}
+            {searching ? "正在查找..." : "查找路径"}
           </button>
 
           {/* Path Result */}
@@ -215,7 +214,7 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
                       d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                     />
                   </svg>
-                  <p className="text-sm text-red-200">{t("pathFinder.noPath", "No path found between these nodes.")}</p>
+                  <p className="text-sm text-red-200">这两个节点之间没有找到路径。</p>
                 </div>
               ) : (
                 <div className="bg-elevated border border-border-subtle rounded-lg p-4">
@@ -234,7 +233,7 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
                       />
                     </svg>
                     <h3 className="text-sm font-semibold text-text-primary">
-                      {t("pathFinder.pathFound", "Path Found ({count} nodes)", { count: path.length })}
+                      已找到路径（{path.length} 个节点）
                     </h3>
                   </div>
                   <div className="space-y-2">
@@ -255,7 +254,7 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="text-sm text-text-primary truncate">{node.name}</div>
-                              <div className="text-xs text-text-muted">{t(`nodeTypes.${node.type}`, formatDisplayKey(node.type))}</div>
+                              <div className="text-xs text-text-muted">{nodeTypeLabel(node.type)}</div>
                             </div>
                             <svg
                               className="w-4 h-4 text-text-muted"
@@ -304,7 +303,7 @@ export default function PathFinderModal({ isOpen, onClose }: PathFinderModalProp
             onClick={onClose}
             className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
           >
-            {t("common.close", "Close")}
+            关闭
           </button>
         </div>
       </div>

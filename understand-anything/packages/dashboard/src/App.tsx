@@ -18,10 +18,12 @@ import WarningBanner from "./components/WarningBanner";
 import TokenGate from "./components/TokenGate";
 import MobileLayout from "./components/MobileLayout";
 import AstrBotWorkspace from "./components/AstrBotWorkspace";
+import AssistantWorkbench from "./components/AssistantWorkbench";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import type { KeyboardShortcut } from "./hooks/useKeyboardShortcuts";
 import { useI18n } from "./i18n";
+import { I18nProvider as GraphI18nProvider } from "./contexts/I18nContext.tsx";
 import { ThemeProvider } from "./themes/index.ts";
 import { ThemePicker } from "./components/ThemePicker.tsx";
 import type { ThemeConfig } from "./themes/index.ts";
@@ -244,7 +246,7 @@ function Dashboard({
   projectParams,
   onBackToWorkspace,
 }: DashboardProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const setGraph = useDashboardStore((s) => s.setGraph);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
@@ -268,6 +270,7 @@ function Dashboard({
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   const [metaTheme, setMetaTheme] = useState<ThemeConfig | null>(null);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("info");
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const viewMode = useDashboardStore((s) => s.viewMode);
   const setViewMode = useDashboardStore((s) => s.setViewMode);
   const isKnowledgeGraph = useDashboardStore((s) => s.isKnowledgeGraph);
@@ -281,6 +284,13 @@ function Dashboard({
     () => [...graphIssues, ...layoutIssues],
     [graphIssues, layoutIssues],
   );
+  const currentProjectId =
+    projectParams?.project_id ??
+    projectParams?.project ??
+    projectParams?.project_name ??
+    projectParams?.project_path;
+  const showAssistant =
+    accessToken === "__astrbot__" && hasProjectRef(projectParams) && Boolean(currentProjectId);
 
   useEffect(() => {
     if (accessToken === "__astrbot__" && !hasProjectRef(projectParams)) return;
@@ -547,6 +557,15 @@ function Dashboard({
             {tab === "info" ? t("common.info", "Info") : t("common.files", "Files")}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => setLeftSidebarCollapsed(true)}
+          className="ml-1 rounded-md border border-border-subtle px-2 py-1.5 text-xs text-text-muted transition-colors hover:text-text-primary"
+          title="折叠左侧栏"
+          aria-label="折叠左侧栏"
+        >
+          &lt;
+        </button>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
         {sidebarTab === "files" ? <FileExplorer /> : infoSidebarContent}
@@ -554,23 +573,61 @@ function Dashboard({
     </div>
   );
 
+  const collapsedSidebarContent = (
+    <div className="flex h-full flex-col items-center gap-2 bg-surface p-2">
+      <button
+        type="button"
+        onClick={() => setLeftSidebarCollapsed(false)}
+        className="rounded-md border border-border-subtle px-2 py-1 text-xs text-text-muted transition-colors hover:text-text-primary"
+        title="展开左侧栏"
+        aria-label="展开左侧栏"
+      >
+        &gt;
+      </button>
+      <div className="h-px w-full bg-border-subtle" />
+      {(["info", "files"] as const).map((tab) => (
+        <button
+          key={tab}
+          type="button"
+          onClick={() => {
+            setSidebarTab(tab);
+            setLeftSidebarCollapsed(false);
+          }}
+          className={`h-8 w-8 rounded-md text-[11px] font-semibold transition-colors ${
+            sidebarTab === tab
+              ? "bg-accent/15 text-accent"
+              : "text-text-muted hover:bg-elevated hover:text-text-primary"
+          }`}
+          title={tab === "info" ? t("common.info", "Info") : t("common.files", "Files")}
+          aria-label={tab === "info" ? t("common.info", "Info") : t("common.files", "Files")}
+        >
+          {tab === "info" ? "I" : "F"}
+        </button>
+      ))}
+    </div>
+  );
+
   if (isMobile) {
     return (
-      <ThemeProvider metaTheme={metaTheme}>
-        <MobileLayout
-          accessToken={accessToken}
-          showKeyboardHelp={showKeyboardHelp}
-          setShowKeyboardHelp={setShowKeyboardHelp}
-          loadError={loadError}
-          allIssues={allIssues}
-          shortcuts={shortcuts}
-          onBackToWorkspace={onBackToWorkspace}
-        />
-      </ThemeProvider>
+      <GraphI18nProvider language={locale}>
+        <ThemeProvider metaTheme={metaTheme}>
+          <MobileLayout
+            accessToken={accessToken}
+            projectId={currentProjectId}
+            onBackToProjects={onBackToWorkspace}
+            showKeyboardHelp={showKeyboardHelp}
+            setShowKeyboardHelp={setShowKeyboardHelp}
+            loadError={loadError}
+            allIssues={allIssues}
+            shortcuts={shortcuts}
+          />
+        </ThemeProvider>
+      </GraphI18nProvider>
     );
   }
 
   return (
+    <GraphI18nProvider language={locale}>
     <ThemeProvider metaTheme={metaTheme}>
     <div className="h-screen w-screen flex flex-col bg-root text-text-primary noise-overlay">
       {/* Header */}
@@ -778,8 +835,16 @@ function Dashboard({
         </div>
       )}
 
-      {/* Main content: Graph + Sidebar */}
+      {/* Main content: left inspection sidebar + graph + assistant */}
       <div className="flex-1 flex min-h-0 relative">
+        <aside
+          className={`shrink-0 bg-surface border-r border-border-subtle overflow-hidden transition-[width] duration-200 ${
+            leftSidebarCollapsed ? "w-12" : "w-[300px] lg:w-[340px] 2xl:w-[360px]"
+          }`}
+        >
+          {leftSidebarCollapsed ? collapsedSidebarContent : sidebarContent}
+        </aside>
+
         {/* Graph area */}
         <div className="flex-1 min-w-0 min-h-0 relative">
           {viewMode === "knowledge" ? (
@@ -792,19 +857,25 @@ function Dashboard({
           <div className="absolute top-3 right-3 text-sm text-text-muted/60 pointer-events-none select-none">
             {t("app.pressShortcut", "Press ? for keyboard shortcuts")}
           </div>
+
+          {/* Code viewer slide-up overlay (collapsed state), scoped to graph pane. */}
+          {codeViewerOpen && !codeViewerExpanded && (
+            <div className="absolute bottom-0 left-0 right-0 h-[40vh] bg-surface border-t border-border-subtle animate-slide-up z-20 overflow-hidden">
+              <Suspense fallback={null}>
+                <CodeViewer
+                  accessToken={accessToken}
+                  projectId={currentProjectId}
+                  projectParams={projectParams}
+                  onExpand={expandCodeViewer}
+                />
+              </Suspense>
+            </div>
+          )}
         </div>
 
-        {/* Right sidebar — telescopes at narrower widths */}
-        <aside className="w-[260px] md:w-[300px] lg:w-[360px] shrink-0 bg-surface border-l border-border-subtle overflow-auto">
-          {sidebarContent}
-        </aside>
-
-        {/* Code viewer slide-up overlay (collapsed state) */}
-        {codeViewerOpen && !codeViewerExpanded && (
-          <div className="absolute bottom-0 left-0 right-0 h-[40vh] bg-surface border-t border-border-subtle animate-slide-up z-20 overflow-hidden">
-            <Suspense fallback={null}>
-              <CodeViewer accessToken={accessToken} onExpand={expandCodeViewer} />
-            </Suspense>
+        {showAssistant && (
+          <div className="w-[380px] xl:w-[420px] 2xl:w-[460px] shrink-0 min-w-0">
+            <AssistantWorkbench projectId={currentProjectId} projectParams={projectParams} />
           </div>
         )}
       </div>
@@ -822,6 +893,8 @@ function Dashboard({
             <Suspense fallback={null}>
               <CodeViewer
                 accessToken={accessToken}
+                projectId={currentProjectId}
+                projectParams={projectParams}
                 presentation="modal"
                 onClose={collapseCodeViewer}
               />
@@ -848,6 +921,7 @@ function Dashboard({
       )}
     </div>
     </ThemeProvider>
+    </GraphI18nProvider>
   );
 }
 

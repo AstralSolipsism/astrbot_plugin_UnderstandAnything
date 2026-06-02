@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@understand-anything/assistant": "workspace:*",
     "@understand-anything/core": "workspace:*",
     "graphology": "~0.26.0",
     "graphology-communities-louvain": "^2.0.2"

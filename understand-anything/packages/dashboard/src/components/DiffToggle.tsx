@@ -1,12 +1,12 @@
-import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 
 export default function DiffToggle() {
-  const { t } = useI18n();
   const diffMode = useDashboardStore((s) => s.diffMode);
   const toggleDiffMode = useDashboardStore((s) => s.toggleDiffMode);
   const changedNodeIds = useDashboardStore((s) => s.changedNodeIds);
   const affectedNodeIds = useDashboardStore((s) => s.affectedNodeIds);
+  const { t } = useI18n();
 
   const hasDiff = changedNodeIds.size > 0;
 
@@ -25,14 +25,12 @@ export default function DiffToggle() {
         title={
           hasDiff
             ? diffMode
-              ? t("diff.hideTitle", "Hide diff overlay")
-              : t("diff.showTitle", "Show diff overlay")
-            : t("diff.noData", "No diff data loaded")
+              ? t.diffToggle.hideOverlay
+              : t.diffToggle.showOverlay
+            : t.diffToggle.noData
         }
       >
-        {t("diff.label", "Diff {state}", {
-          state: diffMode && hasDiff ? t("common.on", "ON") : t("common.off", "OFF"),
-        })}
+        差异 {diffMode && hasDiff ? "开启" : "关闭"}
       </button>
 
       {diffMode && hasDiff && (
@@ -43,7 +41,7 @@ export default function DiffToggle() {
               style={{ backgroundColor: "var(--color-diff-changed)" }}
             />
             <span className="text-text-secondary text-[11px]">
-              {t("common.changed", "Changed")}
+              {t.diffToggle.changed}
               <span className="text-text-muted ml-0.5">
                 ({changedNodeIds.size})
               </span>
@@ -55,7 +53,7 @@ export default function DiffToggle() {
               style={{ backgroundColor: "var(--color-diff-affected)" }}
             />
             <span className="text-text-secondary text-[11px]">
-              {t("common.affected", "Affected")}
+              {t.diffToggle.affected}
               <span className="text-text-muted ml-0.5">
                 ({affectedNodeIds.size})
               </span>

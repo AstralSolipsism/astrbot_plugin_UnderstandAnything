@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatDisplayKey, pluralKey, useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
+import { nodeTypeLabel } from "../utils/displayLabels";
 
 const typeBadgeColors: Record<string, string> = {
   file: "text-node-file border border-node-file/30 bg-node-file/10",
@@ -22,7 +23,6 @@ const typeBadgeColors: Record<string, string> = {
 };
 
 export default function SearchBar() {
-  const { t } = useI18n();
   const searchQuery = useDashboardStore((s) => s.searchQuery);
   const searchResults = useDashboardStore((s) => s.searchResults);
   const graph = useDashboardStore((s) => s.graph);
@@ -30,6 +30,7 @@ export default function SearchBar() {
   const navigateToNodeInLayer = useDashboardStore((s) => s.navigateToNodeInLayer);
   const searchMode = useDashboardStore((s) => s.searchMode);
   const setSearchMode = useDashboardStore((s) => s.setSearchMode);
+  const { t } = useI18n();
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -83,6 +84,7 @@ export default function SearchBar() {
   }, []);
 
   const showDropdown = dropdownOpen && searchQuery.trim() && topResults.length > 0;
+  const searchModeLabel = searchMode === "semantic" ? t.search.semantic : t.search.fuzzy;
 
   return (
     <div ref={containerRef} className="relative z-30">
@@ -102,12 +104,12 @@ export default function SearchBar() {
         </svg>
         <input
           ref={inputRef}
-          data-search-input="true"
           type="text"
           value={searchQuery}
           onChange={handleInputChange}
           onFocus={() => setDropdownOpen(true)}
-          placeholder={t("search.placeholder", "Search files, functions, classes...")}
+          placeholder={t.search.placeholder}
+          data-testid="search-input"
           className="flex-1 min-w-0 bg-elevated text-text-primary text-sm rounded-lg px-3 py-1.5 border border-border-subtle focus:outline-none focus:border-accent/50 placeholder-text-muted"
         />
         <div className="flex items-center gap-1 bg-elevated rounded-lg p-0.5 shrink-0">
@@ -119,7 +121,7 @@ export default function SearchBar() {
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
-            {t("search.fuzzy", "Fuzzy")}
+            {t.search.fuzzy}
           </button>
           <button
             onClick={() => setSearchMode("semantic")}
@@ -129,17 +131,13 @@ export default function SearchBar() {
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
-            {t("search.semantic", "Semantic")}
+            {t.search.semantic}
           </button>
         </div>
         {searchQuery.trim() && (
           <span className="hidden sm:inline text-xs text-text-muted shrink-0">
-            {t(
-              pluralKey("search.resultSingular", "search.resultPlural", searchResults.length),
-              searchResults.length === 1 ? "{count} result" : "{count} results",
-              { count: searchResults.length },
-            )}{" "}
-            <span className="text-text-muted">({searchMode})</span>
+            {searchResults.length} 个{t.search.result}{" "}
+            <span className="text-text-muted">({searchModeLabel})</span>
           </span>
         )}
       </div>
@@ -165,7 +163,7 @@ export default function SearchBar() {
                 <span
                   className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeColor} shrink-0`}
                 >
-                  {t(`nodeTypes.${node.type}`, formatDisplayKey(node.type))}
+                  {nodeTypeLabel(node.type)}
                 </span>
 
                 {/* Node name */}

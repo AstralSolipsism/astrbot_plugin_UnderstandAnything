@@ -32,7 +32,11 @@ export interface DomainMeta {
   businessRules?: string[];
   crossDomainInteractions?: string[];
   entryPoint?: string;
-  entryType?: "http" | "cli" | "event" | "cron" | "manual";
+  entryType?: "http" | "cli" | "event" | "cron" | "manual" | "document";
+  scopePath?: string;
+  sourceNodeIds?: string[];
+  sourceFilePaths?: string[];
+  evidence?: string[] | string;
 }
 
 // GraphNode with 21 types: 5 code + 8 non-code + 3 domain + 5 knowledge

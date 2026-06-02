@@ -2,7 +2,8 @@ import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps, Node } from "@xyflow/react";
 import type { NodeType } from "@understand-anything/core/types";
-import { formatDisplayKey, useI18n } from "../i18n";
+import { useI18n } from "../contexts/I18nContext";
+import { complexityLabel, nodeTypeLabel } from "../utils/displayLabels";
 
 // Color maps keyed by NodeType — must be kept in sync with core NodeType union.
 const typeColors: Record<NodeType, string> = {
@@ -85,11 +86,11 @@ function CustomNodeComponent({
   id,
   data,
 }: NodeProps<CustomFlowNode>) {
-  const { t } = useI18n();
   const knownType = data.nodeType as NodeType;
   const barColor = typeColors[knownType] ?? typeColors.file;
   const textColor = typeTextColors[knownType] ?? typeTextColors.file;
   const complexityColor = complexityColors[data.complexity] ?? complexityColors.simple;
+  const { t } = useI18n();
 
   if (import.meta.env.DEV && !(knownType in typeColors)) {
     console.warn(`[CustomNode] Unknown node type "${data.nodeType}" — using "file" colors`);
@@ -127,7 +128,7 @@ function CustomNodeComponent({
     extraClass += " ring-1 ring-gold-dim/50";
   }
 
-  const name = data.label ?? t("common.unnamed", "unnamed");
+  const name = data.label ?? "未命名";
   const truncatedName =
     name.length > 24 ? name.slice(0, 22) + "..." : name;
 
@@ -151,18 +152,18 @@ function CustomNodeComponent({
       <div className="pl-4 pr-3 py-2">
         <div className="flex items-center justify-between mb-1">
           <span className={`text-[10px] font-semibold uppercase tracking-wider ${textColor}`}>
-            {t(`nodeTypes.${data.nodeType}`, formatDisplayKey(data.nodeType))}
+            {nodeTypeLabel(data.nodeType)}
           </span>
           <div className="flex items-center gap-1.5">
             <span className={`text-[9px] font-mono ${complexityColor}`}>
-              {t(`complexity.${data.complexity}`, formatDisplayKey(data.complexity))}
+              {complexityLabel(data.complexity)}
             </span>
             {data.tags?.includes("tested") && (
               <span
                 className="inline-block w-1.5 h-1.5 rounded-full bg-node-function shadow-[0_0_4px_rgba(90,158,111,0.6)]"
                 role="img"
-                aria-label={t("node.tested", "Has tests")}
-                title={t("node.tested", "Has tests")}
+                aria-label={t.customNode.tested}
+                title={t.customNode.hasTests}
               />
             )}
           </div>

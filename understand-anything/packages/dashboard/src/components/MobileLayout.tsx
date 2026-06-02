@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { GraphIssue } from "@understand-anything/core/schema";
-import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 import GraphView from "./GraphView";
 import DomainGraphView from "./DomainGraphView";
 import KnowledgeGraphView from "./KnowledgeGraphView";
@@ -13,6 +13,7 @@ import WarningBanner from "./WarningBanner";
 import MobileBottomNav from "./MobileBottomNav";
 import type { MobileTab } from "./MobileBottomNav";
 import MobileDrawer from "./MobileDrawer";
+import ProjectSwitcher from "./ProjectSwitcher";
 
 const CodeViewer = lazy(() => import("./CodeViewer"));
 const LearnPanel = lazy(() => import("./LearnPanel"));
@@ -21,24 +22,27 @@ const KeyboardShortcutsHelp = lazy(() => import("./KeyboardShortcutsHelp"));
 
 interface Props {
   accessToken: string;
+  projectId?: string;
+  onOpenProject?: (projectId: string) => void;
+  onBackToProjects?: () => void;
   showKeyboardHelp: boolean;
   setShowKeyboardHelp: (value: boolean) => void;
   loadError: string | null;
   allIssues: GraphIssue[];
   shortcuts: import("../hooks/useKeyboardShortcuts").KeyboardShortcut[];
-  onBackToWorkspace?: () => void;
 }
 
 export default function MobileLayout({
   accessToken,
+  projectId,
+  onOpenProject,
+  onBackToProjects,
   showKeyboardHelp,
   setShowKeyboardHelp,
   loadError,
   allIssues,
   shortcuts,
-  onBackToWorkspace,
 }: Props) {
-  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const tourActive = useDashboardStore((s) => s.tourActive);
@@ -49,6 +53,7 @@ export default function MobileLayout({
   const closeCodeViewer = useDashboardStore((s) => s.closeCodeViewer);
   const pathFinderOpen = useDashboardStore((s) => s.pathFinderOpen);
   const togglePathFinder = useDashboardStore((s) => s.togglePathFinder);
+  const { t } = useI18n();
 
   const [activeTab, setActiveTab] = useState<MobileTab>("graph");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -84,20 +89,12 @@ export default function MobileLayout({
       <header className="flex items-center gap-2 px-3 h-12 shrink-0 bg-surface border-b border-border-subtle">
         <button
           type="button"
-          onClick={onBackToWorkspace ?? (() => setDrawerOpen(true))}
+          onClick={onBackToProjects ?? (() => setDrawerOpen(true))}
           className="w-9 h-9 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-elevated transition-colors -ml-1"
-          aria-label={onBackToWorkspace ? t("mobile.openProjects", "Open projects") : t("mobile.openMenu", "Open menu")}
+          aria-label={onBackToProjects ? "返回项目列表" : "打开菜单"}
         >
-          {onBackToWorkspace ? (
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 18l-6-6 6-6" />
-            </svg>
+          {onBackToProjects ? (
+            <span className="text-lg leading-none">‹</span>
           ) : (
             <svg
               className="w-5 h-5"
@@ -111,9 +108,12 @@ export default function MobileLayout({
           )}
         </button>
 
-        <h1 className="font-heading text-base flex-1 min-w-0 truncate text-center text-text-primary tracking-wide">
-          {graph?.project.name ?? "Understand Anything"}
-        </h1>
+        <ProjectSwitcher
+          compact
+          currentProjectId={projectId}
+          currentProjectName={graph?.project.name ?? t.common.appName}
+          onOpenProject={onOpenProject}
+        />
 
         <button
           type="button"
@@ -123,7 +123,7 @@ export default function MobileLayout({
               ? "text-accent bg-accent/15"
               : "text-text-secondary hover:text-text-primary hover:bg-elevated"
           }`}
-          aria-label={searchOpen ? t("mobile.hideSearch", "Hide search") : t("mobile.showSearch", "Show search")}
+          aria-label={searchOpen ? "隐藏搜索" : "显示搜索"}
           aria-pressed={searchOpen}
         >
           <svg
@@ -218,6 +218,7 @@ export default function MobileLayout({
             <Suspense fallback={null}>
               <CodeViewer
                 accessToken={accessToken}
+                projectId={projectId}
                 presentation="modal"
                 onClose={closeCodeViewer}
               />

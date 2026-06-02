@@ -22,10 +22,13 @@
     "graphology-communities-louvain": "^2.0.1",
     "graphology-types": "^0.24.8",
     "hast-util-to-jsx-runtime": "^2.3.6",
+    "leafer-ui": "^2.1.2",
+    "lucide-react": "^1.17.0",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.0"
   },
   "devDependencies": {

@@ -138,4 +138,29 @@ describe("domain graph types", () => {
       entryType: "http",
     });
   });
+
+  it("preserves domain provenance metadata through validation", () => {
+    const graph = structuredClone(domainGraph);
+    graph.nodes[1].domainMeta = {
+      entryPoint: "docs/runbook.md",
+      entryType: "document",
+      scopePath: "src/orders",
+      sourceNodeIds: ["file:src/orders.ts"],
+      sourceFilePaths: ["src/orders.ts"],
+      evidence: ["订单流程来源于订单模块。"],
+    };
+
+    const result = validateGraph(graph);
+
+    expect(result.success).toBe(true);
+    const flowNode = result.data!.nodes.find((n) => n.id === "flow:create-order");
+    expect(flowNode?.domainMeta).toEqual({
+      entryPoint: "docs/runbook.md",
+      entryType: "document",
+      scopePath: "src/orders",
+      sourceNodeIds: ["file:src/orders.ts"],
+      sourceFilePaths: ["src/orders.ts"],
+      evidence: ["订单流程来源于订单模块。"],
+    });
+  });
 });

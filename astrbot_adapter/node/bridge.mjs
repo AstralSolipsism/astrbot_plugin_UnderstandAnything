@@ -19,6 +19,22 @@ function write(payload) {
 }
 
 switch (action) {
+  case "preflight_inventory": {
+    write(skill.preflightInventoryAction(payload));
+    break;
+  }
+  case "validate_outputs": {
+    write(skill.validateOutputsAction(payload));
+    break;
+  }
+  case "compile_domain_ir": {
+    write(skill.compileDomainIrAction(payload));
+    break;
+  }
+  case "assistant_context_bundle": {
+    write(skill.assistantContextBundleAction(payload));
+    break;
+  }
   case "chat_prompt": {
     write({ markdown: skill.buildChatPrompt(payload.graph, payload.query, payload) });
     break;

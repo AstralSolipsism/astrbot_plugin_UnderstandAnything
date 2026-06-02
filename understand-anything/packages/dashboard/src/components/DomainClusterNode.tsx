@@ -1,7 +1,6 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
-import { pluralKey, useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
 
 export interface DomainClusterData extends Record<string, unknown> {
@@ -16,7 +15,6 @@ export interface DomainClusterData extends Record<string, unknown> {
 export type DomainClusterFlowNode = Node<DomainClusterData, "domain-cluster">;
 
 function DomainClusterNode({ data }: NodeProps<DomainClusterFlowNode>) {
-  const { t } = useI18n();
   const navigateToDomain = useDashboardStore((s) => s.navigateToDomain);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const selectNode = useDashboardStore((s) => s.selectNode);
@@ -29,7 +27,7 @@ function DomainClusterNode({ data }: NodeProps<DomainClusterFlowNode>) {
           ? "border-accent bg-accent/10 shadow-lg shadow-accent/10"
           : "border-accent/40 bg-surface hover:border-accent/70"
       }`}
-      onClick={() => selectNode(data.domainId)}
+      onClick={() => selectNode(data.domainId, "domain")}
       onDoubleClick={() => navigateToDomain(data.domainId)}
     >
       <Handle type="target" position={Position.Left} className="!bg-accent/60 !w-2 !h-2" />
@@ -44,7 +42,7 @@ function DomainClusterNode({ data }: NodeProps<DomainClusterFlowNode>) {
 
       {data.entities && data.entities.length > 0 && (
         <div className="mb-2">
-          <div className="text-[9px] uppercase tracking-wider text-text-muted mb-1">{t("common.entities", "Entities")}</div>
+          <div className="text-[9px] uppercase tracking-wider text-text-muted mb-1">实体</div>
           <div className="flex flex-wrap gap-1">
             {data.entities.slice(0, 5).map((e) => (
               <span key={e} className="text-[10px] px-1.5 py-0.5 rounded bg-elevated text-text-secondary">
@@ -59,11 +57,7 @@ function DomainClusterNode({ data }: NodeProps<DomainClusterFlowNode>) {
       )}
 
       <div className="text-[10px] text-text-muted">
-        {t(
-          pluralKey("node.flowSingular", "node.flowPlural", data.flowCount),
-          data.flowCount === 1 ? "{count} flow" : "{count} flows",
-          { count: data.flowCount },
-        )}
+        {data.flowCount} 个流程
       </div>
     </div>
   );

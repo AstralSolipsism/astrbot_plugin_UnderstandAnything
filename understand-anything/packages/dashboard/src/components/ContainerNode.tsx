@@ -1,6 +1,5 @@
 import { memo } from "react";
 import type { NodeProps, Node } from "@xyflow/react";
-import { pluralKey, useI18n } from "../i18n";
 import { getLayerColor } from "./LayerLegend";
 
 export interface ContainerNodeData extends Record<string, unknown> {
@@ -20,7 +19,6 @@ export interface ContainerNodeData extends Record<string, unknown> {
 export type ContainerFlowNode = Node<ContainerNodeData, "container">;
 
 function ContainerNodeComponent({ data, width, height }: NodeProps<ContainerFlowNode>) {
-  const { t } = useI18n();
   const color = getLayerColor(data.colorIndex);
 
   const borderColor = data.isDiffAffected
@@ -31,12 +29,7 @@ function ContainerNodeComponent({ data, width, height }: NodeProps<ContainerFlow
   const borderWidth = data.isExpanded || data.isFocusedViaChild ? 1.5 : 1;
 
   const labelDimmed = data.name === "~";
-  const labelText = labelDimmed ? t("node.root", "(root)") : data.name;
-  const itemText = t(
-    pluralKey("node.itemSingular", "node.itemPlural", data.childCount),
-    data.childCount === 1 ? "{count} item" : "{count} items",
-    { count: data.childCount },
-  );
+  const labelText = labelDimmed ? "根目录" : data.name;
 
   const handleToggle = (e: React.SyntheticEvent) => {
     e.stopPropagation();
@@ -48,9 +41,7 @@ function ContainerNodeComponent({ data, width, height }: NodeProps<ContainerFlow
       role="button"
       tabIndex={0}
       aria-expanded={data.isExpanded}
-      aria-label={`${labelText} ${t("node.container", "container")}, ${itemText}, ${
-        data.isExpanded ? t("node.expand", "expand") : t("node.collapse", "collapse")
-      }`}
+      aria-label={`${labelText} 分组，${data.childCount} 个项目，${data.isExpanded ? "已展开" : "已折叠"}`}
       className="rounded-xl cursor-pointer transition-all focus:outline-none focus:ring-2 focus:ring-[rgba(212,165,116,0.6)]"
       style={{
         width,
@@ -94,11 +85,7 @@ function ContainerNodeComponent({ data, width, height }: NodeProps<ContainerFlow
                 borderRadius: 8,
               }}
             >
-              {t(
-                pluralKey("node.hitSingular", "node.hitPlural", data.searchHitCount),
-                data.searchHitCount === 1 ? "{count} hit" : "{count} hits",
-                { count: data.searchHitCount },
-              )}
+              命中 {data.searchHitCount}
             </span>
           )}
         </span>

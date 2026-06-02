@@ -1,15 +1,16 @@
-import { formatDisplayKey, useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
+import { nodeTypeLabel } from "../utils/displayLabels";
 
 export default function ProjectOverview() {
-  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const startTour = useDashboardStore((s) => s.startTour);
+  const { t } = useI18n();
 
   if (!graph) {
     return (
       <div className="h-full w-full flex items-center justify-center">
-        <p className="text-text-muted text-sm">{t("projectOverview.loadingProject", "Loading project...")}</p>
+        <p className="text-text-muted text-sm">{t.common.loading}</p>
       </div>
     );
   }
@@ -17,13 +18,11 @@ export default function ProjectOverview() {
   const { project, nodes, edges, layers } = graph;
   const hasTour = graph.tour.length > 0;
 
-  // Count node types
   const typeCounts: Record<string, number> = {};
   for (const node of nodes) {
     typeCounts[node.type] = (typeCounts[node.type] ?? 0) + 1;
   }
 
-  // Count complexity
   const complexityCounts: Record<string, number> = { simple: 0, moderate: 0, complex: 0 };
   for (const node of nodes) {
     if (node.complexity) {
@@ -31,7 +30,6 @@ export default function ProjectOverview() {
     }
   }
 
-  // Find top connected nodes
   const nodeConnections = new Map<string, number>();
   for (const edge of edges) {
     nodeConnections.set(edge.source, (nodeConnections.get(edge.source) ?? 0) + 1);
@@ -47,16 +45,15 @@ export default function ProjectOverview() {
 
   const avgConnections = nodes.length > 0 ? (edges.length * 2 / nodes.length).toFixed(1) : "0";
 
-  // Category breakdowns
   const categoryBreakdown = [
-    { key: "code", label: t("common.code", "Code"), color: "var(--color-node-file)", count: (typeCounts["file"] ?? 0) + (typeCounts["function"] ?? 0) + (typeCounts["class"] ?? 0) + (typeCounts["module"] ?? 0) + (typeCounts["concept"] ?? 0) },
-    { key: "config", label: t("common.config", "Config"), color: "var(--color-node-config)", count: typeCounts["config"] ?? 0 },
-    { key: "docs", label: t("common.docs", "Docs"), color: "var(--color-node-document)", count: typeCounts["document"] ?? 0 },
-    { key: "infra", label: t("common.infra", "Infra"), color: "var(--color-node-service)", count: (typeCounts["service"] ?? 0) + (typeCounts["resource"] ?? 0) + (typeCounts["pipeline"] ?? 0) },
-    { key: "data", label: t("common.data", "Data"), color: "var(--color-node-table)", count: (typeCounts["table"] ?? 0) + (typeCounts["endpoint"] ?? 0) + (typeCounts["schema"] ?? 0) },
-    { key: "domain", label: t("common.domain", "Domain"), color: "var(--color-node-concept)", count: (typeCounts["domain"] ?? 0) + (typeCounts["flow"] ?? 0) + (typeCounts["step"] ?? 0) },
+    { label: t.projectOverview.code, color: "var(--color-node-file)", count: (typeCounts["file"] ?? 0) + (typeCounts["function"] ?? 0) + (typeCounts["class"] ?? 0) + (typeCounts["module"] ?? 0) + (typeCounts["concept"] ?? 0) },
+    { label: t.projectOverview.config, color: "var(--color-node-config)", count: typeCounts["config"] ?? 0 },
+    { label: t.projectOverview.docs, color: "var(--color-node-document)", count: typeCounts["document"] ?? 0 },
+    { label: t.projectOverview.infra, color: "var(--color-node-service)", count: (typeCounts["service"] ?? 0) + (typeCounts["resource"] ?? 0) + (typeCounts["pipeline"] ?? 0) },
+    { label: t.projectOverview.data, color: "var(--color-node-table)", count: (typeCounts["table"] ?? 0) + (typeCounts["endpoint"] ?? 0) + (typeCounts["schema"] ?? 0) },
+    { label: t.projectOverview.domain, color: "var(--color-node-concept)", count: (typeCounts["domain"] ?? 0) + (typeCounts["flow"] ?? 0) + (typeCounts["step"] ?? 0) },
   ];
-  const hasNonCodeNodes = categoryBreakdown.some((c) => c.key !== "code" && c.count > 0);
+  const hasNonCodeNodes = categoryBreakdown.some((c) => c.label !== t.projectOverview.code && c.count > 0);
 
   return (
     <div className="h-full w-full overflow-auto p-5 animate-fade-slide-in">
@@ -68,26 +65,26 @@ export default function ProjectOverview() {
       <div className="grid grid-cols-2 gap-3 mb-6">
         <div className="bg-elevated rounded-lg p-3 border border-border-subtle">
           <div className="text-2xl font-mono font-medium text-accent">{nodes.length}</div>
-          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t("projectOverview.nodes", "Nodes")}</div>
+          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t.projectOverview.nodes}</div>
         </div>
         <div className="bg-elevated rounded-lg p-3 border border-border-subtle">
           <div className="text-2xl font-mono font-medium text-accent">{edges.length}</div>
-          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t("projectOverview.edges", "Edges")}</div>
+          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t.projectOverview.edges}</div>
         </div>
         <div className="bg-elevated rounded-lg p-3 border border-border-subtle">
           <div className="text-2xl font-mono font-medium text-accent">{layers.length}</div>
-          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t("projectOverview.layers", "Layers")}</div>
+          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t.projectOverview.layers}</div>
         </div>
         <div className="bg-elevated rounded-lg p-3 border border-border-subtle">
           <div className="text-2xl font-mono font-medium text-accent">{Object.keys(typeCounts).length}</div>
-          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t("projectOverview.types", "Types")}</div>
+          <div className="text-[11px] text-text-muted uppercase tracking-wider mt-1">{t.projectOverview.types}</div>
         </div>
       </div>
 
       {/* File Types breakdown */}
       {hasNonCodeNodes && (
         <div className="mb-5">
-          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-2">{t("projectOverview.fileTypes", "File Types")}</h3>
+          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-2">{t.projectOverview.fileTypes}</h3>
           <div className="space-y-1.5">
             {categoryBreakdown.filter((c) => c.count > 0).map((cat) => (
               <div key={cat.label} className="flex items-center gap-2">
@@ -106,7 +103,7 @@ export default function ProjectOverview() {
       {/* Languages */}
       {project.languages.length > 0 && (
         <div className="mb-5">
-          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-2">{t("projectOverview.languages", "Languages")}</h3>
+          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-2">{t.projectOverview.languages}</h3>
           <div className="flex flex-wrap gap-1.5">
             {project.languages.map((lang) => (
               <span key={lang} className="text-[11px] glass text-text-secondary px-2.5 py-1 rounded-full">
@@ -120,7 +117,7 @@ export default function ProjectOverview() {
       {/* Frameworks */}
       {project.frameworks.length > 0 && (
         <div className="mb-5">
-          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-2">{t("projectOverview.frameworks", "Frameworks")}</h3>
+          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-2">{t.projectOverview.frameworks}</h3>
           <div className="flex flex-wrap gap-1.5">
             {project.frameworks.map((fw) => (
               <span key={fw} className="text-[11px] glass text-text-secondary px-2.5 py-1 rounded-full">
@@ -133,7 +130,7 @@ export default function ProjectOverview() {
 
       {/* Node Type Breakdown */}
       <div className="mb-5">
-        <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-3">{t("projectOverview.nodeTypeDistribution", "Node Type Distribution")}</h3>
+        <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-3">{t.projectOverview.nodeTypeDistribution}</h3>
         <div className="space-y-2">
           {Object.entries(typeCounts)
             .sort((a, b) => b[1] - a[1])
@@ -142,7 +139,7 @@ export default function ProjectOverview() {
               return (
                 <div key={type}>
                   <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-text-secondary">{t(`nodeTypes.${type}`, formatDisplayKey(type))}</span>
+                    <span className="text-text-secondary">{nodeTypeLabel(type)}</span>
                     <span className="text-text-muted font-mono">{count} ({percentage}%)</span>
                   </div>
                   <div className="w-full h-1.5 bg-elevated rounded-full overflow-hidden">
@@ -160,19 +157,19 @@ export default function ProjectOverview() {
       {/* Complexity Breakdown */}
       {Object.values(complexityCounts).some((c) => c > 0) && (
         <div className="mb-5">
-          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-3">{t("projectOverview.complexityDistribution", "Complexity Distribution")}</h3>
+          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-3">{t.projectOverview.complexityDistribution}</h3>
           <div className="grid grid-cols-3 gap-2">
             <div className="bg-elevated rounded-lg p-2 border border-border-subtle text-center">
               <div className="text-lg font-mono font-medium text-green-400">{complexityCounts.simple}</div>
-              <div className="text-[10px] text-text-muted uppercase tracking-wider mt-0.5">{t("complexity.simple", "Simple")}</div>
+              <div className="text-[10px] text-text-muted uppercase tracking-wider mt-0.5">{t.projectOverview.simple}</div>
             </div>
             <div className="bg-elevated rounded-lg p-2 border border-border-subtle text-center">
               <div className="text-lg font-mono font-medium text-yellow-400">{complexityCounts.moderate}</div>
-              <div className="text-[10px] text-text-muted uppercase tracking-wider mt-0.5">{t("complexity.moderate", "Moderate")}</div>
+              <div className="text-[10px] text-text-muted uppercase tracking-wider mt-0.5">{t.projectOverview.moderate}</div>
             </div>
             <div className="bg-elevated rounded-lg p-2 border border-border-subtle text-center">
               <div className="text-lg font-mono font-medium text-red-400">{complexityCounts.complex}</div>
-              <div className="text-[10px] text-text-muted uppercase tracking-wider mt-0.5">{t("complexity.complex", "Complex")}</div>
+              <div className="text-[10px] text-text-muted uppercase tracking-wider mt-0.5">{t.projectOverview.complex}</div>
             </div>
           </div>
         </div>
@@ -181,7 +178,7 @@ export default function ProjectOverview() {
       {/* Top Connected Nodes */}
       {topNodes.length > 0 && (
         <div className="mb-5">
-          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-3">{t("projectOverview.mostConnectedNodes", "Most Connected Nodes")}</h3>
+          <h3 className="text-[11px] font-semibold text-accent uppercase tracking-wider mb-3">{t.projectOverview.mostConnectedNodes}</h3>
           <div className="space-y-2">
             {topNodes.map((node, idx) => (
               <div
@@ -202,14 +199,14 @@ export default function ProjectOverview() {
       {/* Average Connections */}
       <div className="mb-5 bg-elevated rounded-lg p-3 border border-border-subtle">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-text-secondary">{t("projectOverview.avgConnections", "Avg Connections per Node")}</span>
+          <span className="text-xs text-text-secondary">{t.projectOverview.avgConnectionsPerNode}</span>
           <span className="text-lg font-mono font-medium text-accent">{avgConnections}</span>
         </div>
       </div>
 
       {/* Analyzed at */}
       <div className="text-[11px] text-text-muted mb-6">
-        {t("projectOverview.analyzed", "Analyzed")}: {new Date(project.analyzedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+        {t.common.analyzed}: {new Date(project.analyzedAt).toLocaleDateString("zh-CN", { year: "numeric", month: "short", day: "numeric" })}
       </div>
 
       {/* Start Tour button */}
@@ -218,7 +215,7 @@ export default function ProjectOverview() {
           onClick={startTour}
           className="w-full bg-accent/10 border border-accent/30 text-accent text-sm font-medium py-2.5 px-4 rounded-lg hover:bg-accent/20 transition-all duration-200"
         >
-          {t("projectOverview.startGuidedTour", "Start Guided Tour")}
+          {t.common.startGuidedTour}
         </button>
       )}
     </div>

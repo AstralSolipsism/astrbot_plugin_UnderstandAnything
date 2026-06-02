@@ -25,7 +25,7 @@ function StepNode({ data }: NodeProps<StepFlowNode>) {
           ? "border-accent bg-accent/10"
           : "border-border-subtle bg-elevated hover:border-accent/40"
       }`}
-      onClick={() => selectNode(data.stepId)}
+      onClick={() => selectNode(data.stepId, "domain")}
     >
       <Handle type="target" position={Position.Left} className="!bg-text-muted/40 !w-1.5 !h-1.5" />
       <Handle type="source" position={Position.Right} className="!bg-text-muted/40 !w-1.5 !h-1.5" />

@@ -1,7 +1,6 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps, Node } from "@xyflow/react";
-import { pluralKey, useI18n } from "../i18n";
 import { getLayerColor } from "./LayerLegend";
 
 export interface PortalNodeData extends Record<string, unknown> {
@@ -17,7 +16,6 @@ export type PortalFlowNode = Node<PortalNodeData, "portal">;
 function PortalNode({
   data,
 }: NodeProps<PortalFlowNode>) {
-  const { t } = useI18n();
   const color = getLayerColor(data.layerColorIndex);
 
   return (
@@ -50,11 +48,7 @@ function PortalNode({
           <span className="text-text-muted ml-2 shrink-0">→</span>
         </div>
         <div className="text-[10px] text-text-muted mt-1 pl-4">
-          {t(
-            pluralKey("node.connectionSingular", "node.connectionPlural", data.connectionCount),
-            data.connectionCount === 1 ? "{count} connection" : "{count} connections",
-            { count: data.connectionCount },
-          )}
+          {data.connectionCount} 个连接
         </div>
       </div>
 

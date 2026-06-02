@@ -1,8 +1,10 @@
 import { useEffect, useRef } from "react";
-import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 import type { KnowledgeGraph } from "@understand-anything/core/types";
 import { filterNodes, filterEdges } from "../utils/filters";
+import { toUserErrorMessage } from "../utils/userErrors";
+import { buildGraphSceneSvg } from "../canvas/graphSceneExport";
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -20,14 +22,15 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export default function ExportMenu() {
-  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const nodeIdToLayerIds = useDashboardStore((s) => s.nodeIdToLayerIds);
   const filters = useDashboardStore((s) => s.filters);
   const exportMenuOpen = useDashboardStore((s) => s.exportMenuOpen);
   const toggleExportMenu = useDashboardStore((s) => s.toggleExportMenu);
   const reactFlowInstance = useDashboardStore((s) => s.reactFlowInstance);
+  const graphRendererController = useDashboardStore((s) => s.graphRendererController);
   const persona = useDashboardStore((s) => s.persona);
+  const { t } = useI18n();
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -45,6 +48,9 @@ export default function ExportMenu() {
   }, [exportMenuOpen, toggleExportMenu]);
 
   const buildCleanSvg = () => {
+    if (graphRendererController) {
+      return buildGraphSceneSvg(graphRendererController.getSceneSnapshot());
+    }
     if (!reactFlowInstance) return null;
 
     const nodes = reactFlowInstance.getNodes();
@@ -100,17 +106,18 @@ export default function ExportMenu() {
     svgContent += `</svg>`;
     return { svgContent, width, height };
   };
+  const graphImageExportReady = Boolean(graphRendererController || reactFlowInstance);
 
   const exportPNG = async () => {
-    if (!reactFlowInstance) {
-      alert(t("export.graphNotReady", "Graph not ready for export."));
+    if (!graphImageExportReady) {
+      alert("图谱尚未准备好，无法导出。");
       return;
     }
 
     try {
       const result = buildCleanSvg();
       if (!result) {
-        alert(t("export.noNodes", "No nodes to export."));
+        alert("没有可导出的节点。");
         return;
       }
 
@@ -121,7 +128,7 @@ export default function ExportMenu() {
       const img = new Image();
       img.onerror = () => {
         URL.revokeObjectURL(url);
-        alert(t("export.failedPng", "Failed to export PNG: {error}", { error: "could not render graph as image." }));
+        alert("导出 PNG 失败：无法将图谱渲染为图片。");
       };
       img.onload = () => {
         const canvas = document.createElement("canvas");
@@ -130,7 +137,7 @@ export default function ExportMenu() {
         const ctx = canvas.getContext("2d");
         if (!ctx) {
           URL.revokeObjectURL(url);
-          alert(t("export.failedPng", "Failed to export PNG: {error}", { error: "failed to create canvas context" }));
+          alert("导出 PNG 失败：无法创建画布上下文。");
           return;
         }
         ctx.drawImage(img, 0, 0, width * 2, height * 2);
@@ -142,27 +149,27 @@ export default function ExportMenu() {
             downloadBlob(blob, filename);
             toggleExportMenu();
           } else {
-            alert(t("export.failedPng", "Failed to export PNG: {error}", { error: "image encoding failed." }));
+            alert("导出 PNG 失败：图片编码失败。");
           }
         }, "image/png");
       };
       img.src = url;
     } catch (error) {
       console.error("PNG export failed:", error);
-      alert(t("export.failedPng", "Failed to export PNG: {error}", { error: error instanceof Error ? error.message : String(error) }));
+      alert(toUserErrorMessage(error, "导出 PNG 失败，请稍后重试。"));
     }
   };
 
   const exportSVG = () => {
-    if (!reactFlowInstance) {
-      alert(t("export.graphNotReady", "Graph not ready for export."));
+    if (!graphImageExportReady) {
+      alert("图谱尚未准备好，无法导出。");
       return;
     }
 
     try {
       const result = buildCleanSvg();
       if (!result) {
-        alert(t("export.noNodes", "No nodes to export."));
+        alert("没有可导出的节点。");
         return;
       }
 
@@ -172,13 +179,13 @@ export default function ExportMenu() {
       toggleExportMenu();
     } catch (error) {
       console.error("SVG export failed:", error);
-      alert(t("export.failedJson", "Failed to export JSON: {error}", { error: error instanceof Error ? error.message : String(error) }));
+      alert(toUserErrorMessage(error, "导出 SVG 失败，请稍后重试。"));
     }
   };
 
   const exportJSON = () => {
     if (!graph) {
-      alert(t("export.noGraphLoaded", "No graph loaded"));
+      alert("尚未加载图谱。");
       return;
     }
 
@@ -211,7 +218,7 @@ export default function ExportMenu() {
       toggleExportMenu();
     } catch (error) {
       console.error("JSON export failed:", error);
-      alert(t("export.failedSvg", "Failed to export SVG: {error}", { error: error instanceof Error ? error.message : String(error) }));
+      alert(toUserErrorMessage(error, "导出 JSON 失败，请稍后重试。"));
     }
   };
 
@@ -220,7 +227,7 @@ export default function ExportMenu() {
       <button
         onClick={toggleExportMenu}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-elevated text-text-secondary hover:text-text-primary transition-colors"
-        title={t("export.buttonTitle", "Export graph (E)")}
+        title={t.export.title}
       >
         <svg
           className="w-4 h-4"
@@ -235,7 +242,7 @@ export default function ExportMenu() {
             d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
           />
         </svg>
-        {t("export.button", "Export")}
+        {t.export.label}
       </button>
 
       {exportMenuOpen && (
@@ -243,23 +250,23 @@ export default function ExportMenu() {
           <div className="p-2">
             <button
               onClick={exportPNG}
-              disabled={!reactFlowInstance}
+              disabled={!graphImageExportReady}
               className="w-full flex items-center gap-3 px-3 py-2 text-sm text-text-primary hover:bg-elevated transition-colors rounded-lg text-left disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
-              <span>{t("export.png", "Export as PNG")}</span>
+              <span>{t.export.asPNG}</span>
             </button>
             <button
               onClick={exportSVG}
-              disabled={!reactFlowInstance}
+              disabled={!graphImageExportReady}
               className="w-full flex items-center gap-3 px-3 py-2 text-sm text-text-primary hover:bg-elevated transition-colors rounded-lg text-left disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
               </svg>
-              <span>{t("export.svg", "Export as SVG")}</span>
+              <span>{t.export.asSVG}</span>
             </button>
             <button
               onClick={exportJSON}
@@ -269,7 +276,7 @@ export default function ExportMenu() {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
               </svg>
-              <span>{t("export.json", "Export as JSON")}</span>
+              <span>{t.export.asJSON}</span>
             </button>
           </div>
         </div>

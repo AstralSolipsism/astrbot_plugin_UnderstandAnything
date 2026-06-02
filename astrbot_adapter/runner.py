@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import re
 import subprocess
@@ -42,17 +43,35 @@ from .job_request import format_job_args, parse_job_args, quote_arg, split_args
 from .job_store import JobSnapshot, JobStatus, JobStore
 from .llm_dispatcher import LLMDispatcher, read_prompt_file
 from .path_security import PathSecurity
-from .project_registry import ProjectRegistry, ProjectRegistryError
+from .project_registry import ProjectRegistry, ProjectRegistryError, ProjectStatus
 from .project_store import ProjectStore
 from .runtime import UnderstandAnythingRuntime
 from .subagent_dispatcher import UnderstandAnythingSubAgentDispatcher
 from .subagent_registry import UnderstandAnythingSubAgentRegistry
 
 REQUIRED_GRAPH_OUTPUTS_BY_JOB = {
-    "understand": ("knowledge-graph.json", "meta.json", "fingerprints.json"),
-    "understand-domain": ("domain-graph.json",),
-    "understand-knowledge": ("knowledge-graph.json",),
+    "understand": (
+        "knowledge-graph.json",
+        "meta.json",
+        "source-inventory.json",
+        "fingerprints.json",
+        "quality-report.json",
+    ),
+    "understand-domain": (
+        "intermediate/domain-analysis.json",
+        "domain-graph.json",
+        "quality-report.json",
+    ),
+    "understand-knowledge": (
+        "knowledge-graph.json",
+        "meta.json",
+        "source-inventory.json",
+        "fingerprints.json",
+        "quality-report.json",
+    ),
 }
+
+RUNTIME_VALIDATED_JOB_KINDS = frozenset(REQUIRED_GRAPH_OUTPUTS_BY_JOB)
 
 SUPPORTED_OUTPUT_LOCALES = {
     "zh-CN": "Simplified Chinese",
@@ -333,6 +352,11 @@ class UnderstandAnythingRunner:
             aliases=status_aliases,
             graph_root=graph_root,
             source=source_payload,
+            status=(
+                ProjectStatus.CLONING
+                if github_checkout
+                else ProjectStatus.ANALYZING
+            ),
         )
         if start_task:
             job.args["started_notification_sent"] = await self._send_job_chat_message(
@@ -354,8 +378,10 @@ class UnderstandAnythingRunner:
         project_name: str | None = None,
         project_ref: str | None = None,
         event: AstrMessageEvent | None = None,
+        context_items: list[Any] | None = None,
+        include_context: bool = False,
         locale: str | None = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         store = self.project_store(
             project_path,
             project_id=project_id,
@@ -363,6 +389,14 @@ class UnderstandAnythingRunner:
             project_ref=project_ref,
         )
         graph = store.read_json("knowledge-graph.json")
+        assistant_bundle = await self._assistant_context_bundle(
+            store,
+            mode="chat",
+            messages=[{"role": "user", "content": query}],
+            context_items=context_items,
+            locale=locale,
+            event=event,
+        )
         payload = await self.runtime.run_action(
             "chat_prompt",
             {
@@ -371,14 +405,23 @@ class UnderstandAnythingRunner:
                 **self._language_payload(locale, event),
             },
         )
-        return await self.dispatcher.generate(
-            prompt=payload["markdown"],
+        answer = await self.dispatcher.generate(
+            prompt=self._prompt_with_assistant_context(
+                assistant_bundle,
+                str(payload["markdown"]),
+            ),
             event=event,
             system_prompt=self._with_language_directive(
                 "Answer using the provided Understand Anything graph context.",
                 locale,
                 event,
             ),
+        )
+        return self._assistant_response_payload(
+            "answer",
+            answer,
+            assistant_bundle,
+            include_context,
         )
 
     async def explain(
@@ -390,8 +433,10 @@ class UnderstandAnythingRunner:
         project_name: str | None = None,
         project_ref: str | None = None,
         event: AstrMessageEvent | None = None,
+        context_items: list[Any] | None = None,
+        include_context: bool = False,
         locale: str | None = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         store = self.project_store(
             project_path,
             project_id=project_id,
@@ -399,6 +444,14 @@ class UnderstandAnythingRunner:
             project_ref=project_ref,
         )
         graph = store.read_json("knowledge-graph.json")
+        assistant_bundle = await self._assistant_context_bundle(
+            store,
+            mode="explain",
+            messages=[{"role": "user", "content": f"Explain {target}"}],
+            context_items=context_items,
+            locale=locale,
+            event=event,
+        )
         payload = await self.runtime.run_action(
             "explain_prompt",
             {
@@ -407,14 +460,23 @@ class UnderstandAnythingRunner:
                 **self._language_payload(locale, event),
             },
         )
-        return await self.dispatcher.generate(
-            prompt=payload["markdown"],
+        answer = await self.dispatcher.generate(
+            prompt=self._prompt_with_assistant_context(
+                assistant_bundle,
+                str(payload["markdown"]),
+            ),
             event=event,
             system_prompt=self._with_language_directive(
                 "Explain the requested component from the graph context.",
                 locale,
                 event,
             ),
+        )
+        return self._assistant_response_payload(
+            "answer",
+            answer,
+            assistant_bundle,
+            include_context,
         )
 
     async def diff(
@@ -426,8 +488,10 @@ class UnderstandAnythingRunner:
         project_ref: str | None = None,
         changed_files: list[str] | None = None,
         event: AstrMessageEvent | None = None,
+        context_items: list[Any] | None = None,
+        include_context: bool = False,
         locale: str | None = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         store = self.project_store(
             project_path,
             project_id=project_id,
@@ -436,6 +500,15 @@ class UnderstandAnythingRunner:
         )
         graph = store.read_json("knowledge-graph.json")
         files = changed_files or self._git_changed_files(store.project_root)
+        assistant_bundle = await self._assistant_context_bundle(
+            store,
+            mode="diff",
+            messages=[{"role": "user", "content": "Analyze diff impact."}],
+            context_items=context_items,
+            changed_files=files,
+            locale=locale,
+            event=event,
+        )
         payload = await self.runtime.run_action(
             "diff_markdown",
             {
@@ -452,14 +525,23 @@ class UnderstandAnythingRunner:
                 "unmappedFiles": payload.get("unmappedFiles", []),
             },
         )
-        return await self.dispatcher.generate(
-            prompt=payload["markdown"],
+        answer = await self.dispatcher.generate(
+            prompt=self._prompt_with_assistant_context(
+                assistant_bundle,
+                str(payload["markdown"]),
+            ),
             event=event,
             system_prompt=self._with_language_directive(
                 "Analyze diff impact and risks from the graph context.",
                 locale,
                 event,
             ),
+        )
+        return self._assistant_response_payload(
+            "answer",
+            answer,
+            assistant_bundle,
+            include_context,
         )
 
     async def onboard(
@@ -470,8 +552,10 @@ class UnderstandAnythingRunner:
         project_name: str | None = None,
         project_ref: str | None = None,
         event: AstrMessageEvent | None = None,
+        context_items: list[Any] | None = None,
+        include_context: bool = False,
         locale: str | None = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         store = self.project_store(
             project_path,
             project_id=project_id,
@@ -479,11 +563,83 @@ class UnderstandAnythingRunner:
             project_ref=project_ref,
         )
         graph = store.read_json("knowledge-graph.json")
+        assistant_bundle = await self._assistant_context_bundle(
+            store,
+            mode="onboarding",
+            messages=[{"role": "user", "content": "Generate onboarding guidance."}],
+            context_items=context_items,
+            locale=locale,
+            event=event,
+        )
         payload = await self.runtime.run_action(
             "onboard_markdown",
             {"graph": graph, **self._language_payload(locale, event)},
         )
-        return str(payload["markdown"])
+        markdown = str(payload["markdown"])
+        return self._assistant_response_payload(
+            "markdown",
+            markdown,
+            assistant_bundle,
+            include_context,
+        )
+
+    async def _assistant_context_bundle(
+        self,
+        store: ProjectStore,
+        *,
+        mode: str,
+        messages: list[dict[str, str]],
+        context_items: list[Any] | None = None,
+        changed_files: list[str] | None = None,
+        locale: str | None = None,
+        event: AstrMessageEvent | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "projectRoot": str(store.project_root),
+            "graphRoot": str(store.graph_root),
+            "mode": mode,
+            "messages": messages,
+            **self._language_payload(locale, event),
+        }
+        if context_items is not None:
+            payload["contextItems"] = context_items
+        if changed_files is not None:
+            payload["changedFiles"] = changed_files
+        bundle = await self.runtime.run_action("assistant_context_bundle", payload)
+        if not isinstance(bundle, dict):
+            raise RuntimeError("assistant_context_bundle returned an invalid payload.")
+        if bundle.get("ok") is False:
+            message = str(bundle.get("message") or "assistant context build failed")
+            raise RuntimeError(message)
+        return bundle
+
+    @staticmethod
+    def _prompt_with_assistant_context(
+        assistant_bundle: dict[str, Any],
+        graph_prompt: str,
+    ) -> str:
+        assistant_prompt = str(assistant_bundle.get("prompt") or "").strip()
+        graph_prompt = graph_prompt.strip()
+        if assistant_prompt and graph_prompt:
+            return f"{assistant_prompt}\n\n## Existing Graph Prompt\n{graph_prompt}"
+        return assistant_prompt or graph_prompt
+
+    @staticmethod
+    def _assistant_response_payload(
+        value_key: str,
+        value: str,
+        assistant_bundle: dict[str, Any],
+        include_context: bool,
+    ) -> str | dict[str, Any]:
+        if not include_context:
+            return value
+        context = assistant_bundle.get("context")
+        warnings = assistant_bundle.get("warnings")
+        return {
+            value_key: value,
+            "assistantContext": context if isinstance(context, dict) else {},
+            "assistantWarnings": warnings if isinstance(warnings, list) else [],
+        }
 
     def format_job_started_message(
         self,
@@ -706,6 +862,11 @@ class UnderstandAnythingRunner:
             await self._prepare_job_source(job, event)
             self.jobs.append_log(job.job_id, f"Target project root: {job.project_root}")
             self._ensure_graph_root_defaults(job)
+            self._update_project_status_for_job(
+                job,
+                ProjectStatus.ANALYZING,
+                current_job_id=job.job_id,
+            )
 
             async with self._job_semaphore:
                 self.jobs.mark_running(job.job_id)
@@ -722,6 +883,11 @@ class UnderstandAnythingRunner:
                     30,
                 )
                 await self.runtime.ensure_ready()
+                if job.kind in RUNTIME_VALIDATED_JOB_KINDS:
+                    await self._run_runtime_validation_action(
+                        job,
+                        "preflight_inventory",
+                    )
                 prompt = self._build_skill_execution_prompt(job)
                 subagent_dispatcher = UnderstandAnythingSubAgentDispatcher(
                     self.context,
@@ -788,6 +954,11 @@ class UnderstandAnythingRunner:
                     "Validating generated graph outputs.",
                     85,
                 )
+                if job.kind in RUNTIME_VALIDATED_JOB_KINDS:
+                    await self._run_runtime_validation_action(
+                        job,
+                        self._runtime_output_action(job),
+                    )
                 self._validate_required_outputs(job)
                 self.jobs.mark_finished(job.job_id, {"message": result})
                 self.registry.register(
@@ -805,6 +976,16 @@ class UnderstandAnythingRunner:
                         if isinstance(job.args.get("source"), dict)
                         else None
                     ),
+                    status=ProjectStatus.READY,
+                )
+                graph_counts = self._job_graph_counts(job)
+                self._update_project_status_for_job(
+                    job,
+                    ProjectStatus.READY,
+                    current_job_id=None,
+                    last_job_id=job.job_id,
+                    node_count=graph_counts[0],
+                    edge_count=graph_counts[1],
                 )
                 if event is not None:
                     await self._send_job_chat_message(
@@ -823,6 +1004,13 @@ class UnderstandAnythingRunner:
             job.args["failed_step"] = failed_step
             job.args["failed_phase"] = failed_phase
             self.jobs.mark_failed(job.job_id, str(exc))
+            self._update_project_status_for_job(
+                job,
+                ProjectStatus.FAILED,
+                current_job_id=None,
+                last_job_id=job.job_id,
+                last_error=str(exc),
+            )
             if event is not None:
                 await self._send_job_chat_message(
                     job,
@@ -843,6 +1031,16 @@ class UnderstandAnythingRunner:
         percent: int,
     ) -> None:
         self.jobs.set_progress(job_id, phase, label, percent)
+        self.jobs.append_observation(
+            job_id,
+            kind="validation" if phase == "validate" else "stage",
+            level="info",
+            title=label,
+            message=label,
+            stage=phase,
+            status="running",
+            observation_id=f"stage-{phase}",
+        )
         notification = self._format_job_progress_message(job, phase)
         if notification is None:
             return
@@ -1618,6 +1816,99 @@ class UnderstandAnythingRunner:
         graph_root = self._job_graph_root(job)
         graph_root.mkdir(parents=True, exist_ok=True)
 
+    async def _run_runtime_validation_action(
+        self,
+        job: JobSnapshot,
+        action: str,
+    ) -> dict[str, Any]:
+        result = await self.runtime.run_action(
+            action,
+            self._runtime_validation_payload(job),
+        )
+        self._append_runtime_observations(job, action, result)
+        if result.get("ok") is False:
+            fatal = result.get("fatal") or result.get("error")
+            raise RuntimeError(
+                str(fatal)
+                if fatal
+                else f"Understand Anything runtime action failed: {action}",
+            )
+        return result
+
+    def _runtime_validation_payload(self, job: JobSnapshot) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "projectRoot": str(job.project_root),
+            "graphRoot": str(self._job_graph_root(job)),
+            "jobId": job.job_id,
+            "jobKind": job.kind,
+            "strictVisibleLanguage": "auto",
+        }
+        locale = job.args.get("locale")
+        if locale:
+            payload["locale"] = str(locale)
+        expected_commit = self._expected_git_commit_hash(job)
+        if expected_commit:
+            payload["expectedGitCommitHash"] = expected_commit
+        return payload
+
+    @staticmethod
+    def _runtime_output_action(job: JobSnapshot) -> str:
+        if job.kind == "understand-domain":
+            return "compile_domain_ir"
+        return "validate_outputs"
+
+    def _append_runtime_observations(
+        self,
+        job: JobSnapshot,
+        action: str,
+        result: dict[str, Any],
+    ) -> None:
+        observations = result.get("observations")
+        if not isinstance(observations, list):
+            return
+        for observation in observations:
+            if not isinstance(observation, dict):
+                continue
+            title = str(observation.get("title") or action)
+            message = str(observation.get("message") or title)
+            stage = observation.get("stage")
+            status = observation.get("status")
+            details = observation.get("details")
+            self.jobs.append_observation(
+                job.job_id,
+                kind=str(observation.get("kind") or "system"),
+                level=str(observation.get("level") or "info"),
+                title=title,
+                message=message,
+                stage=str(stage) if stage is not None else None,
+                status=str(status) if status is not None else None,
+                details=details if isinstance(details, dict) else None,
+                observation_id=self._runtime_observation_id(action, observation),
+            )
+
+    @staticmethod
+    def _runtime_observation_id(action: str, observation: dict[str, Any]) -> str:
+        material = json.dumps(
+            {
+                "action": action,
+                "kind": observation.get("kind"),
+                "title": observation.get("title"),
+                "message": observation.get("message"),
+                "stage": observation.get("stage"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.sha1(material.encode("utf-8")).hexdigest()[:12]
+        return f"runtime-{action}-{digest}"
+
+    def _expected_git_commit_hash(self, job: JobSnapshot) -> str | None:
+        configured = job.args.get("expected_git_commit_hash")
+        if configured:
+            return str(configured)
+        return self._git_head(job.project_root)
+
     def _validate_required_outputs(self, job: JobSnapshot) -> None:
         required = REQUIRED_GRAPH_OUTPUTS_BY_JOB.get(job.kind, ())
         if not required:
@@ -1634,12 +1925,57 @@ class UnderstandAnythingRunner:
                 + ", ".join(missing)
                 + f". Expected under: {graph_root}"
             )
-        store = ProjectStore(job.project_root, graph_root=graph_root)
         payloads: dict[str, dict[str, Any]] = {}
         for file_name in required:
-            payloads[file_name] = store.read_json(file_name)
-        if job.kind == "understand":
+            payloads[file_name] = self._read_graph_json(graph_root, file_name)
+        if job.kind in {"understand", "understand-knowledge"}:
             self._validate_understand_fingerprints(payloads)
+
+    @staticmethod
+    def _read_graph_json(graph_root: Path, file_name: str) -> dict[str, Any]:
+        relative = Path(file_name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"Invalid graph file path: {file_name}")
+        path = graph_root.joinpath(*relative.parts)
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Graph file must contain a JSON object: {path}")
+        return data
+
+    def _update_project_status_for_job(
+        self,
+        job: JobSnapshot,
+        status: ProjectStatus,
+        **updates: Any,
+    ) -> None:
+        project_id = str(job.args.get("project_id") or "").strip()
+        if not project_id:
+            return
+        try:
+            self.registry.update_status(project_id, status, **updates)
+        except ProjectRegistryError as exc:
+            logger.warning("Unable to update UA project status: %s", exc)
+
+    def _job_graph_counts(self, job: JobSnapshot) -> tuple[int, int]:
+        graph_root = self._job_graph_root(job)
+        for file_name in ("knowledge-graph.json", "domain-graph.json"):
+            path = graph_root / file_name
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            nodes = payload.get("nodes")
+            edges = payload.get("edges")
+            return (
+                len(nodes) if isinstance(nodes, list) else 0,
+                len(edges) if isinstance(edges, list) else 0,
+            )
+        return (0, 0)
 
     @staticmethod
     def _validate_understand_fingerprints(

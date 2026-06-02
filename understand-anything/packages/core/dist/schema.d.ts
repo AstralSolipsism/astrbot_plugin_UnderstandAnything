@@ -87,12 +87,17 @@ export declare const GraphNodeSchema: z.ZodObject<{
         crossDomainInteractions: z.ZodOptional<z.ZodArray<z.ZodString>>;
         entryPoint: z.ZodOptional<z.ZodString>;
         entryType: z.ZodOptional<z.ZodEnum<{
+            document: "document";
             http: "http";
             cli: "cli";
             event: "event";
             cron: "cron";
             manual: "manual";
         }>>;
+        scopePath: z.ZodOptional<z.ZodString>;
+        sourceNodeIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        sourceFilePaths: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        evidence: z.ZodOptional<z.ZodUnion<readonly [z.ZodArray<z.ZodString>, z.ZodString]>>;
     }, z.core.$loose>>;
     knowledgeMeta: z.ZodOptional<z.ZodObject<{
         wikilinks: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -226,12 +231,17 @@ export declare const KnowledgeGraphSchema: z.ZodObject<{
             crossDomainInteractions: z.ZodOptional<z.ZodArray<z.ZodString>>;
             entryPoint: z.ZodOptional<z.ZodString>;
             entryType: z.ZodOptional<z.ZodEnum<{
+                document: "document";
                 http: "http";
                 cli: "cli";
                 event: "event";
                 cron: "cron";
                 manual: "manual";
             }>>;
+            scopePath: z.ZodOptional<z.ZodString>;
+            sourceNodeIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+            sourceFilePaths: z.ZodOptional<z.ZodArray<z.ZodString>>;
+            evidence: z.ZodOptional<z.ZodUnion<readonly [z.ZodArray<z.ZodString>, z.ZodString]>>;
         }, z.core.$loose>>;
         knowledgeMeta: z.ZodOptional<z.ZodObject<{
             wikilinks: z.ZodOptional<z.ZodArray<z.ZodString>>;

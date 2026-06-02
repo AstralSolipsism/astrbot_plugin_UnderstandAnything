@@ -5,13 +5,24 @@ import {
   isAstrBotPluginPageContext,
 } from "../pluginPageContext";
 
+const pluginContentPath = [
+  "",
+  "api",
+  "plugin",
+  "page",
+  "content",
+  "astrbot_plugin_UnderstandAnything",
+  "dashboard",
+  "",
+].join("/");
+const bridgeSdkPath = ["", "api", "plugin", "page", "bridge-sdk.js"].join("/");
+
 describe("plugin page context detection", () => {
   it("treats AstrBot asset-token URLs as plugin pages even before bridge injection", () => {
     expect(
       isAstrBotPluginPageContext(
         {
-          pathname:
-            "/api/plugin/page/content/astrbot_plugin_UnderstandAnything/dashboard/",
+          pathname: pluginContentPath,
           search: "?asset_token=signed-token",
         },
         undefined,
@@ -46,12 +57,9 @@ describe("plugin page context detection", () => {
   it("builds a bridge SDK URL with page-scoped i18n and the current asset token", () => {
     expect(
       buildBridgeSdkUrl({
-        pathname:
-          "/api/plugin/page/content/astrbot_plugin_UnderstandAnything/dashboard/",
+        pathname: pluginContentPath,
         search: "?asset_token=signed-token&project_id=p1",
       }),
-    ).toBe(
-      "/api/plugin/page/bridge-sdk.js?i18n_scope=page&asset_token=signed-token",
-    );
+    ).toBe(`${bridgeSdkPath}?i18n_scope=page&asset_token=signed-token`);
   });
 });

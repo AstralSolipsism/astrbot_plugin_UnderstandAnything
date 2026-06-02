@@ -1,29 +1,25 @@
 import { useState, useCallback } from "react";
 import type { GraphIssue } from "@understand-anything/core/schema";
-import { useI18n } from "../i18n";
 
 interface WarningBannerProps {
   issues: GraphIssue[];
 }
 
-function buildCopyText(
-  issues: GraphIssue[],
-  t: (key: string, fallback: string) => string,
-): string {
+function buildCopyText(issues: GraphIssue[]): string {
   const hasFatal = issues.some((i) => i.level === "fatal");
   // Fatal issues are dashboard rendering bugs (e.g. ELK layout failures), not
   // LLM generation errors — route the user to file a bug report instead of
   // asking their agent to "fix" the knowledge-graph.json.
   const lines = hasFatal
-        ? [
-          t("warning.dashboardBugIntro", "Some of these issues look like dashboard rendering bugs."),
-          t("warning.bugReportLine", "Please file an issue at github.com/AstralSolipsism/astrbot_plugin_UnderstandAnything/issues with the text below."),
-          "",
-        ]
+    ? [
+        "其中部分问题看起来像仪表盘渲染错误。",
+        "请带上以下内容到 github.com/Lum1104/Understand-Anything/issues 反馈。",
+        "",
+      ]
     : [
-        t("warning.graphIssueIntro", "The following issues were found in your knowledge-graph.json."),
-        t("warning.graphIssueCause", "These are LLM generation errors, not a system bug."),
-        t("warning.graphIssueAction", "You can ask your agent to fix these specific issues in the knowledge-graph.json file:"),
+        "knowledge-graph.json 中发现以下问题。",
+        "这些通常是图谱生成问题。",
+        "可以让分析代理按这些问题修复 knowledge-graph.json：",
         "",
       ];
 
@@ -36,10 +32,10 @@ function buildCopyText(
   for (const issue of sorted) {
     const label =
       issue.level === "auto-corrected"
-        ? t("warning.autoCorrected", "Auto-corrected")
+        ? "已自动修正"
         : issue.level === "dropped"
-          ? t("warning.dropped", "Dropped")
-          : t("warning.fatal", "Fatal");
+          ? "已丢弃"
+          : "致命错误";
     lines.push(`[${label}] ${issue.message}`);
   }
 
@@ -47,7 +43,6 @@ function buildCopyText(
 }
 
 export default function WarningBanner({ issues }: WarningBannerProps) {
-  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -56,20 +51,31 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
   const dropped = issues.filter((i) => i.level === "dropped");
   const hasFatal = fatal.length > 0;
 
-  const summary = t("warning.collapsedSummary", "{count} dashboard issue(s)", {
-    count: issues.length,
-  });
+  // Build summary text — only mention counts > 0
+  const parts: string[] = [];
+  if (fatal.length > 0) {
+    parts.push(`${fatal.length} 个致命错误`);
+  }
+  if (autoCorrected.length > 0) {
+    parts.push(`${autoCorrected.length} 个自动修正`);
+  }
+  if (dropped.length > 0) {
+    parts.push(`${dropped.length} 个已丢弃项目`);
+  }
+  const summary = hasFatal
+    ? `仪表盘遇到${parts.join("、")}`
+    : `知识图谱已加载，并包含${parts.join("、")}`;
 
   const handleCopy = useCallback(async () => {
-    const text = buildCopyText(issues, t);
+    const text = buildCopyText(issues);
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      console.warn("Clipboard write failed");
+      console.warn("剪贴板写入失败，请从展开的问题列表中手动复制。");
     }
-  }, [issues, t]);
+  }, [issues]);
 
   if (issues.length === 0) return null;
 
@@ -88,8 +94,8 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
     ? "bg-red-800/40 text-red-200 hover:bg-red-800/60"
     : "bg-amber-800/40 text-amber-200 hover:bg-amber-800/60";
   const footerCopy = hasFatal
-    ? t("warning.footerFatal", "Copy these issues and file a bug report on GitHub")
-    : t("warning.footerNormal", "Copy these issues and ask your agent to fix them in knowledge-graph.json");
+    ? "复制这些问题并提交到 GitHub issue"
+    : "复制这些问题，让分析代理修复 knowledge-graph.json";
 
   return (
     <div className={containerClasses}>
@@ -135,9 +141,7 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
         <span className="flex-1">{summary}</span>
 
         <span className={`text-xs shrink-0 ${hintClasses}`}>
-          {expanded
-            ? t("warning.clickToCollapse", "Click to collapse")
-            : t("warning.clickToExpand", "Click to expand")}
+          {expanded ? "点击收起" : "点击展开"}
         </span>
       </button>
 
@@ -150,7 +154,7 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
             {fatal.length > 0 && (
               <div>
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-red-400 mb-1">
-                  {t("warning.fatal", "Fatal")} ({fatal.length})
+                  致命错误（{fatal.length}）
                 </h4>
                 {fatal.map((issue, i) => (
                   <div
@@ -177,7 +181,7 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
             {autoCorrected.length > 0 && (
               <div className={fatal.length > 0 ? "mt-2" : ""}>
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-400 mb-1">
-                  {t("warning.autoCorrected", "Auto-corrected")} ({autoCorrected.length})
+                  已自动修正（{autoCorrected.length}）
                 </h4>
                 {autoCorrected.map((issue, i) => (
                   <div key={`ac-${i}`} className="flex items-start gap-2 py-0.5 pl-2 text-amber-200/80">
@@ -196,7 +200,7 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
             {dropped.length > 0 && (
               <div className={fatal.length > 0 || autoCorrected.length > 0 ? "mt-2" : ""}>
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-orange-400 mb-1">
-                  {t("warning.dropped", "Dropped")} ({dropped.length})
+                  已丢弃（{dropped.length}）
                 </h4>
                 {dropped.map((issue, i) => (
                   <div key={`dr-${i}`} className="flex items-start gap-2 py-0.5 pl-2 text-orange-300/80">
@@ -225,7 +229,7 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  {t("warning.copied", "Copied")}
+                  已复制
                 </>
               ) : (
                 <>
@@ -237,7 +241,7 @@ export default function WarningBanner({ issues }: WarningBannerProps) {
                       d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
                     />
                   </svg>
-                  {t("warning.copyIssues", "Copy issues")}
+                  复制问题
                 </>
               )}
             </button>

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import enum
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,19 @@ from .path_security import PathSecurity
 
 class ProjectRegistryError(ValueError):
     """Raised when a project reference cannot be resolved unambiguously."""
+
+
+class ProjectStatus(enum.StrEnum):
+    EMPTY = "empty"
+    CLONING = "cloning"
+    ANALYZING = "analyzing"
+    READY = "ready"
+    STALE = "stale"
+    FAILED = "failed"
+    DELETING = "deleting"
+
+
+_UNSET = object()
 
 
 @dataclass(slots=True)
@@ -26,9 +41,17 @@ class ProjectRecord:
     last_analyzed_at: float | None = None
     auto_update: bool = False
     source: dict[str, Any] = field(default_factory=dict)
+    status: ProjectStatus = ProjectStatus.EMPTY
+    current_job_id: str | None = None
+    last_error: str | None = None
+    node_count: int = 0
+    edge_count: int = 0
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ProjectRecord:
+        now = time.time()
         return cls(
             project_id=str(payload.get("project_id") or ""),
             name=str(payload.get("name") or ""),
@@ -53,19 +76,76 @@ class ProjectRecord:
                 if isinstance(payload.get("source"), dict)
                 else {}
             ),
+            status=_coerce_project_status(payload.get("status")),
+            current_job_id=(
+                str(payload["current_job_id"])
+                if payload.get("current_job_id") is not None
+                else (
+                    str(payload["currentJobId"])
+                    if payload.get("currentJobId") is not None
+                    else None
+                )
+            ),
+            last_error=(
+                str(payload["last_error"])
+                if payload.get("last_error") is not None
+                else (
+                    str(payload["lastError"])
+                    if payload.get("lastError") is not None
+                    else None
+                )
+            ),
+            node_count=_int_payload_value(
+                payload.get("node_count", payload.get("nodeCount", 0)),
+            ),
+            edge_count=_int_payload_value(
+                payload.get("edge_count", payload.get("edgeCount", 0)),
+            ),
+            created_at=(
+                float(payload["created_at"])
+                if payload.get("created_at") is not None
+                else now
+            ),
+            updated_at=(
+                float(payload["updated_at"])
+                if payload.get("updated_at") is not None
+                else now
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
+        last_analyzed_iso = (
+            _iso_from_timestamp(self.last_analyzed_at)
+            if self.last_analyzed_at is not None
+            else None
+        )
         return {
+            "id": self.project_id,
             "project_id": self.project_id,
             "name": self.name,
             "aliases": self.aliases,
             "path": self.path,
+            "localPath": self.path,
             "graph_root": self.graph_root,
             "last_job_id": self.last_job_id,
             "last_analyzed_at": self.last_analyzed_at,
+            "lastAnalyzedAt": last_analyzed_iso,
             "auto_update": self.auto_update,
+            "autoUpdate": self.auto_update,
             "source": self.source,
+            "status": self.status.value,
+            "current_job_id": self.current_job_id,
+            "currentJobId": self.current_job_id,
+            "last_error": self.last_error,
+            "lastError": self.last_error,
+            "node_count": self.node_count,
+            "nodeCount": self.node_count,
+            "edge_count": self.edge_count,
+            "edgeCount": self.edge_count,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "createdAt": _iso_from_timestamp(self.created_at),
+            "updatedAt": _iso_from_timestamp(self.updated_at),
         }
 
 
@@ -94,6 +174,7 @@ class ProjectRegistry:
         aliases: list[str] | None = None,
         graph_root: str | Path | None = None,
         source: dict[str, Any] | None = None,
+        status: ProjectStatus | str | None = None,
     ) -> ProjectRecord:
         self._load()
         resolved = Path(project_root).expanduser().resolve(strict=False)
@@ -118,13 +199,41 @@ class ProjectRegistry:
         last_analyzed_at = existing.last_analyzed_at if existing else None
         auto_update_value = existing.auto_update if existing else False
         source_value = existing.source if existing else {}
+        existing_counts = _graph_counts(resolved_graph_root)
+        status_value = (
+            existing.status
+            if existing
+            else (
+                ProjectStatus.READY
+                if existing_counts is not None
+                else ProjectStatus.EMPTY
+            )
+        )
+        current_job_id = existing.current_job_id if existing else None
+        last_error = existing.last_error if existing else None
+        node_count = existing.node_count if existing else 0
+        edge_count = existing.edge_count if existing else 0
+        created_at = existing.created_at if existing else time.time()
+        updated_at = time.time()
+        if existing_counts is not None and not existing:
+            node_count, edge_count = existing_counts
         if job_id is not None:
             last_job_id = job_id
-            last_analyzed_at = time.time()
         if auto_update is not None:
             auto_update_value = auto_update
         if source is not None:
             source_value = dict(source)
+        if status is not None:
+            status_value = _coerce_project_status(status)
+            if status_value in {ProjectStatus.CLONING, ProjectStatus.ANALYZING}:
+                current_job_id = job_id or current_job_id
+                last_error = None
+            elif status_value is ProjectStatus.READY:
+                current_job_id = None
+                last_error = None
+                last_analyzed_at = time.time()
+                if existing_counts is not None:
+                    node_count, edge_count = existing_counts
         record = ProjectRecord(
             project_id=project_id,
             name=name,
@@ -135,8 +244,68 @@ class ProjectRegistry:
             last_analyzed_at=last_analyzed_at,
             auto_update=auto_update_value,
             source=source_value,
+            status=status_value,
+            current_job_id=current_job_id,
+            last_error=last_error,
+            node_count=node_count,
+            edge_count=edge_count,
+            created_at=created_at,
+            updated_at=updated_at,
         )
         self._records[project_id] = record
+        self._save()
+        return record
+
+    def update_status(
+        self,
+        project_id: str,
+        status: ProjectStatus | str,
+        *,
+        current_job_id: str | None | object = _UNSET,
+        last_job_id: str | None | object = _UNSET,
+        last_error: str | None | object = _UNSET,
+        last_analyzed_at: float | None | object = _UNSET,
+        node_count: int | object = _UNSET,
+        edge_count: int | object = _UNSET,
+    ) -> ProjectRecord:
+        self._load()
+        record = self._records.get(project_id)
+        if record is None:
+            raise ProjectRegistryError(
+                f"Unknown Understand Anything project: {project_id}. "
+                f"Available projects: {self._available_projects_text()}",
+            )
+        status_value = _coerce_project_status(status)
+        record.status = status_value
+        if current_job_id is not _UNSET:
+            record.current_job_id = (
+                str(current_job_id) if current_job_id is not None else None
+            )
+        if last_job_id is not _UNSET:
+            record.last_job_id = str(last_job_id) if last_job_id is not None else None
+        if last_error is not _UNSET:
+            record.last_error = str(last_error) if last_error is not None else None
+        elif status_value is not ProjectStatus.FAILED:
+            record.last_error = None
+        if last_analyzed_at is not _UNSET:
+            record.last_analyzed_at = (
+                float(last_analyzed_at) if last_analyzed_at is not None else None
+            )
+        elif status_value is ProjectStatus.READY:
+            record.last_analyzed_at = time.time()
+        if node_count is not _UNSET:
+            record.node_count = max(0, int(node_count))
+        if edge_count is not _UNSET:
+            record.edge_count = max(0, int(edge_count))
+        if status_value in {ProjectStatus.CLONING, ProjectStatus.ANALYZING}:
+            record.last_error = None
+        if status_value in {ProjectStatus.READY, ProjectStatus.FAILED}:
+            record.current_job_id = (
+                None
+                if current_job_id is _UNSET
+                else record.current_job_id
+            )
+        record.updated_at = time.time()
         self._save()
         return record
 
@@ -331,3 +500,47 @@ def _default_storage_path() -> Path:
         return Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME / "projects.json"
     except Exception:
         return PLUGIN_ROOT / ".plugin_data" / "projects.json"
+
+
+def _coerce_project_status(value: Any) -> ProjectStatus:
+    if isinstance(value, ProjectStatus):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return ProjectStatus.EMPTY
+    try:
+        return ProjectStatus(text)
+    except ValueError:
+        return ProjectStatus.EMPTY
+
+
+def _graph_counts(graph_root: Path) -> tuple[int, int] | None:
+    graph_path = graph_root / "knowledge-graph.json"
+    if not graph_path.is_file():
+        return None
+    try:
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(graph, dict):
+        return None
+    nodes = graph.get("nodes")
+    edges = graph.get("edges")
+    return (
+        len(nodes) if isinstance(nodes, list) else 0,
+        len(edges) if isinstance(edges, list) else 0,
+    )
+
+
+def _int_payload_value(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _iso_from_timestamp(value: float) -> str:
+    return datetime.fromtimestamp(value, timezone.utc).isoformat().replace(
+        "+00:00",
+        "Z",
+    )

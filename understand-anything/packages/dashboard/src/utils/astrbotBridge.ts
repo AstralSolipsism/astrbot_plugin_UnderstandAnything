@@ -27,13 +27,26 @@ export interface ProjectRefParams {
 
 export interface ProjectSummary {
   project_id: string;
+  id?: string;
   name: string;
   aliases?: string[];
   path?: string;
   graph_root?: string;
+  graphRoot?: string;
   source?: Record<string, unknown>;
+  status?: "empty" | "cloning" | "analyzing" | "ready" | "stale" | "failed" | "deleting" | string;
+  current_job_id?: string | null;
+  currentJobId?: string | null;
   last_job_id?: string | null;
+  lastJobId?: string | null;
+  last_error?: string | null;
+  lastError?: string | null;
   last_analyzed_at?: number | null;
+  lastAnalyzedAt?: string | number | null;
+  node_count?: number;
+  nodeCount?: number;
+  edge_count?: number;
+  edgeCount?: number;
   auto_update?: boolean;
 }
 
@@ -217,8 +230,10 @@ export interface SubAgentProviderOptions {
 
 export interface JobSnapshot {
   job_id: string;
+  id?: string;
   kind: string;
   project_root: string;
+  projectRoot?: string;
   args: Record<string, unknown>;
   status:
     | "queued"
@@ -228,12 +243,51 @@ export interface JobSnapshot {
     | "failed"
     | "cancelled";
   logs: string[];
+  recentLogs?: string[];
   progress?: JobProgress;
   confirmation?: JobConfirmation | null;
   result?: Record<string, unknown> | null;
   error?: string | null;
+  observations?: JobObservation[];
+  terminal?: boolean;
+  stage?: string;
+  phase?: string;
+  phase_label?: string;
+  phaseLabel?: string;
+  percent?: number;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  durationMs?: number;
+  summary?: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export type JobObservationKind =
+  | "system"
+  | "stage"
+  | "command"
+  | "assistant"
+  | "validation"
+  | "quality"
+  | "artifact"
+  | "warning"
+  | "error"
+  | string;
+
+export type JobObservationLevel = "info" | "success" | "warning" | "error";
+
+export interface JobObservation {
+  id: string;
+  timestamp?: number;
+  createdAt?: string;
+  kind: JobObservationKind;
+  level: JobObservationLevel;
+  title: string;
+  message: string;
+  stage?: string;
+  status?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface JobConfirmationSummary {

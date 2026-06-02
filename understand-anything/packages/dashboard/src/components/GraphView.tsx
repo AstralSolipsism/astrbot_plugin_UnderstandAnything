@@ -1,37 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ReactFlow,
-  ReactFlowProvider,
-  useNodes,
-  useNodesState,
-  useEdgesState,
-  useReactFlow,
-  Background,
-  BackgroundVariant,
-  Controls,
-  MiniMap,
-} from "@xyflow/react";
 import type { Edge, Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import CustomNode from "./CustomNode";
 import type { CustomFlowNode } from "./CustomNode";
-import LayerClusterNode from "./LayerClusterNode";
 import type { LayerClusterFlowNode } from "./LayerClusterNode";
-import PortalNode from "./PortalNode";
 import type { PortalFlowNode } from "./PortalNode";
-import ContainerNode from "./ContainerNode";
 import type { ContainerFlowNode, ContainerNodeData } from "./ContainerNode";
 import Breadcrumb from "./Breadcrumb";
-import { useI18n } from "../i18n";
+import CanvasGraphRenderer from "./CanvasGraphRenderer";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 import type {
   GraphEdge,
   GraphNode,
   KnowledgeGraph,
   NodeType,
 } from "@understand-anything/core/types";
-import { useTheme } from "../themes/index.ts";
 import {
   NODE_WIDTH,
   NODE_HEIGHT,
@@ -54,15 +38,46 @@ import {
 import { deriveContainers } from "../utils/containers";
 import type { DerivedContainer } from "../utils/containers";
 import { computeLayerStats } from "../utils/layerStats";
-
-const nodeTypes = {
-  custom: CustomNode,
-  "layer-cluster": LayerClusterNode,
-  portal: PortalNode,
-  container: ContainerNode,
-};
+import {
+  buildGraphSceneModelFromFlow,
+  buildOverviewSceneModel,
+} from "../graph-scene/buildGraphScene";
+import { getGraphSceneNodeAction } from "../graph-scene/graphSceneActions";
+import type { GraphSceneModel, GraphSceneNode, GraphScenePoint } from "../graph-scene/graphSceneTypes";
+import type { CanvasViewport } from "../canvas/graphViewport";
 
 import type { NodeCategory } from "../store";
+
+interface GraphContextMenuState {
+  node: GraphSceneNode;
+  x: number;
+  y: number;
+}
+
+function graphContextMenuPosition(
+  host: HTMLElement | null,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } {
+  const rect = host?.getBoundingClientRect();
+  return {
+    x: rect ? clientX - rect.left : clientX,
+    y: rect ? clientY - rect.top : clientY,
+  };
+}
+
+function graphSceneNodeLabel(node: GraphSceneNode): string {
+  const data = node.data;
+  const label = data.label ?? data.layerName ?? data.containerLabel ?? data.name;
+  return typeof label === "string" && label.length > 0 ? label : node.id;
+}
+
+function actionLabelForContextMenu(level: "overview" | "layer-detail", node: GraphSceneNode): string {
+  const action = getGraphSceneNodeAction(level, node);
+  if (action.type === "drill-layer") return "进入局部详情";
+  if (action.type === "toggle-container") return "展开/收起分组";
+  return "查看节点详情";
+}
 
 /**
  * Maps each NodeType to a filter category. Must be kept in sync with core NodeType.
@@ -77,135 +92,6 @@ const NODE_TYPE_TO_CATEGORY: Record<NodeType, NodeCategory> = {
   domain: "domain", flow: "domain", step: "domain",
   article: "knowledge", entity: "knowledge", topic: "knowledge", claim: "knowledge", source: "knowledge",
 } as const;
-
-// ── Helper components that must live inside <ReactFlow> ────────────────
-
-/**
- * Pans/zooms to tour-highlighted nodes. Highlighted nodes are usually
- * children of collapsed containers — auto-expand fires synchronously on
- * the same `tourHighlightedNodeIds` change, but their child entries don't
- * appear in React Flow's node list until Stage 2 layout writes the
- * `containerLayoutCache` (async ELK call, hundreds of ms on big layers).
- *
- * We subscribe to React Flow's reactive node list via `useNodes()` so the
- * effect re-runs every time the node set actually changes (Stage 1, Stage
- * 2, expand/collapse). When every highlighted id is present we fit; until
- * then we wait. A 2s fallback timer covers the case where a highlighted
- * id is filtered out and never materialises.
- */
-function TourFitView() {
-  const tourHighlightedNodeIds = useDashboardStore((s) => s.tourHighlightedNodeIds);
-  const setTourFitPending = useDashboardStore((s) => s.setTourFitPending);
-  const { fitView, getInternalNode } = useReactFlow();
-  // Subscribe to React Flow's user-node array so this effect re-fires when
-  // the node set changes (e.g. Stage 2 finally lands the highlighted ids
-  // after the per-step RAF window already gave up). The RAF poll inside
-  // covers the common fast path; the `nodes` dep covers slow Stage 2.
-  const nodes = useNodes();
-  const fittedKeyRef = useRef<string>("");
-  const fallbackKeyRef = useRef<string>("");
-
-  useEffect(() => {
-    const targetKey = tourHighlightedNodeIds.join("\n");
-    if (targetKey === "") {
-      fittedKeyRef.current = "";
-      fallbackKeyRef.current = "";
-      setTourFitPending(false);
-      return;
-    }
-    if (targetKey === fittedKeyRef.current) return;
-
-    // Poll React Flow's internal lookup directly — `useNodes()` reflects
-    // user-supplied nodes and may not fire on measure completion. Once
-    // every highlighted id has measured dimensions, `fitView({ nodes })`
-    // handles the child→absolute coordinate transform itself, which is
-    // more reliable than recomputing bbox manually.
-    const MAX_FRAMES = 240; // ~4s at 60fps
-    let frame = 0;
-    let cancelled = false;
-    let rafId = 0;
-    // After we've already shown the fallback for this step, suppress the
-    // "Locating tour highlight…" overlay on subsequent re-fires (each
-    // `nodes` change re-enters the effect, but the user has already given
-    // up waiting). The retry still runs silently in case Stage 2 lands.
-    if (fallbackKeyRef.current !== targetKey) setTourFitPending(true);
-
-    const tick = () => {
-      if (cancelled) return;
-      let ready = true;
-      for (const id of tourHighlightedNodeIds) {
-        const internal = getInternalNode(id);
-        if (!internal || !internal.measured?.width || !internal.measured?.height) {
-          ready = false;
-          break;
-        }
-      }
-      if (ready) {
-        fitView({
-          nodes: tourHighlightedNodeIds.map((id) => ({ id })),
-          duration: 500,
-          padding: 0.3,
-          maxZoom: 1.2,
-          minZoom: 0.4,
-        });
-        fittedKeyRef.current = targetKey;
-        fallbackKeyRef.current = "";
-        setTourFitPending(false);
-        return;
-      }
-      if (++frame < MAX_FRAMES) {
-        rafId = requestAnimationFrame(tick);
-        return;
-      }
-      // Highlights still not ready after the poll window. Pan into the
-      // layer so the user isn't stranded, but DON'T set fittedKeyRef —
-      // if Stage 2 lands later, a `nodes` change will re-fire this effect
-      // and we'll get another shot at the proper highlight fit.
-      // `fallbackKeyRef` prevents the fallback fitView from re-firing on
-      // every subsequent nodes update for the same step.
-      if (fallbackKeyRef.current !== targetKey) {
-        fitView({ duration: 500, padding: 0.3 });
-        fallbackKeyRef.current = targetKey;
-      }
-      setTourFitPending(false);
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(rafId);
-    };
-  }, [tourHighlightedNodeIds, nodes, fitView, getInternalNode, setTourFitPending]);
-
-  return null;
-}
-
-/** Centers the graph on the selected node (e.g. from search). */
-function SelectedNodeFitView() {
-  const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
-  const { fitView } = useReactFlow();
-  const prevRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (selectedNodeId && selectedNodeId !== prevRef.current) {
-      // Delay slightly so this runs after any layer-level fitView triggered
-      // by navigateToNodeInLayer (which also changes activeLayerId).
-      const timer = setTimeout(() => {
-        fitView({
-          nodes: [{ id: selectedNodeId }],
-          duration: 500,
-          padding: 0.3,
-          maxZoom: 1.2,
-          minZoom: 0.01,
-        });
-      }, 100);
-      prevRef.current = selectedNodeId;
-      return () => clearTimeout(timer);
-    }
-    prevRef.current = selectedNodeId;
-  }, [selectedNodeId, fitView]);
-
-  return null;
-}
 
 // ── Overview level: layers as cluster nodes ────────────────────────────
 
@@ -959,6 +845,11 @@ function buildCustomFlowNode(
  *     the underlying file→file edges from `topo.filteredEdges`.
  */
 function useLayerDetailGraph() {
+  const { t } = useI18n();
+  const edgeLabel = useCallback(
+    (type: string) => (t.edgeLabels as Record<string, { forward: string } | undefined>)[type]?.forward ?? `关系：${type}`,
+    [t],
+  );
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const searchResults = useDashboardStore((s) => s.searchResults);
   const tourHighlightedNodeIds = useDashboardStore((s) => s.tourHighlightedNodeIds);
@@ -969,13 +860,14 @@ function useLayerDetailGraph() {
   const affectedNodeIds = useDashboardStore((s) => s.affectedNodeIds);
   const focusNodeId = useDashboardStore((s) => s.focusNodeId);
   const selectNode = useDashboardStore((s) => s.selectNode);
+  const topo = useLayerDetailTopology();
 
   const handleNodeSelect = useCallback(
-    (nodeId: string) => selectNode(nodeId),
+    (nodeId: string) => {
+      selectNode(nodeId);
+    },
     [selectNode],
   );
-
-  const topo = useLayerDetailTopology();
 
   // Build expanded child nodes from the layout cache for any expanded
   // container whose layout has been computed. Collapsed containers
@@ -1227,7 +1119,7 @@ function useLayerDetailGraph() {
           id: `inflated-${key}`,
           source: realSrc,
           target: realTgt,
-          label: m.type,
+          label: edgeLabel(m.type),
           style: { stroke: "rgba(212,165,116,0.5)", strokeWidth: 1.5 },
           labelStyle: { fill: "#a39787", fontSize: 10 },
         });
@@ -1245,13 +1137,14 @@ function useLayerDetailGraph() {
         id: key,
         source: e.source,
         target: e.target,
-        label: e.type,
+        label: edgeLabel(e.type),
         style: { stroke: "rgba(212,165,116,0.5)", strokeWidth: 1.5 },
         labelStyle: { fill: "#a39787", fontSize: 10 },
       });
     }
     return out;
   }, [
+    edgeLabel,
     topo.edges,
     topo.filteredEdges,
     topo.intraContainer,
@@ -1295,14 +1188,108 @@ function useLayerDetailGraph() {
   };
 }
 
-// ── Main inner component (must be inside ReactFlowProvider) ────────────
+function OverviewCanvasGraphView() {
+  const menuHostRef = useRef<HTMLDivElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<GraphContextMenuState | null>(null);
+  const graph = useDashboardStore((s) => s.graph);
+  const searchResults = useDashboardStore((s) => s.searchResults);
+  const drillIntoLayer = useDashboardStore((s) => s.drillIntoLayer);
+  const selectNode = useDashboardStore((s) => s.selectNode);
+  const overviewGraph = useOverviewGraph();
+
+  const scene = useMemo(() => {
+    if (!graph) return null;
+    if ((graph.layers?.length ?? 0) > 0 && overviewGraph.nodes.length === 0) {
+      return null;
+    }
+
+    const positions = new Map<string, GraphScenePoint>();
+    for (const node of overviewGraph.nodes) {
+      positions.set(node.id, node.position);
+    }
+
+    return buildOverviewSceneModel({
+      graph,
+      searchResultNodeIds: new Set(searchResults.map((result) => result.nodeId)),
+      positions,
+    });
+  }, [graph, overviewGraph.nodes, searchResults]);
+
+  const handleNodeClick = useCallback(
+    (node: { id: string; data: Record<string, unknown> }) => {
+      setContextMenu(null);
+      const layerId = typeof node.data.layerId === "string" ? node.data.layerId : node.id;
+      drillIntoLayer(layerId);
+    },
+    [drillIntoLayer],
+  );
+
+  const handlePaneClick = useCallback(() => {
+    setContextMenu(null);
+    selectNode(null);
+  }, [selectNode]);
+
+  const handleNodeContextMenu = useCallback((node: GraphSceneNode, clientX: number, clientY: number) => {
+    const position = graphContextMenuPosition(menuHostRef.current, clientX, clientY);
+    setContextMenu({ node, ...position });
+  }, []);
+
+  const handlePaneContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  if (!graph) {
+    return (
+      <div className="h-full w-full flex items-center justify-center bg-root rounded-lg">
+        <p className="text-text-muted text-sm">尚未加载知识图谱</p>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={menuHostRef} className="h-full w-full relative">
+      <Breadcrumb />
+      <CanvasGraphRenderer
+        scene={scene}
+        layoutStatus={overviewGraph.layoutStatus}
+        stats={{ nodes: graph.nodes.length, edges: graph.edges.length }}
+        onNodeClick={handleNodeClick}
+        onPaneClick={handlePaneClick}
+        onNodeContextMenu={handleNodeContextMenu}
+        onPaneContextMenu={handlePaneContextMenu}
+      />
+      {contextMenu && (
+        <div
+          className="absolute z-20 min-w-52 rounded-md border border-border-subtle bg-elevated p-1 shadow-xl"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <div className="truncate px-3 py-2 text-xs text-text-muted">
+            {graphSceneNodeLabel(contextMenu.node)}
+          </div>
+          <button
+            type="button"
+            onClick={() => handleNodeClick(contextMenu.node)}
+            className="block w-full rounded px-3 py-2 text-left text-sm text-text-primary hover:bg-gold/10"
+          >
+            {actionLabelForContextMenu("overview", contextMenu.node)}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main structural graph component ────────────────────────────────────
 
 function GraphViewInner() {
-  const { t } = useI18n();
+  const menuHostRef = useRef<HTMLDivElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<GraphContextMenuState | null>(null);
   const graph = useDashboardStore((s) => s.graph);
   const navigationLevel = useDashboardStore((s) => s.navigationLevel);
   const activeLayerId = useDashboardStore((s) => s.activeLayerId);
+  const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const selectNode = useDashboardStore((s) => s.selectNode);
+  const addGraphNodeToAssistantContext = useDashboardStore((s) => s.addGraphNodeToAssistantContext);
   const drillIntoLayer = useDashboardStore((s) => s.drillIntoLayer);
   const focusNodeId = useDashboardStore((s) => s.focusNodeId);
   const setFocusNode = useDashboardStore((s) => s.setFocusNode);
@@ -1310,41 +1297,65 @@ function GraphViewInner() {
   const tourHighlightedNodeIds = useDashboardStore((s) => s.tourHighlightedNodeIds);
   const expandContainer = useDashboardStore((s) => s.expandContainer);
   const collapseContainer = useDashboardStore((s) => s.collapseContainer);
+  const toggleContainer = useDashboardStore((s) => s.toggleContainer);
   const pendingFocusContainer = useDashboardStore((s) => s.pendingFocusContainer);
   const setPendingFocusContainer = useDashboardStore((s) => s.setPendingFocusContainer);
   const tourFitPending = useDashboardStore((s) => s.tourFitPending);
-  const { preset } = useTheme();
+  const setTourFitPending = useDashboardStore((s) => s.setTourFitPending);
+  const graphRendererController = useDashboardStore((s) => s.graphRendererController);
 
-  const overviewGraph = useOverviewGraph();
   const detailGraph = useLayerDetailGraph();
 
   const {
-    nodes: initialNodes,
-    edges: initialEdges,
+    nodes,
+    edges,
     nodeToContainer,
     containerIds,
     layoutStatus,
-  } = navigationLevel === "overview"
-    ? { ...overviewGraph, nodeToContainer: undefined, containerIds: undefined }
-    : detailGraph;
-
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-  const { fitView, getViewport, setCenter } = useReactFlow();
+  } = detailGraph;
 
   useEffect(() => {
-    setNodes(initialNodes);
-  }, [initialNodes, setNodes]);
+    setReactFlowInstance(null);
+  }, [setReactFlowInstance]);
 
-  useEffect(() => {
-    setEdges(initialEdges);
-  }, [initialEdges, setEdges]);
+  const scene = useMemo<GraphSceneModel | null>(() => {
+    if (!graph) return null;
+    return buildGraphSceneModelFromFlow({
+      level: "layer-detail",
+      nodes: nodes.map((node) => ({
+        id: node.id,
+        type: node.type,
+        parentId: node.parentId,
+        position: node.position,
+        width: typeof node.width === "number" ? node.width : undefined,
+        height: typeof node.height === "number" ? node.height : undefined,
+        style: {
+          width: typeof node.style?.width === "number" ? node.style.width : undefined,
+          height: typeof node.style?.height === "number" ? node.style.height : undefined,
+        },
+        data: node.data as Record<string, unknown>,
+      })),
+      edges: edges.map((edge) => ({
+        id: edge.id,
+        source: String(edge.source),
+        target: String(edge.target),
+        label:
+          typeof edge.label === "string" || typeof edge.label === "number"
+            ? edge.label
+            : undefined,
+        style: edge.style as
+          | { stroke?: string; strokeWidth?: number; strokeDasharray?: string }
+          | undefined,
+        labelStyle: edge.labelStyle as
+          | { fill?: string; fontSize?: number; fontWeight?: number }
+          | undefined,
+      })),
+    });
+  }, [edges, graph, nodes]);
 
   // Fit view on level/layer transitions. Layout is async (~125ms+ for
   // medium layers), so a fixed-delay timer can fire before positions
-  // arrive and leave the viewport on the previous layer. Instead, mark
-  // a pending fit on navigation and run it when nodes actually populate.
+  // arrive and leave the viewport on the previous layer.
   const pendingFitRef = useRef(false);
   useEffect(() => {
     pendingFitRef.current = true;
@@ -1352,14 +1363,14 @@ function GraphViewInner() {
 
   useEffect(() => {
     if (!pendingFitRef.current) return;
+    if (!graphRendererController) return;
     if (nodes.length === 0) return;
     pendingFitRef.current = false;
-    // One frame so React Flow has positioned the nodes before fit.
     const raf = requestAnimationFrame(() => {
-      fitView({ duration: 400, padding: 0.2 });
+      graphRendererController.fitView();
     });
     return () => cancelAnimationFrame(raf);
-  }, [nodes, fitView]);
+  }, [graphRendererController, nodes.length]);
 
   // Lock viewport onto a container the user just manually expanded so it
   // appears to expand in place rather than getting yanked off-screen by
@@ -1367,20 +1378,15 @@ function GraphViewInner() {
   // shift positions a few times) and clears itself after a short window
   // so subsequent layout shifts stop hijacking the viewport.
   useEffect(() => {
+    if (!graphRendererController || !scene) return;
     if (!pendingFocusContainer) return;
-    const node = nodes.find((n) => n.id === pendingFocusContainer);
+    const node = scene.nodes.find((candidate) => candidate.id === pendingFocusContainer);
     if (!node) return;
-    const w =
-      (node.width as number | undefined) ??
-      ((node.style?.width as number | undefined) ?? 0);
-    const h =
-      (node.height as number | undefined) ??
-      ((node.style?.height as number | undefined) ?? 0);
-    const cx = node.position.x + w / 2;
-    const cy = node.position.y + h / 2;
-    const { zoom } = getViewport();
-    setCenter(cx, cy, { zoom, duration: 0 });
-  }, [pendingFocusContainer, nodes, getViewport, setCenter]);
+    const cx = node.x + node.width / 2;
+    const cy = node.y + node.height / 2;
+    const { zoom } = graphRendererController.getViewport();
+    graphRendererController.setCenter(cx, cy, { zoom });
+  }, [graphRendererController, pendingFocusContainer, scene]);
 
   useEffect(() => {
     if (!pendingFocusContainer) return;
@@ -1448,27 +1454,26 @@ function GraphViewInner() {
   // (so a user who manually collapses a container at zoom > 1 can pan
   // around without seeing it pop back open).
   const prevZoomRef = useRef<number | null>(null);
-  const onMove = useCallback(
-    (event: MouseEvent | TouchEvent | null) => {
-      if (event === null) return; // programmatic — skip
+  const handleViewportChange = useCallback(
+    (viewport: CanvasViewport, source: "user" | "programmatic") => {
+      if (source !== "user") return;
       if (!containerIds || containerIds.length === 0) return;
       if (zoomTimeoutRef.current !== null) {
         window.clearTimeout(zoomTimeoutRef.current);
       }
       zoomTimeoutRef.current = window.setTimeout(() => {
-        const vp = getViewport();
         const prev = prevZoomRef.current;
-        prevZoomRef.current = vp.zoom;
-        if (vp.zoom <= 1.0) return;
+        prevZoomRef.current = viewport.zoom;
+        if (viewport.zoom <= 1.0) return;
         // Only fire when zoom actually increased — pan and zoom-out are no-ops.
-        if (prev !== null && vp.zoom <= prev) return;
+        if (prev !== null && viewport.zoom <= prev) return;
         const expanded = useDashboardStore.getState().expandedContainers;
         for (const cid of containerIds) {
           if (!expanded.has(cid)) expandContainer(cid);
         }
       }, 200);
     },
-    [containerIds, getViewport, expandContainer],
+    [containerIds, expandContainer],
   );
 
   // Clear any pending zoom timer on unmount or when handler identity changes.
@@ -1479,36 +1484,105 @@ function GraphViewInner() {
         zoomTimeoutRef.current = null;
       }
     };
-  }, [onMove]);
+  }, []);
 
-  const onNodeClick = useCallback(
-    (_: React.MouseEvent, node: { id: string }) => {
-      if (navigationLevel === "overview") {
-        drillIntoLayer(node.id);
-      } else if (node.id.startsWith("portal:")) {
-        const targetLayerId = node.id.replace("portal:", "");
-        drillIntoLayer(targetLayerId);
+  const selectedFitRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedNodeId || !graphRendererController || !scene) {
+      selectedFitRef.current = selectedNodeId;
+      return;
+    }
+    if (selectedFitRef.current === selectedNodeId) return;
+    if (!scene.nodes.some((node) => node.id === selectedNodeId)) return;
+    const timer = window.setTimeout(() => {
+      graphRendererController.fitNodes([selectedNodeId]);
+    }, 100);
+    selectedFitRef.current = selectedNodeId;
+    return () => window.clearTimeout(timer);
+  }, [graphRendererController, scene, selectedNodeId]);
+
+  const tourFitKeyRef = useRef("");
+  const tourFallbackKeyRef = useRef("");
+  useEffect(() => {
+    const targetKey = tourHighlightedNodeIds.join("\n");
+    if (!targetKey) {
+      tourFitKeyRef.current = "";
+      tourFallbackKeyRef.current = "";
+      setTourFitPending(false);
+      return;
+    }
+    if (!graphRendererController || !scene) {
+      setTourFitPending(true);
+      return;
+    }
+    if (targetKey === tourFitKeyRef.current) return;
+    const sceneNodeIds = new Set(scene.nodes.map((node) => node.id));
+    const ready = tourHighlightedNodeIds.every((nodeId) => sceneNodeIds.has(nodeId));
+    if (ready) {
+      graphRendererController.fitNodes(tourHighlightedNodeIds);
+      tourFitKeyRef.current = targetKey;
+      tourFallbackKeyRef.current = "";
+      setTourFitPending(false);
+      return;
+    }
+
+    setTourFitPending(true);
+    const timer = window.setTimeout(() => {
+      if (tourFallbackKeyRef.current === targetKey) return;
+      graphRendererController.fitView();
+      tourFallbackKeyRef.current = targetKey;
+      setTourFitPending(false);
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [graphRendererController, scene, setTourFitPending, tourHighlightedNodeIds]);
+
+  const handleNodeClick = useCallback(
+    (node: GraphSceneNode) => {
+      setContextMenu(null);
+      const action = getGraphSceneNodeAction("layer-detail", node);
+      if (action.type === "drill-layer") {
+        drillIntoLayer(action.layerId);
+      } else if (action.type === "toggle-container") {
+        toggleContainer(action.containerId);
       } else {
-        selectNode(node.id);
+        selectNode(action.nodeId);
       }
     },
-    [navigationLevel, drillIntoLayer, selectNode],
+    [drillIntoLayer, selectNode, toggleContainer],
   );
 
   const onPaneClick = useCallback(() => {
+    setContextMenu(null);
     selectNode(null);
   }, [selectNode]);
+
+  const handleNodeContextMenu = useCallback((node: GraphSceneNode, clientX: number, clientY: number) => {
+    const position = graphContextMenuPosition(menuHostRef.current, clientX, clientY);
+    setContextMenu({ node, ...position });
+  }, []);
+
+  const handlePaneContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const handleAddContextFromMenu = useCallback(() => {
+    if (!contextMenu) return;
+    const action = getGraphSceneNodeAction("layer-detail", contextMenu.node);
+    if (action.type !== "select-node") return;
+    addGraphNodeToAssistantContext(action.nodeId);
+    setContextMenu(null);
+  }, [addGraphNodeToAssistantContext, contextMenu]);
 
   if (!graph) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-root rounded-lg">
-        <p className="text-text-muted text-sm">{t("graph.noKnowledgeLoaded", "No knowledge graph loaded")}</p>
+        <p className="text-text-muted text-sm">尚未加载知识图谱</p>
       </div>
     );
   }
 
   return (
-    <div className="h-full w-full relative">
+    <div ref={menuHostRef} className="h-full w-full relative">
       <Breadcrumb />
       {focusNodeId && navigationLevel === "layer-detail" && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2 z-10">
@@ -1516,42 +1590,47 @@ function GraphViewInner() {
             onClick={() => setFocusNode(null)}
             className="px-4 py-2 rounded-full bg-elevated border border-gold/30 text-gold text-xs font-semibold tracking-wider uppercase hover:bg-gold/10 transition-colors flex items-center gap-2 shadow-lg"
           >
-            <span>{t("graph.showingNeighborhood", "Showing neighborhood")}</span>
+            <span>正在显示邻近节点</span>
             <span className="text-text-muted">&times;</span>
           </button>
         </div>
       )}
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
+      <CanvasGraphRenderer
+        scene={scene}
+        layoutStatus={layoutStatus}
+        stats={{ nodes: graph.nodes.length, edges: graph.edges.length }}
+        onNodeClick={handleNodeClick}
         onPaneClick={onPaneClick}
-        onMove={navigationLevel === "layer-detail" ? onMove : undefined}
-        onInit={setReactFlowInstance}
-        nodeTypes={nodeTypes}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        edgesFocusable={false}
-        edgesReconnectable={false}
-        elementsSelectable={false}
-        fitView
-        fitViewOptions={{ minZoom: 0.01, padding: 0.1 }}
-        minZoom={0.01}
-        maxZoom={2}
-        colorMode={preset.isDark ? "dark" : "light"}
-      >
-        <Background variant={BackgroundVariant.Dots} color="var(--color-edge-dot)" gap={20} size={1} />
-        <Controls />
-        <MiniMap
-          nodeColor="var(--color-elevated)"
-          maskColor="var(--glass-bg)"
-          className="!bg-surface !border !border-border-subtle"
-        />
-        <TourFitView />
-        <SelectedNodeFitView />
-      </ReactFlow>
+        onNodeContextMenu={handleNodeContextMenu}
+        onPaneContextMenu={handlePaneContextMenu}
+        onViewportChange={handleViewportChange}
+      />
+      {contextMenu && (
+        <div
+          className="absolute z-20 min-w-52 rounded-md border border-border-subtle bg-elevated p-1 shadow-xl"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <div className="truncate px-3 py-2 text-xs text-text-muted">
+            {graphSceneNodeLabel(contextMenu.node)}
+          </div>
+          {getGraphSceneNodeAction("layer-detail", contextMenu.node).type === "select-node" && (
+            <button
+              type="button"
+              onClick={handleAddContextFromMenu}
+              className="block w-full rounded px-3 py-2 text-left text-sm text-text-primary hover:bg-gold/10"
+            >
+              加入 AstrBot 会话
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => handleNodeClick(contextMenu.node)}
+            className="block w-full rounded px-3 py-2 text-left text-sm text-text-primary hover:bg-gold/10"
+          >
+            {actionLabelForContextMenu("layer-detail", contextMenu.node)}
+          </button>
+        </div>
+      )}
       {(layoutStatus === "computing" || tourFitPending) && (
         <div
           style={{
@@ -1566,9 +1645,7 @@ function GraphViewInner() {
           }}
         >
           <span style={{ color: "#d4a574", fontSize: 14 }}>
-            {tourFitPending
-              ? t("graph.locatingTour", "Locating tour highlight...")
-              : t("graph.computingLayout", "Computing layout...")}
+            {tourFitPending ? "正在定位导览高亮..." : "正在计算布局..."}
           </span>
         </div>
       )}
@@ -1577,9 +1654,11 @@ function GraphViewInner() {
 }
 
 export default function GraphView() {
-  return (
-    <ReactFlowProvider>
-      <GraphViewInner />
-    </ReactFlowProvider>
-  );
+  const navigationLevel = useDashboardStore((s) => s.navigationLevel);
+
+  if (navigationLevel === "overview") {
+    return <OverviewCanvasGraphView />;
+  }
+
+  return <GraphViewInner />;
 }

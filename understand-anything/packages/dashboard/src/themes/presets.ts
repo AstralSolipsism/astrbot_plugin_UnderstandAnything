@@ -1,31 +1,31 @@
 import type { AccentSwatch, ThemePreset } from "./types.ts";
 
 const DARK_ACCENT_SWATCHES: AccentSwatch[] = [
-  { id: "gold", name: "Gold", accent: "#d4a574", accentDim: "#c9a96e", accentBright: "#e8c49a" },
-  { id: "ocean", name: "Ocean", accent: "#5ba4cf", accentDim: "#4e93ba", accentBright: "#7abce0" },
-  { id: "emerald", name: "Emerald", accent: "#5ea67a", accentDim: "#4e9468", accentBright: "#78c492" },
-  { id: "rose", name: "Rose", accent: "#cf7a8a", accentDim: "#b96e7e", accentBright: "#e094a4" },
-  { id: "purple", name: "Purple", accent: "#9b7abf", accentDim: "#876bb0", accentBright: "#b494d4" },
-  { id: "amber", name: "Amber", accent: "#c9963a", accentDim: "#b5862e", accentBright: "#ddb05c" },
-  { id: "teal", name: "Teal", accent: "#4aab9a", accentDim: "#3d9686", accentBright: "#68c4b4" },
-  { id: "silver", name: "Silver", accent: "#a0a8b0", accentDim: "#8e959c", accentBright: "#b8bfc6" },
+  { id: "gold", name: "金色", accent: "#d4a574", accentDim: "#c9a96e", accentBright: "#e8c49a" },
+  { id: "ocean", name: "海蓝", accent: "#5ba4cf", accentDim: "#4e93ba", accentBright: "#7abce0" },
+  { id: "emerald", name: "翠绿", accent: "#5ea67a", accentDim: "#4e9468", accentBright: "#78c492" },
+  { id: "rose", name: "玫瑰", accent: "#cf7a8a", accentDim: "#b96e7e", accentBright: "#e094a4" },
+  { id: "purple", name: "紫色", accent: "#9b7abf", accentDim: "#876bb0", accentBright: "#b494d4" },
+  { id: "amber", name: "琥珀", accent: "#c9963a", accentDim: "#b5862e", accentBright: "#ddb05c" },
+  { id: "teal", name: "青绿", accent: "#4aab9a", accentDim: "#3d9686", accentBright: "#68c4b4" },
+  { id: "silver", name: "银灰", accent: "#a0a8b0", accentDim: "#8e959c", accentBright: "#b8bfc6" },
 ];
 
 const LIGHT_ACCENT_SWATCHES: AccentSwatch[] = [
-  { id: "indigo", name: "Indigo", accent: "#4a6fa5", accentDim: "#3d5f8f", accentBright: "#6088bf" },
-  { id: "ocean", name: "Ocean", accent: "#3a8ab5", accentDim: "#2e7aa0", accentBright: "#55a0cc" },
-  { id: "emerald", name: "Emerald", accent: "#3a8a5c", accentDim: "#2e7a4e", accentBright: "#55a878" },
-  { id: "rose", name: "Rose", accent: "#a5566a", accentDim: "#8f4a5c", accentBright: "#bf6e82" },
-  { id: "purple", name: "Purple", accent: "#6b5a9e", accentDim: "#5c4d8a", accentBright: "#8474b5" },
-  { id: "amber", name: "Amber", accent: "#9e7a30", accentDim: "#8a6a28", accentBright: "#b5923e" },
-  { id: "teal", name: "Teal", accent: "#2e8a7a", accentDim: "#267a6c", accentBright: "#45a595" },
-  { id: "slate", name: "Slate", accent: "#5a6570", accentDim: "#4e5860", accentBright: "#6e7a85" },
+  { id: "indigo", name: "靛蓝", accent: "#4a6fa5", accentDim: "#3d5f8f", accentBright: "#6088bf" },
+  { id: "ocean", name: "海蓝", accent: "#3a8ab5", accentDim: "#2e7aa0", accentBright: "#55a0cc" },
+  { id: "emerald", name: "翠绿", accent: "#3a8a5c", accentDim: "#2e7a4e", accentBright: "#55a878" },
+  { id: "rose", name: "玫瑰", accent: "#a5566a", accentDim: "#8f4a5c", accentBright: "#bf6e82" },
+  { id: "purple", name: "紫色", accent: "#6b5a9e", accentDim: "#5c4d8a", accentBright: "#8474b5" },
+  { id: "amber", name: "琥珀", accent: "#9e7a30", accentDim: "#8a6a28", accentBright: "#b5923e" },
+  { id: "teal", name: "青绿", accent: "#2e8a7a", accentDim: "#267a6c", accentBright: "#45a595" },
+  { id: "slate", name: "岩灰", accent: "#5a6570", accentDim: "#4e5860", accentBright: "#6e7a85" },
 ];
 
 export const PRESETS: ThemePreset[] = [
   {
     id: "dark-gold",
-    name: "Dark Gold",
+    name: "暗色金色",
     isDark: true,
     defaultAccentId: "gold",
     accentSwatches: DARK_ACCENT_SWATCHES,
@@ -54,7 +54,7 @@ export const PRESETS: ThemePreset[] = [
   },
   {
     id: "dark-ocean",
-    name: "Dark Ocean",
+    name: "暗色海蓝",
     isDark: true,
     defaultAccentId: "ocean",
     accentSwatches: DARK_ACCENT_SWATCHES,
@@ -83,7 +83,7 @@ export const PRESETS: ThemePreset[] = [
   },
   {
     id: "dark-forest",
-    name: "Dark Forest",
+    name: "暗色森林",
     isDark: true,
     defaultAccentId: "emerald",
     accentSwatches: DARK_ACCENT_SWATCHES,
@@ -112,7 +112,7 @@ export const PRESETS: ThemePreset[] = [
   },
   {
     id: "dark-rose",
-    name: "Dark Rose",
+    name: "暗色玫瑰",
     isDark: true,
     defaultAccentId: "rose",
     accentSwatches: DARK_ACCENT_SWATCHES,
@@ -141,7 +141,7 @@ export const PRESETS: ThemePreset[] = [
   },
   {
     id: "light-minimal",
-    name: "Light Minimal",
+    name: "亮色简洁",
     isDark: false,
     defaultAccentId: "indigo",
     accentSwatches: LIGHT_ACCENT_SWATCHES,

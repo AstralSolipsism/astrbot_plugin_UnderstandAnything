@@ -1,12 +1,12 @@
-import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 
 export default function Breadcrumb() {
-  const { t } = useI18n();
   const navigationLevel = useDashboardStore((s) => s.navigationLevel);
   const activeLayerId = useDashboardStore((s) => s.activeLayerId);
   const graph = useDashboardStore((s) => s.graph);
   const navigateToOverview = useDashboardStore((s) => s.navigateToOverview);
+  const { t } = useI18n();
 
   const activeLayer = graph?.layers.find((l) => l.id === activeLayerId);
 
@@ -14,7 +14,7 @@ export default function Breadcrumb() {
     <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
       {navigationLevel === "overview" && (
         <div className="px-4 py-2 rounded-full bg-elevated border border-border-subtle text-xs font-semibold tracking-wider uppercase text-text-secondary shadow-lg">
-          {t("breadcrumb.projectOverview", "Project Overview")}
+          {t.breadcrumb.projectOverview}
         </div>
       )}
 
@@ -24,14 +24,14 @@ export default function Breadcrumb() {
             onClick={navigateToOverview}
             className="text-gold hover:text-gold-bright transition-colors"
           >
-            {t("common.project", "Project")}
+            {t.breadcrumb.project}
           </button>
           <span className="text-text-muted">›</span>
           <span className="text-text-primary">
-            {activeLayer?.name ?? t("layer.label", "Layer")}
+            {activeLayer?.name ?? t.layer.defaultName}
           </span>
           <span className="text-text-muted ml-1 text-[10px] normal-case tracking-normal">
-            ({t("breadcrumb.escToGoBack", "Esc to go back")})
+            ({t.breadcrumb.escBack})
           </span>
         </div>
       )}

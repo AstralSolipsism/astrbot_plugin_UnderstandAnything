@@ -17,8 +17,10 @@ import type { FlowFlowNode } from "./FlowNode";
 import StepNode from "./StepNode";
 import type { StepFlowNode } from "./StepNode";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 import { mergeElkPositions, nodesToElkInput } from "../utils/layout";
 import { applyElkLayout } from "../utils/elk-layout";
+import { zhReactFlowAriaLabels } from "../utils/reactFlowAriaLabels";
 import type { KnowledgeGraph, GraphNode } from "@understand-anything/core/types";
 
 const nodeTypes = {
@@ -167,6 +169,7 @@ function DomainGraphViewInner() {
   const domainGraph = useDashboardStore((s) => s.domainGraph);
   const activeDomainId = useDashboardStore((s) => s.activeDomainId);
   const clearActiveDomain = useDashboardStore((s) => s.clearActiveDomain);
+  const { t } = useI18n();
 
   // Build structural nodes/edges/dims synchronously; only the layout call
   // itself is async, so we memo the structural pieces and run ELK in an
@@ -223,7 +226,7 @@ function DomainGraphViewInner() {
   if (!domainGraph) {
     return (
       <div className="h-full flex items-center justify-center text-text-muted text-sm">
-        No domain graph available. Run /understand-domain to generate one.
+        暂无领域图谱，请先运行领域分析。
       </div>
     );
   }
@@ -237,7 +240,7 @@ function DomainGraphViewInner() {
             onClick={() => clearActiveDomain()}
             className="px-3 py-1.5 text-xs rounded-lg bg-elevated border border-border-subtle text-text-secondary hover:text-text-primary transition-colors"
           >
-            Back to domains
+            {t.domainView.backToDomains}
           </button>
         </div>
       )}
@@ -250,6 +253,8 @@ function DomainGraphViewInner() {
         minZoom={0.1}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
+        ariaLabelConfig={zhReactFlowAriaLabels}
+        defaultEdgeOptions={{ ariaLabel: "图谱关系" }}
       >
         <Background
           variant={BackgroundVariant.Dots}
@@ -259,6 +264,7 @@ function DomainGraphViewInner() {
         />
         <Controls />
         <MiniMap
+          ariaLabel="缩略图"
           nodeColor="var(--color-accent)"
           maskColor="var(--glass-bg)"
           className="!bg-surface !border !border-border-subtle"

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { SearchEngine } from "@understand-anything/core/search";
-import type { SearchResult } from "@understand-anything/core/search";
+import type { SearchOptions, SearchResult } from "@understand-anything/core/search";
 import type { GraphIssue } from "@understand-anything/core/schema";
 import type {
   GraphNode,
@@ -8,6 +8,7 @@ import type {
   TourStep,
 } from "@understand-anything/core/types";
 import type { ReactFlowInstance } from "@xyflow/react";
+import type { GraphRendererController } from "./canvas/graphRendererController";
 
 export type Persona = "non-technical" | "junior" | "experienced";
 export type NavigationLevel = "overview" | "layer-detail";
@@ -16,6 +17,29 @@ export type Complexity = "simple" | "moderate" | "complex";
 export type EdgeCategory = "structural" | "behavioral" | "data-flow" | "dependencies" | "semantic" | "infrastructure" | "domain" | "knowledge";
 export type ViewMode = "structural" | "domain" | "knowledge";
 export type DetailLevel = "file" | "class";
+export type AssistantMode = "chat" | "explain" | "diff" | "onboarding";
+export type AssistantGraphKind = "knowledge" | "domain";
+export type AssistantContextItem =
+  | { type: "node"; nodeId: string; label: string; filePath?: string; graphKind?: AssistantGraphKind }
+  | { type: "file"; path: string; label: string; nodeId?: string; graphKind?: AssistantGraphKind }
+  | { type: "code-range"; path: string; startLine: number; endLine: number; label: string; nodeId?: string; graphKind?: AssistantGraphKind }
+  | { type: "diff-file"; path: string; status?: "added" | "modified" | "deleted" | "renamed"; label: string; nodeId?: string; graphKind?: AssistantGraphKind }
+  | { type: "layer"; layerId: string; label: string };
+
+export interface AssistantArtifact {
+  id: string;
+  kind: AssistantMode;
+  title: string;
+  content: string;
+  createdAt: string;
+  stale?: boolean;
+}
+
+export interface DashboardAssistantMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  parts: Array<{ type: "text"; text: string } | { type: string; [key: string]: unknown }>;
+}
 
 export interface FilterState {
   nodeTypes: Set<NodeType>;
@@ -47,6 +71,24 @@ const DEFAULT_FILTERS: FilterState = {
   layerIds: new Set<string>(),
   edgeCategories: new Set<EdgeCategory>(ALL_EDGE_CATEGORIES),
 };
+
+function freshDefaultFilters(): FilterState {
+  return {
+    nodeTypes: new Set<NodeType>(DEFAULT_FILTERS.nodeTypes),
+    complexities: new Set<Complexity>(DEFAULT_FILTERS.complexities),
+    layerIds: new Set<string>(),
+    edgeCategories: new Set<EdgeCategory>(DEFAULT_FILTERS.edgeCategories),
+  };
+}
+
+export function assistantContextKey(item: AssistantContextItem): string {
+  const graphKind = "graphKind" in item && item.graphKind ? `${item.graphKind}:` : "";
+  if (item.type === "node") return `node:${graphKind}${item.nodeId}`;
+  if (item.type === "file") return `file:${graphKind}${item.path}`;
+  if (item.type === "code-range") return `code-range:${graphKind}${item.path}:${item.startLine}-${item.endLine}`;
+  if (item.type === "diff-file") return `diff-file:${item.path}`;
+  return `layer:${item.layerId}`;
+}
 
 /** Categories used for node type filter toggles. Single source of truth for NodeCategory. */
 export type NodeCategory = "code" | "config" | "docs" | "infra" | "data" | "domain" | "knowledge";
@@ -97,6 +139,94 @@ function buildGraphIndexes(graph: KnowledgeGraph): {
 /** Maximum number of entries in the sidebar navigation history. */
 const MAX_HISTORY = 50;
 
+type SearchWorkerResponse =
+  | { type: "ready"; version: number }
+  | { type: "results"; version: number; requestId: number; query: string; results: SearchResult[] }
+  | { type: "error"; version: number; requestId?: number; message: string };
+
+let searchWorker: Worker | null = null;
+let searchWorkerVersion = 0;
+let searchRequestId = 0;
+
+function canUseSearchWorker(): boolean {
+  return typeof Worker !== "undefined";
+}
+
+function ensureSearchWorker(): Worker | null {
+  if (!canUseSearchWorker()) return null;
+  searchWorker ??= new Worker(new URL("./workers/searchWorker.ts", import.meta.url), {
+    type: "module",
+  });
+  searchWorker.onmessage = (event: MessageEvent<SearchWorkerResponse>) => {
+    const message = event.data;
+    if (message.type !== "results") return;
+    const state = useDashboardStore.getState();
+    if (message.version !== searchWorkerVersion || message.query !== state.searchQuery) return;
+    useDashboardStore.setState({ searchResults: message.results });
+  };
+  searchWorker.onerror = (event) => {
+    console.warn(`[search-worker] ${event.message}`);
+  };
+  return searchWorker;
+}
+
+function buildSearchIndex(nodes: GraphNode[], query: string): SearchEngine | null {
+  const worker = ensureSearchWorker();
+  if (worker) {
+    searchWorkerVersion += 1;
+    worker.postMessage({
+      type: "build",
+      version: searchWorkerVersion,
+      nodes,
+      query,
+    });
+    return null;
+  }
+  return new SearchEngine(nodes);
+}
+
+function requestSearch(query: string, options?: SearchOptions): SearchResult[] | null {
+  const worker = ensureSearchWorker();
+  if (!worker) return null;
+  worker.postMessage({
+    type: "search",
+    version: searchWorkerVersion,
+    requestId: ++searchRequestId,
+    query,
+    options,
+  });
+  return [];
+}
+
+function normalizeAssistantPath(value: unknown): string | null {
+  if (typeof value !== "string" || !value || value.includes("\0") || value.includes("\\")) return null;
+  if (value.startsWith("/")) return null;
+  const normalized = value.replace(/^\.\//, "");
+  if (!normalized || normalized === "." || normalized.split("/").some((part) => part === ".." || part.length === 0)) return null;
+  return normalized;
+}
+
+function validLineRange(value: unknown): value is [number, number] {
+  return Array.isArray(value)
+    && value.length === 2
+    && Number.isInteger(value[0])
+    && Number.isInteger(value[1])
+    && value[0] >= 1
+    && value[1] >= value[0];
+}
+
+function sourceFilePaths(node: GraphNode): string[] {
+  const output: string[] = [];
+  const seen = new Set<string>();
+  for (const rawPath of node.domainMeta?.sourceFilePaths ?? []) {
+    const path = normalizeAssistantPath(rawPath);
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    output.push(path);
+  }
+  return output;
+}
+
 interface DashboardStore {
   graph: KnowledgeGraph | null;
   /** id → node lookup, rebuilt by setGraph. Empty before any graph loads. */
@@ -129,6 +259,7 @@ interface DashboardStore {
   diffMode: boolean;
   changedNodeIds: Set<string>;
   affectedNodeIds: Set<string>;
+  changedDiffFiles: Array<{ path: string; status?: "added" | "modified" | "deleted" | "renamed" }>;
 
   // Focus mode: isolate a node's 1-hop neighborhood
   focusNodeId: string | null;
@@ -142,6 +273,7 @@ interface DashboardStore {
   exportMenuOpen: boolean;
   pathFinderOpen: boolean;
   reactFlowInstance: ReactFlowInstance | null;
+  graphRendererController: GraphRendererController | null;
 
   // Node type category filters
   nodeTypeFilters: Record<NodeCategory, boolean>;
@@ -155,7 +287,9 @@ interface DashboardStore {
   toggleShowFunctionsInClassView: () => void;
 
   setGraph: (graph: KnowledgeGraph) => void;
-  selectNode: (nodeId: string | null) => void;
+  clearProjectData: () => void;
+  selectNode: (nodeId: string | null, graphKind?: AssistantGraphKind) => void;
+  addGraphNodeToAssistantContext: (nodeId: string, graphKind?: AssistantGraphKind) => void;
   navigateToNode: (nodeId: string) => void;
   navigateToNodeInLayer: (nodeId: string) => void;
   navigateToHistoryIndex: (index: number) => void;
@@ -171,13 +305,31 @@ interface DashboardStore {
   collapseCodeViewer: () => void;
 
   setDiffOverlay: (changed: string[], affected: string[]) => void;
+  setDiffFiles: (files: Array<{ path: string; status?: "added" | "modified" | "deleted" | "renamed" }>) => void;
   toggleDiffMode: () => void;
   clearDiffOverlay: () => void;
+
+  assistantMode: AssistantMode;
+  assistantSessionId: string | null;
+  assistantMessages: DashboardAssistantMessage[];
+  assistantContextItems: AssistantContextItem[];
+  assistantArtifacts: AssistantArtifact[];
+  assistantStreaming: boolean;
+  setAssistantMode: (mode: AssistantMode) => void;
+  setAssistantSessionId: (sessionId: string | null) => void;
+  setAssistantMessages: (messages: DashboardAssistantMessage[]) => void;
+  setAssistantContextItems: (items: AssistantContextItem[]) => void;
+  setAssistantArtifacts: (artifacts: AssistantArtifact[]) => void;
+  setAssistantStreaming: (streaming: boolean) => void;
+  addAssistantContextItem: (item: AssistantContextItem) => void;
+  removeAssistantContextItem: (key: string) => void;
+  clearAssistantContextItems: () => void;
 
   toggleFilterPanel: () => void;
   toggleExportMenu: () => void;
   togglePathFinder: () => void;
   setReactFlowInstance: (instance: ReactFlowInstance | null) => void;
+  setGraphRendererController: (controller: GraphRendererController | null) => void;
   setFilters: (filters: Partial<FilterState>) => void;
   resetFilters: () => void;
   hasActiveFilters: () => boolean;
@@ -312,15 +464,17 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
   diffMode: false,
   changedNodeIds: new Set<string>(),
   affectedNodeIds: new Set<string>(),
+  changedDiffFiles: [],
 
   focusNodeId: null,
   nodeHistory: [],
 
-  filters: { ...DEFAULT_FILTERS, nodeTypes: new Set(DEFAULT_FILTERS.nodeTypes), complexities: new Set(DEFAULT_FILTERS.complexities), layerIds: new Set(DEFAULT_FILTERS.layerIds), edgeCategories: new Set(DEFAULT_FILTERS.edgeCategories) },
+  filters: freshDefaultFilters(),
   filterPanelOpen: false,
   exportMenuOpen: false,
   pathFinderOpen: false,
   reactFlowInstance: null,
+  graphRendererController: null,
 
   nodeTypeFilters: { code: true, config: true, docs: true, infra: true, data: true, domain: true, knowledge: true },
 
@@ -363,9 +517,9 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
     })),
 
   setGraph: (graph) => {
-    const searchEngine = new SearchEngine(graph.nodes);
     const query = get().searchQuery;
-    const searchResults = query.trim() ? searchEngine.search(query) : [];
+    const searchEngine = buildSearchIndex(graph.nodes, query);
+    const searchResults = searchEngine && query.trim() ? searchEngine.search(query) : [];
     const { viewMode, domainGraph, activeDomainId } = get();
     // Preserve domain view if a domain graph is already loaded
     const keepDomainView = viewMode === "domain" && domainGraph !== null;
@@ -393,8 +547,59 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
     });
   },
 
-  selectNode: (nodeId) => {
+  clearProjectData: () => {
+    searchWorkerVersion += 1;
+    searchWorker?.postMessage({ type: "build", version: searchWorkerVersion, nodes: [] });
+    set({
+      graph: null,
+      nodesById: new Map<string, GraphNode>(),
+      nodeIdToLayerId: new Map<string, string>(),
+      nodeIdToLayerIds: new Map<string, Set<string>>(),
+      selectedNodeId: null,
+      searchQuery: "",
+      searchResults: [],
+      searchEngine: null,
+      navigationLevel: "overview",
+      activeLayerId: null,
+      codeViewerOpen: false,
+      codeViewerNodeId: null,
+      codeViewerExpanded: false,
+      tourActive: false,
+      currentTourStep: 0,
+      tourHighlightedNodeIds: [],
+      diffMode: false,
+      changedNodeIds: new Set<string>(),
+      affectedNodeIds: new Set<string>(),
+      changedDiffFiles: [],
+      assistantMode: "chat",
+      assistantSessionId: null,
+      assistantMessages: [],
+      assistantContextItems: [],
+      assistantArtifacts: [],
+      assistantStreaming: false,
+      focusNodeId: null,
+      nodeHistory: [],
+      filters: freshDefaultFilters(),
+      filterPanelOpen: false,
+      exportMenuOpen: false,
+      pathFinderOpen: false,
+      viewMode: "structural",
+      isKnowledgeGraph: false,
+      domainGraph: null,
+      activeDomainId: null,
+      expandedContainers: new Set<string>(),
+      pendingFocusContainer: null,
+      tourFitPending: false,
+      containerLayoutCache: new Map(),
+      containerSizeMemory: new Map(),
+      stage1Tick: 0,
+      layoutIssues: [],
+    });
+  },
+
+  selectNode: (nodeId, graphKind) => {
     const { selectedNodeId, nodeHistory } = get();
+    void graphKind;
     if (nodeId && selectedNodeId && nodeId !== selectedNodeId) {
       // Push current node to history before navigating away
       set({
@@ -403,6 +608,61 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
       });
     } else {
       set({ selectedNodeId: nodeId });
+    }
+  },
+
+  addGraphNodeToAssistantContext: (nodeId, graphKind) => {
+    const { graph, domainGraph, viewMode } = get();
+    const preferDomain = graphKind === "domain" || (!graphKind && viewMode === "domain");
+    const domainNode = domainGraph?.nodes.find((candidate) => candidate.id === nodeId);
+    const knowledgeNode = graph?.nodes.find((candidate) => candidate.id === nodeId);
+    const resolvedKind: AssistantGraphKind | null =
+      preferDomain && domainNode ? "domain" : knowledgeNode ? "knowledge" : domainNode ? "domain" : null;
+    const node = resolvedKind === "domain" ? domainNode : knowledgeNode;
+    if (!node || !resolvedKind) return;
+
+    get().addAssistantContextItem({
+      type: "node",
+      nodeId: node.id,
+      label: node.name || node.filePath || node.id,
+      filePath: node.filePath,
+      graphKind: resolvedKind,
+    });
+
+    const primaryPath = normalizeAssistantPath(node.filePath);
+    if (primaryPath) {
+      if (validLineRange(node.lineRange)) {
+        get().addAssistantContextItem({
+          type: "code-range",
+          path: primaryPath,
+          startLine: node.lineRange[0],
+          endLine: node.lineRange[1],
+          label: `${primaryPath}:${node.lineRange[0]}-${node.lineRange[1]}`,
+          nodeId: node.id,
+          graphKind: resolvedKind,
+        });
+      } else {
+        get().addAssistantContextItem({
+          type: "file",
+          path: primaryPath,
+          label: primaryPath,
+          nodeId: node.id,
+          graphKind: resolvedKind,
+        });
+      }
+    }
+
+    if (resolvedKind === "domain") {
+      for (const sourcePath of sourceFilePaths(node)) {
+        if (sourcePath === primaryPath) continue;
+        get().addAssistantContextItem({
+          type: "file",
+          path: sourcePath,
+          label: sourcePath,
+          nodeId: node.id,
+          graphKind: "domain",
+        });
+      }
     }
   },
 
@@ -520,13 +780,22 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
   setSearchQuery: (query) => {
     const engine = get().searchEngine;
     const mode = get().searchMode;
-    if (!engine || !query.trim()) {
+    if (!query.trim()) {
       set({ searchQuery: query, searchResults: [] });
       return;
     }
     // Currently both modes use the same fuzzy engine
     // When embeddings are available, "semantic" mode will use SemanticSearchEngine
     void mode;
+    const workerResults = requestSearch(query);
+    if (workerResults) {
+      set({ searchQuery: query, searchResults: workerResults });
+      return;
+    }
+    if (!engine) {
+      set({ searchQuery: query, searchResults: [] });
+      return;
+    }
     const searchResults = engine.search(query);
     set({ searchQuery: query, searchResults });
   },
@@ -555,6 +824,8 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
       affectedNodeIds: new Set(affected),
     }),
 
+  setDiffFiles: (files) => set({ changedDiffFiles: files }),
+
   toggleDiffMode: () => set((state) => ({ diffMode: !state.diffMode })),
 
   clearDiffOverlay: () =>
@@ -562,7 +833,47 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
       diffMode: false,
       changedNodeIds: new Set<string>(),
       affectedNodeIds: new Set<string>(),
+      changedDiffFiles: [],
     }),
+
+  assistantMode: "chat",
+  assistantSessionId: null,
+  assistantMessages: [],
+  assistantContextItems: [],
+  assistantArtifacts: [],
+  assistantStreaming: false,
+  setAssistantMode: (mode) => set({ assistantMode: mode }),
+  setAssistantSessionId: (sessionId) => set({ assistantSessionId: sessionId }),
+  setAssistantMessages: (messages) => set({ assistantMessages: messages }),
+  setAssistantContextItems: (items) =>
+    set(() => {
+      const seen = new Set<string>();
+      const deduped: AssistantContextItem[] = [];
+      for (const item of items) {
+        const key = assistantContextKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(item);
+      }
+      return { assistantContextItems: deduped.slice(-24) };
+    }),
+  setAssistantArtifacts: (artifacts) => set({ assistantArtifacts: artifacts }),
+  setAssistantStreaming: (streaming) => set({ assistantStreaming: streaming }),
+  addAssistantContextItem: (item) =>
+    set((state) => {
+      const key = assistantContextKey(item);
+      if (state.assistantContextItems.some((existing) => assistantContextKey(existing) === key)) {
+        return state;
+      }
+      return {
+        assistantContextItems: [...state.assistantContextItems, item].slice(-24),
+      };
+    }),
+  removeAssistantContextItem: (key) =>
+    set((state) => ({
+      assistantContextItems: state.assistantContextItems.filter((item) => assistantContextKey(item) !== key),
+    })),
+  clearAssistantContextItems: () => set({ assistantContextItems: [] }),
 
   toggleFilterPanel: () => set((state) => ({
     filterPanelOpen: !state.filterPanelOpen,
@@ -579,18 +890,14 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
   })),
 
   setReactFlowInstance: (instance) => set({ reactFlowInstance: instance }),
+  setGraphRendererController: (controller) => set({ graphRendererController: controller }),
 
   setFilters: (newFilters) => set((state) => ({
     filters: { ...state.filters, ...newFilters },
   })),
 
   resetFilters: () => set({
-    filters: {
-      nodeTypes: new Set<NodeType>(ALL_NODE_TYPES),
-      complexities: new Set<Complexity>(ALL_COMPLEXITIES),
-      layerIds: new Set<string>(),
-      edgeCategories: new Set<EdgeCategory>(ALL_EDGE_CATEGORIES),
-    },
+    filters: freshDefaultFilters(),
   }),
 
   hasActiveFilters: () => {

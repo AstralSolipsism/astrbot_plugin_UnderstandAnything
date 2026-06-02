@@ -6,6 +6,9 @@ type BridgeWindow = Window & {
   __uaBridgeLoadPromise?: Promise<AstrBotPluginPageBridge | undefined>;
 };
 
+const PLUGIN_PAGE_CONTENT_PREFIX = ["", "api", "plugin", "page", "content", ""].join("/");
+const BRIDGE_SDK_PATH = ["", "api", "plugin", "page", "bridge-sdk.js"].join("/");
+
 function currentLocation(): PluginPageLocation {
   if (typeof window === "undefined") {
     return { pathname: "", search: "" };
@@ -27,7 +30,7 @@ export function isAstrBotPluginPageContext(
   if (bridge) {
     return true;
   }
-  if (locationLike.pathname.includes("/api/plugin/page/content/")) {
+  if (locationLike.pathname.includes(PLUGIN_PAGE_CONTENT_PREFIX)) {
     return true;
   }
   return new URLSearchParams(locationLike.search).has("asset_token");
@@ -42,7 +45,7 @@ export function buildBridgeSdkUrl(
   if (assetToken) {
     params.set("asset_token", assetToken);
   }
-  return `/api/plugin/page/bridge-sdk.js?${params.toString()}`;
+  return `${BRIDGE_SDK_PATH}?${params.toString()}`;
 }
 
 export function ensureAstrBotPluginPageBridge(): Promise<

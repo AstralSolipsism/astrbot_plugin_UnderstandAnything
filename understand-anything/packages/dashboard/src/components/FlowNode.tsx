@@ -26,7 +26,7 @@ function FlowNode({ data }: NodeProps<FlowFlowNode>) {
           ? "border-accent bg-accent/10"
           : "border-border-medium bg-surface hover:border-accent/50"
       }`}
-      onClick={() => selectNode(data.flowId)}
+      onClick={() => selectNode(data.flowId, "domain")}
     >
       <Handle type="target" position={Position.Left} className="!bg-accent/60 !w-2 !h-2" />
       <Handle type="source" position={Position.Right} className="!bg-accent/60 !w-2 !h-2" />
@@ -43,7 +43,7 @@ function FlowNode({ data }: NodeProps<FlowFlowNode>) {
         {data.summary}
       </div>
       <div className="text-[9px] text-text-muted mt-1">
-        {data.stepCount} step{data.stepCount !== 1 ? "s" : ""}
+        {data.stepCount} 个步骤
       </div>
     </div>
   );

@@ -12,9 +12,10 @@ import "@xyflow/react/dist/style.css";
 
 import CustomNode from "./CustomNode";
 import type { CustomNodeData } from "./CustomNode";
-import { useI18n } from "../i18n";
 import { useDashboardStore } from "../store";
+import { useI18n } from "../contexts/I18nContext";
 import { applyForceLayout, NODE_WIDTH, NODE_HEIGHT } from "../utils/layout";
+import { zhReactFlowAriaLabels } from "../utils/reactFlowAriaLabels";
 import type { KnowledgeGraph } from "@understand-anything/core/types";
 
 const nodeTypes = {
@@ -95,7 +96,6 @@ function computeLayout(
 }
 
 function KnowledgeGraphViewInner() {
-  const { t } = useI18n();
   const graph = useDashboardStore((s) => s.graph);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const focusNodeId = useDashboardStore((s) => s.focusNodeId);
@@ -103,6 +103,7 @@ function KnowledgeGraphViewInner() {
   const searchResultsRaw = useDashboardStore((s) => s.searchResults);
   const tourHighlightedNodeIds = useDashboardStore((s) => s.tourHighlightedNodeIds);
   const nodeTypeFilters = useDashboardStore((s) => s.nodeTypeFilters);
+  const { t } = useI18n();
 
   const onNodeClick = useCallback(
     (nodeId: string) => selectNode(nodeId),
@@ -225,7 +226,7 @@ function KnowledgeGraphViewInner() {
         style,
         animated: e.type === "contradicts" && (!activeId || !!isConnected),
         label: isConnected && e.type !== "related" && e.type !== "categorized_under"
-          ? e.type.replace(/_/g, " ")
+          ? (t.edgeLabels as Record<string, { forward: string } | undefined>)[e.type]?.forward ?? `关系：${e.type}`
           : undefined,
         labelStyle: { fill: "var(--color-text-muted)", fontSize: 9, opacity: 0.7 },
         labelBgStyle: { fill: "var(--color-surface)", fillOpacity: 0.9 },
@@ -240,7 +241,7 @@ function KnowledgeGraphViewInner() {
   if (!graph) {
     return (
       <div className="h-full flex items-center justify-center text-text-muted text-sm">
-        {t("graph.noKnowledge", "No knowledge graph available. Run /understand-knowledge to generate one.")}
+        暂无知识图谱，请先运行项目分析。
       </div>
     );
   }
@@ -256,6 +257,8 @@ function KnowledgeGraphViewInner() {
         minZoom={0.05}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
+        ariaLabelConfig={zhReactFlowAriaLabels}
+        defaultEdgeOptions={{ ariaLabel: "图谱关系" }}
       >
         <Background
           variant={BackgroundVariant.Dots}
@@ -265,6 +268,7 @@ function KnowledgeGraphViewInner() {
         />
         <Controls />
         <MiniMap
+          ariaLabel="缩略图"
           nodeColor={(n) => {
             const data = n.data as CustomNodeData | undefined;
             const type = data?.nodeType ?? "article";

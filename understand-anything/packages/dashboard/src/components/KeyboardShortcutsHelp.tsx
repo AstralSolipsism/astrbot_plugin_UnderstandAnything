@@ -1,6 +1,6 @@
 import type { KeyboardShortcut } from "../hooks/useKeyboardShortcuts";
 import { formatShortcutKey } from "../hooks/useKeyboardShortcuts";
-import { useI18n } from "../i18n";
+import { useI18n } from "../contexts/I18nContext";
 
 interface KeyboardShortcutsHelpProps {
   shortcuts: KeyboardShortcut[];
@@ -12,6 +12,7 @@ export default function KeyboardShortcutsHelp({
   onClose,
 }: KeyboardShortcutsHelpProps) {
   const { t } = useI18n();
+
   // Group shortcuts by category
   const groupedShortcuts = shortcuts.reduce((acc, shortcut) => {
     if (!acc[shortcut.category]) {
@@ -20,6 +21,14 @@ export default function KeyboardShortcutsHelp({
     acc[shortcut.category].push(shortcut);
     return acc;
   }, {} as Record<string, KeyboardShortcut[]>);
+
+  // Translate category names
+  const categoryTranslations: Record<string, string> = {
+    "General": t.keyboardShortcuts.general,
+    "Navigation": t.keyboardShortcuts.navigation,
+    "Tour": t.keyboardShortcuts.tour,
+    "View": t.keyboardShortcuts.view,
+  };
 
   return (
     <div
@@ -34,10 +43,10 @@ export default function KeyboardShortcutsHelp({
         <div className="sticky top-0 glass-heavy border-b border-border-subtle px-6 py-4 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-heading text-text-primary">
-              {t("keyboardHelp.title", "Keyboard Shortcuts")}
+              {t.keyboardShortcuts.title}
             </h2>
             <p className="text-xs text-text-muted mt-1">
-              {t("keyboardHelp.subtitle", "Press ? anytime to toggle this help")}
+              {t.keyboardShortcuts.toggleHint}
             </p>
           </div>
           <button
@@ -65,7 +74,7 @@ export default function KeyboardShortcutsHelp({
           {Object.entries(groupedShortcuts).map(([category, categoryShortcuts]) => (
             <div key={category}>
               <h3 className="text-sm font-semibold text-accent uppercase tracking-wider mb-3">
-                {category}
+                {categoryTranslations[category] ?? category}
               </h3>
               <div className="space-y-2">
                 {categoryShortcuts.map((shortcut, index) => (
@@ -87,7 +96,7 @@ export default function KeyboardShortcutsHelp({
         {/* Footer */}
         <div className="sticky bottom-0 glass-heavy border-t border-border-subtle px-6 py-3 text-center">
           <p className="text-xs text-text-muted">
-            {t("keyboardHelp.closeHint", "Press ESC to close")}
+            {t.keyboardShortcuts.closeHint}
           </p>
         </div>
       </div>
