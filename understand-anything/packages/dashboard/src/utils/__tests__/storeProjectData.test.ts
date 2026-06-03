@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { KnowledgeGraph } from "@understand-anything/core/types";
 import { ALL_NODE_TYPES, useDashboardStore } from "../../store";
 
@@ -86,5 +86,42 @@ describe("project-scoped dashboard state", () => {
     expect(cleared.codeViewerOpen).toBe(false);
     expect(cleared.codeViewerNodeId).toBeNull();
     expect(cleared.viewMode).toBe("structural");
+  });
+
+  it("falls back to synchronous search when sandboxing blocks worker creation", () => {
+    const originalWorker = globalThis.Worker;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    class BlockedWorker {
+      constructor() {
+        throw new DOMException("Blocked by sandbox", "SecurityError");
+      }
+    }
+
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      value: BlockedWorker,
+    });
+
+    try {
+      const state = useDashboardStore.getState();
+      state.setSearchQuery("index");
+      state.setGraph(graph("blocked-worker"));
+
+      const updated = useDashboardStore.getState();
+      expect(updated.searchEngine).not.toBeNull();
+      expect(updated.searchResults.map((result) => result.nodeId)).toEqual([
+        "blocked-worker:node",
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[search-worker] disabled: Blocked by sandbox",
+      );
+    } finally {
+      warnSpy.mockRestore();
+      Object.defineProperty(globalThis, "Worker", {
+        configurable: true,
+        value: originalWorker,
+      });
+    }
   });
 });

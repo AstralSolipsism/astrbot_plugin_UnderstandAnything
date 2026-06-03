@@ -145,18 +145,42 @@ type SearchWorkerResponse =
   | { type: "error"; version: number; requestId?: number; message: string };
 
 let searchWorker: Worker | null = null;
+let searchWorkerDisabled = false;
 let searchWorkerVersion = 0;
 let searchRequestId = 0;
 
 function canUseSearchWorker(): boolean {
-  return typeof Worker !== "undefined";
+  return !searchWorkerDisabled && typeof Worker !== "undefined";
+}
+
+function disableSearchWorker(error: unknown): null {
+  if (searchWorkerDisabled) return null;
+  searchWorkerDisabled = true;
+  if (error instanceof Error) {
+    console.warn(`[search-worker] disabled: ${error.message}`);
+  } else {
+    console.warn("[search-worker] disabled");
+  }
+  try {
+    searchWorker?.terminate();
+  } catch {
+    // The worker may already be in a failed browser-managed state.
+  }
+  searchWorker = null;
+  return null;
 }
 
 function ensureSearchWorker(): Worker | null {
   if (!canUseSearchWorker()) return null;
-  searchWorker ??= new Worker(new URL("./workers/searchWorker.ts", import.meta.url), {
-    type: "module",
-  });
+  if (!searchWorker) {
+    try {
+      searchWorker = new Worker(new URL("./workers/searchWorker.ts", import.meta.url), {
+        type: "module",
+      });
+    } catch (error) {
+      return disableSearchWorker(error);
+    }
+  }
   searchWorker.onmessage = (event: MessageEvent<SearchWorkerResponse>) => {
     const message = event.data;
     if (message.type !== "results") return;
@@ -174,13 +198,17 @@ function buildSearchIndex(nodes: GraphNode[], query: string): SearchEngine | nul
   const worker = ensureSearchWorker();
   if (worker) {
     searchWorkerVersion += 1;
-    worker.postMessage({
-      type: "build",
-      version: searchWorkerVersion,
-      nodes,
-      query,
-    });
-    return null;
+    try {
+      worker.postMessage({
+        type: "build",
+        version: searchWorkerVersion,
+        nodes,
+        query,
+      });
+      return null;
+    } catch (error) {
+      disableSearchWorker(error);
+    }
   }
   return new SearchEngine(nodes);
 }
@@ -188,14 +216,19 @@ function buildSearchIndex(nodes: GraphNode[], query: string): SearchEngine | nul
 function requestSearch(query: string, options?: SearchOptions): SearchResult[] | null {
   const worker = ensureSearchWorker();
   if (!worker) return null;
-  worker.postMessage({
-    type: "search",
-    version: searchWorkerVersion,
-    requestId: ++searchRequestId,
-    query,
-    options,
-  });
-  return [];
+  try {
+    worker.postMessage({
+      type: "search",
+      version: searchWorkerVersion,
+      requestId: ++searchRequestId,
+      query,
+      options,
+    });
+    return [];
+  } catch (error) {
+    disableSearchWorker(error);
+    return null;
+  }
 }
 
 function normalizeAssistantPath(value: unknown): string | null {
@@ -549,7 +582,11 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
 
   clearProjectData: () => {
     searchWorkerVersion += 1;
-    searchWorker?.postMessage({ type: "build", version: searchWorkerVersion, nodes: [] });
+    try {
+      searchWorker?.postMessage({ type: "build", version: searchWorkerVersion, nodes: [] });
+    } catch (error) {
+      disableSearchWorker(error);
+    }
     set({
       graph: null,
       nodesById: new Map<string, GraphNode>(),

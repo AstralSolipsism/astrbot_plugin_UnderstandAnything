@@ -209,6 +209,14 @@ def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
     source_html = (
         PLUGIN_ROOT / "understand-anything" / "packages" / "dashboard" / "index.html"
     ).read_text(encoding="utf-8")
+    dist_html = (
+        PLUGIN_ROOT
+        / "understand-anything"
+        / "packages"
+        / "dashboard"
+        / "dist"
+        / "index.html"
+    ).read_text(encoding="utf-8")
     page_html = (PLUGIN_ROOT / "pages" / "dashboard" / "index.html").read_text(
         encoding="utf-8",
     )
@@ -218,7 +226,7 @@ def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
     bridge_index = source_html.index("/api/plugin/page/bridge-sdk.js")
     app_index = source_html.index("/src/main.tsx")
     page_bridge_index = page_html.index("/api/plugin/page/bridge-sdk.js")
-    page_app_index = page_html.index('type="module"')
+    page_app_index = page_html.index('src="./assets/index-')
     assert bridge_index < app_index
     assert page_bridge_index < page_app_index
     assert "i18n_scope" in source_html
@@ -227,8 +235,14 @@ def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
     assert '"page"' in page_html
     assert "asset_token" in source_html
     assert "asset_token" in page_html
-    assert 'rel="modulepreload"' not in page_html
-    assert './assets/index-' in page_html
+    for built_html in (dist_html, page_html):
+        # AstrBot embeds plugin pages in a sandboxed iframe without allow-same-origin.
+        # ES module scripts loaded from that opaque origin require CORS headers on
+        # every chunk, so the committed plugin page must use classic scripts.
+        assert 'type="module"' not in built_html
+        assert 'rel="modulepreload"' not in built_html
+        assert 'crossorigin src="./assets/' not in built_html
+        assert 'src="./assets/index-' in built_html
     assert len(js_assets) >= 1
     assert any(asset.name.startswith("index-") for asset in js_assets)
     assert not list((PLUGIN_ROOT / "pages" / "dashboard").rglob("*.map"))
