@@ -1448,7 +1448,7 @@ class UnderstandAnythingRunner:
                 await self._wait_for_message_confirmation(job, event, timeout_seconds)
             else:
                 await self._wait_for_dashboard_confirmation(job, timeout_seconds)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             self.jobs.mark_cancelled(
                 job.job_id, "Understand ignore confirmation timed out."
             )

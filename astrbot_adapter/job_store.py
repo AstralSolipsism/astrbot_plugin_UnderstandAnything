@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import enum
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -8,8 +7,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .compat import StrEnum
 
-class JobStatus(enum.StrEnum):
+
+class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     WAITING_CONFIRMATION = "waiting_confirmation"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import subprocess
 import sys
@@ -10,10 +11,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from quart import Quart
+from quart import Quart, g
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
+ASTRBOT_ROOT = PLUGIN_ROOT.parent / "AstrBot"
+if ASTRBOT_ROOT.exists():
+    sys.path.insert(0, str(ASTRBOT_ROOT))
 
 from astrbot_adapter.github_repo import (
     GitCommandResult,
@@ -152,7 +156,7 @@ def test_main_plugin_llm_tools_explain_source_preparation_contract() -> None:
     assert 'if not job.args.get("started_notification_sent")' in source
     assert "job_id(string)" not in source
     assert "project(string): Optional project name, alias, or path" in source
-    assert "format_job_status(project or None)" in source
+    assert "format_job_status(\n            self._effective_status_project_ref(event, project)," in source
 
 
 def test_main_plugin_has_single_llm_graph_question_tool() -> None:
@@ -164,7 +168,50 @@ def test_main_plugin_has_single_llm_graph_question_tool() -> None:
 def test_main_plugin_onboarding_tool_preserves_event_context() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
-    assert "return await self.runner.onboard(project_path=project_path, event=event)" in source
+    assert "return await self.runner.onboard(**project_kwargs, event=event)" in source
+    assert "project_kwargs = self._effective_project_kwargs(event, project_path)" in source
+    assert "project_ref=project_ref" in source
+
+
+def test_main_plugin_webchat_project_kwargs_include_stored_context_items(
+    tmp_path: Path,
+) -> None:
+    from astrbot_adapter.webchat_proxy import WebChatSessionContextStore
+
+    sys.path.insert(0, str(PLUGIN_ROOT.parent))
+    plugin_module = importlib.import_module(f"{PLUGIN_ROOT.name}.main")
+    plugin = plugin_module.UnderstandAnythingPlugin.__new__(
+        plugin_module.UnderstandAnythingPlugin,
+    )
+    plugin.webchat_context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    plugin.webchat_context_store.update(
+        session_id="s1",
+        username="alice",
+        project_ref={"project_id": "p1", "project_name": "Demo"},
+        context_items=[{"type": "node", "nodeId": "root"}],
+    )
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:webchat!alice!s1",
+    )
+
+    assert plugin._effective_project_kwargs(event) == {
+        "project_id": "p1",
+        "project_name": "Demo",
+        "context_items": [{"type": "node", "nodeId": "root"}],
+    }
+
+
+def test_web_api_webchat_sse_disables_response_timeout() -> None:
+    source = (PLUGIN_ROOT / "astrbot_adapter" / "web_api.py").read_text(
+        encoding="utf-8",
+    )
+    webchat_sse_source = source[
+        source.index("    async def webchat_send_events(self):") : source.index(
+            "    async def stop_webchat_session(self):",
+        )
+    ]
+
+    assert "response.timeout = None" in webchat_sse_source
 
 
 def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
@@ -3101,6 +3148,258 @@ def test_web_api_status_summarizes_config_without_provider_secret(
     assert "secret-provider-id" not in json.dumps(payload, ensure_ascii=False)
     assert "secret-subagent-provider-id" not in json.dumps(payload, ensure_ascii=False)
     assert payload["runtime"]["dashboard_page"]["exists"] is True
+
+
+def test_web_api_keeps_astrbot_dashboard_regression_routes(tmp_path: Path) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    api = UnderstandAnythingWebApi(context=None, runner=DummyRunner())  # type: ignore[arg-type]
+
+    routes = {route for route, *_ in api.routes()}
+
+    assert {
+        "/astrbot_plugin_UnderstandAnything/status",
+        "/astrbot_plugin_UnderstandAnything/runtime/repair",
+        "/astrbot_plugin_UnderstandAnything/subagents/status",
+        "/astrbot_plugin_UnderstandAnything/subagents/register",
+        "/astrbot_plugin_UnderstandAnything/subagents/providers",
+        "/astrbot_plugin_UnderstandAnything/projects",
+        "/astrbot_plugin_UnderstandAnything/jobs",
+        "/astrbot_plugin_UnderstandAnything/jobs/start",
+        "/astrbot_plugin_UnderstandAnything/jobs/<job_id>",
+        "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/events",
+        "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/confirm",
+        "/astrbot_plugin_UnderstandAnything/projects/delete",
+        "/astrbot_plugin_UnderstandAnything/projects/ignore",
+        "/astrbot_plugin_UnderstandAnything/file-content",
+    }.issubset(routes)
+
+
+def test_web_api_registers_first_phase_webchat_routes(tmp_path: Path) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    api = UnderstandAnythingWebApi(context=None, runner=DummyRunner())  # type: ignore[arg-type]
+
+    routes = {route for route, *_ in api.routes()}
+
+    assert {
+        "/astrbot_plugin_UnderstandAnything/webchat/sessions",
+        "/astrbot_plugin_UnderstandAnything/webchat/sessions/<session_id>",
+        "/astrbot_plugin_UnderstandAnything/webchat/sessions/<session_id>/rename",
+        "/astrbot_plugin_UnderstandAnything/webchat/send",
+        "/astrbot_plugin_UnderstandAnything/webchat/send-events",
+        "/astrbot_plugin_UnderstandAnything/webchat/send-cancel",
+        "/astrbot_plugin_UnderstandAnything/webchat/stop",
+    }.issubset(routes)
+
+
+def test_web_api_delegates_first_phase_webchat_bridge_calls(tmp_path: Path) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    class FakeWebChatProxy:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        async def list_sessions(self, username: str):
+            self.calls.append(("list", username))
+            return {"sessions": [{"session_id": "s1"}], "total": 1}
+
+        async def create_session(self, username: str, **kwargs):
+            self.calls.append(("create", {"username": username, **kwargs}))
+            return {"session_id": "s2", "display_name": kwargs.get("display_name")}
+
+        async def get_session(self, username: str, session_id: str):
+            self.calls.append(("get", {"username": username, "session_id": session_id}))
+            return {"session": {"session_id": session_id}, "history": []}
+
+        async def rename_session(
+            self,
+            username: str,
+            session_id: str,
+            display_name: str,
+        ):
+            self.calls.append(
+                (
+                    "rename",
+                    {
+                        "username": username,
+                        "session_id": session_id,
+                        "display_name": display_name,
+                    },
+                ),
+            )
+            return {"session_id": session_id, "display_name": display_name}
+
+        async def start_send(self, username: str, body: dict[str, object]):
+            self.calls.append(("send", {"username": username, "body": body}))
+            return {"request_id": "m1", "session_id": body.get("session_id")}
+
+        def stream_send_events(
+            self,
+            username: str,
+            request_id: str,
+        ):
+            self.calls.append(
+                ("events", {"username": username, "request_id": request_id}),
+            )
+
+            async def stream():
+                yield 'data: {"type":"end"}\n\n'
+
+            return stream()
+
+        async def stop_session(self, username: str, session_id: str):
+            self.calls.append(("stop", {"username": username, "session_id": session_id}))
+            return {"stopped_count": 1}
+
+        async def cancel_send(
+            self,
+            username: str,
+            request_id: str,
+            *,
+            session_id: str | None = None,
+        ):
+            self.calls.append(
+                (
+                    "cancel",
+                    {
+                        "username": username,
+                        "request_id": request_id,
+                        "session_id": session_id,
+                    },
+                ),
+            )
+            return {"cancelled": True, "session_id": session_id, "stopped_count": 1}
+
+    async def scenario() -> None:
+        api = UnderstandAnythingWebApi(context=None, runner=DummyRunner())  # type: ignore[arg-type]
+        fake_proxy = FakeWebChatProxy()
+        api.webchat_proxy = fake_proxy  # type: ignore[assignment]
+        app = Quart(__name__)
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/sessions",
+        ):
+            g.username = "alice"
+            response = await api.webchat_sessions()
+            assert (await response.get_json())["data"]["total"] == 1
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/sessions",
+            method="POST",
+            json={
+                "display_name": "UA Demo",
+                "project_id": "p1",
+                "contextItems": [{"type": "node", "nodeId": "root"}],
+            },
+        ):
+            g.username = "alice"
+            response = await api.create_webchat_session()
+            assert (await response.get_json())["data"]["session_id"] == "s2"
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/sessions/s2",
+        ):
+            g.username = "alice"
+            response = await api.webchat_session("s2")
+            assert (await response.get_json())["data"]["session"]["session_id"] == "s2"
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/sessions/s2/rename",
+            method="POST",
+            json={"display_name": "Renamed"},
+        ):
+            g.username = "alice"
+            response = await api.rename_webchat_session("s2")
+            assert (await response.get_json())["data"]["display_name"] == "Renamed"
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/send",
+            method="POST",
+            json={"session_id": "s2", "message": "hello", "project_id": "p1"},
+        ):
+            g.username = "alice"
+            response = await api.webchat_send()
+            assert (await response.get_json())["data"]["request_id"] == "m1"
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/send-events?request_id=m1",
+        ):
+            g.username = "alice"
+            response = await api.webchat_send_events()
+            assert response.content_type == "text/event-stream"
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/send-cancel",
+            method="POST",
+            json={"request_id": "m1", "session_id": "s2"},
+        ):
+            g.username = "alice"
+            response = await api.cancel_webchat_send()
+            assert (await response.get_json())["data"]["cancelled"] is True
+
+        async with app.test_request_context(
+            "/astrbot_plugin_UnderstandAnything/webchat/stop",
+            method="POST",
+            json={"session_id": "s2"},
+        ):
+            g.username = "alice"
+            response = await api.stop_webchat_session()
+            assert (await response.get_json())["data"]["stopped_count"] == 1
+
+        assert fake_proxy.calls[:8] == [
+            ("list", "alice"),
+            (
+                "create",
+                {
+                    "username": "alice",
+                    "display_name": "UA Demo",
+                    "project_ref": {"project_id": "p1"},
+                    "context_items": [{"type": "node", "nodeId": "root"}],
+                },
+            ),
+            ("get", {"username": "alice", "session_id": "s2"}),
+            (
+                "rename",
+                {
+                    "username": "alice",
+                    "session_id": "s2",
+                    "display_name": "Renamed",
+                },
+            ),
+            (
+                "send",
+                {
+                    "username": "alice",
+                    "body": {
+                        "session_id": "s2",
+                        "message": "hello",
+                        "project_id": "p1",
+                    },
+                },
+            ),
+            ("events", {"username": "alice", "request_id": "m1"}),
+            (
+                "cancel",
+                {
+                    "username": "alice",
+                    "request_id": "m1",
+                    "session_id": "s2",
+                },
+            ),
+            ("stop", {"username": "alice", "session_id": "s2"}),
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_web_api_status_reports_astrbot_computer_use_runtime(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import enum
 import json
 import time
 from dataclasses import dataclass, field
@@ -9,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .compat import StrEnum
 from .constants import GRAPH_DIR_NAME, PLUGIN_NAME, PLUGIN_ROOT
 from .path_security import PathSecurity
 
@@ -17,7 +17,7 @@ class ProjectRegistryError(ValueError):
     """Raised when a project reference cannot be resolved unambiguously."""
 
 
-class ProjectStatus(enum.StrEnum):
+class ProjectStatus(StrEnum):
     EMPTY = "empty"
     CLONING = "cloning"
     ANALYZING = "analyzing"
@@ -156,6 +156,7 @@ class ProjectRegistry:
     _loaded: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
+        self._loaded = False
         if self.storage_path is None:
             self.storage_path = _default_storage_path()
         else:

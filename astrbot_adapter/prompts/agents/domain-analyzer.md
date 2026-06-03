@@ -47,7 +47,7 @@ Produce this IR shape:
           "name": "Flow Name",
           "summary": "What this flow accomplishes.",
           "tags": ["business-term"],
-          "entryPoint": "POST /api/orders",
+          "entryPoint": "POST /orders",
           "entryType": "http",
           "sourceNodeIds": ["file:src/orders.ts"],
           "sourceFilePaths": ["src/orders.ts"],

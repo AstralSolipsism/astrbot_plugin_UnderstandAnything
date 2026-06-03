@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -22,6 +23,7 @@ class UnderstandAnythingPlugin(Star):
         self.config = dict(config or {})
         self.runner = UnderstandAnythingRunner(context, self.config)
         self.web_api = UnderstandAnythingWebApi(context, self.runner)
+        self.webchat_context_store = self.web_api.webchat_proxy.context_store
         self.web_api.register()
 
     async def initialize(self) -> None:
@@ -228,7 +230,9 @@ class UnderstandAnythingPlugin(Star):
             project(string): Optional project name, alias, or path. If empty,
                 show the latest active job.
         """
-        return self.runner.format_job_status(project or None)
+        return self.runner.format_job_status(
+            self._effective_status_project_ref(event, project),
+        )
 
     @filter.llm_tool(name="ua_ask_graph")
     async def ua_ask_graph(
@@ -249,7 +253,7 @@ class UnderstandAnythingPlugin(Star):
         """
         return await self.runner.chat(
             query=query,
-            project_ref=project or None,
+            **self._effective_project_kwargs(event, project),
             event=event,
         )
 
@@ -270,12 +274,16 @@ class UnderstandAnythingPlugin(Star):
         """
         return await self.runner.explain(
             target=target,
-            project_ref=project or None,
+            **self._effective_project_kwargs(event, project),
             event=event,
         )
 
     @filter.llm_tool(name="ua_analyze_diff")
-    async def ua_analyze_diff(self, event: AstrMessageEvent, project_path: str):
+    async def ua_analyze_diff(
+        self,
+        event: AstrMessageEvent,
+        project_path: str = "",
+    ):
         """Analyze git diff impact using a finished Understand Anything graph.
 
         Use this only after the relevant analysis job status is finished.
@@ -283,10 +291,15 @@ class UnderstandAnythingPlugin(Star):
         Args:
             project_path(string): Project directory containing the graph.
         """
-        return await self.runner.diff(project_path=project_path, event=event)
+        project_kwargs = self._effective_project_kwargs(event, project_path)
+        return await self.runner.diff(**project_kwargs, event=event)
 
     @filter.llm_tool(name="ua_generate_onboarding")
-    async def ua_generate_onboarding(self, event: AstrMessageEvent, project_path: str):
+    async def ua_generate_onboarding(
+        self,
+        event: AstrMessageEvent,
+        project_path: str = "",
+    ):
         """Generate onboarding markdown from a finished Understand Anything graph.
 
         Use this only after the relevant analysis job status is finished.
@@ -294,7 +307,8 @@ class UnderstandAnythingPlugin(Star):
         Args:
             project_path(string): Project directory containing the graph.
         """
-        return await self.runner.onboard(project_path=project_path, event=event)
+        project_kwargs = self._effective_project_kwargs(event, project_path)
+        return await self.runner.onboard(**project_kwargs, event=event)
 
     @filter.llm_tool(name="ua_open_dashboard")
     async def ua_open_dashboard(self, event: AstrMessageEvent):
@@ -320,6 +334,70 @@ class UnderstandAnythingPlugin(Star):
     ) -> str | None:
         raw_args = self._args(event, *command_names)
         return self._first_path_token(raw_args)
+
+    def _effective_project_kwargs(
+        self,
+        event: AstrMessageEvent,
+        explicit_project: str = "",
+    ) -> dict[str, Any]:
+        webchat_context = self._webchat_context_for_event(event)
+        context_items = webchat_context.get("context_items")
+        explicit = str(explicit_project or "").strip()
+        if explicit:
+            kwargs: dict[str, Any] = {"project_ref": explicit}
+            if isinstance(context_items, list) and context_items:
+                kwargs["context_items"] = context_items
+            return kwargs
+        project_ref = webchat_context.get("project_ref")
+        if not isinstance(project_ref, dict) or not project_ref:
+            return {"project_ref": None}
+        kwargs: dict[str, Any] = {}
+        for key in ("project_id", "project_name", "project_path"):
+            value = project_ref.get(key)
+            if isinstance(value, str) and value.strip():
+                kwargs[key] = value.strip()
+        ref = project_ref.get("project_ref") or project_ref.get("project")
+        if isinstance(ref, str) and ref.strip():
+            kwargs["project_ref"] = ref.strip()
+        if not kwargs:
+            kwargs["project_ref"] = None
+        if isinstance(context_items, list) and context_items:
+            kwargs["context_items"] = context_items
+        return kwargs
+
+    def _effective_status_project_ref(
+        self,
+        event: AstrMessageEvent,
+        explicit_project: str = "",
+    ) -> str | None:
+        explicit = str(explicit_project or "").strip()
+        if explicit:
+            return explicit
+        project_kwargs = self._effective_project_kwargs(event)
+        for key in ("project_ref", "project_id", "project_name", "project_path"):
+            value = project_kwargs.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _webchat_project_ref_for_event(
+        self,
+        event: AstrMessageEvent,
+    ) -> dict[str, Any]:
+        project_ref = self._webchat_context_for_event(event).get("project_ref")
+        return project_ref if isinstance(project_ref, dict) else {}
+
+    def _webchat_context_for_event(
+        self,
+        event: AstrMessageEvent,
+    ) -> dict[str, Any]:
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        context_for_umo = getattr(self.webchat_context_store, "context_for_umo", None)
+        if callable(context_for_umo):
+            context = context_for_umo(umo)
+            return context if isinstance(context, dict) else {}
+        project_ref = self.webchat_context_store.project_ref_for_umo(umo)
+        return {"project_ref": project_ref} if isinstance(project_ref, dict) else {}
 
     @staticmethod
     def _parse_project_option(raw_args: str) -> tuple[str | None, str]:

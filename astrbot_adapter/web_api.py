@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from quart import Response as QuartResponse
-from quart import jsonify, request
+from quart import g, jsonify, request
 
 from astrbot.core.star import Context
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
@@ -37,6 +37,7 @@ from .project_registry import ProjectStatus
 from .runner import UnderstandAnythingRunner
 from .runtime_tools import detect_runtime_tools, runtime_readiness
 from .subagent_registry import UnderstandAnythingSubAgentRegistry
+from .webchat_proxy import UnderstandAnythingWebChatProxy
 
 WebHandler = Callable[[], Awaitable[Any]]
 
@@ -50,6 +51,7 @@ class UnderstandAnythingWebApi:
             context,
             getattr(runner, "config", {}) or {},
         )
+        self.webchat_proxy = UnderstandAnythingWebChatProxy(context)
 
     def register(self) -> None:
         for route, handler, methods, desc in self.routes():
@@ -130,6 +132,54 @@ class UnderstandAnythingWebApi:
                 self.job_events,
                 ["GET"],
                 "Subscribe job events",
+            ),
+            (
+                f"{prefix}/webchat/sessions",
+                self.webchat_sessions,
+                ["GET"],
+                "List native AstrBot WebChat sessions",
+            ),
+            (
+                f"{prefix}/webchat/sessions",
+                self.create_webchat_session,
+                ["POST"],
+                "Create a native AstrBot WebChat session",
+            ),
+            (
+                f"{prefix}/webchat/sessions/<session_id>",
+                self.webchat_session,
+                ["GET"],
+                "Read native AstrBot WebChat session history",
+            ),
+            (
+                f"{prefix}/webchat/sessions/<session_id>/rename",
+                self.rename_webchat_session,
+                ["POST"],
+                "Rename a native AstrBot WebChat session",
+            ),
+            (
+                f"{prefix}/webchat/send",
+                self.webchat_send,
+                ["POST"],
+                "Send a message through native AstrBot WebChat",
+            ),
+            (
+                f"{prefix}/webchat/send-events",
+                self.webchat_send_events,
+                ["GET"],
+                "Subscribe native AstrBot WebChat send events",
+            ),
+            (
+                f"{prefix}/webchat/send-cancel",
+                self.cancel_webchat_send,
+                ["POST"],
+                "Cancel a native AstrBot WebChat send request",
+            ),
+            (
+                f"{prefix}/webchat/stop",
+                self.stop_webchat_session,
+                ["POST"],
+                "Stop native AstrBot WebChat session run",
             ),
             (f"{prefix}/chat", self.chat, ["POST"], "Chat with graph"),
             (f"{prefix}/explain", self.explain, ["POST"], "Explain graph node"),
@@ -513,6 +563,106 @@ class UnderstandAnythingWebApi:
 
         return QuartResponse(stream(), content_type="text/event-stream")
 
+    async def webchat_sessions(self):
+        try:
+            payload = await self.webchat_proxy.list_sessions(self._current_username())
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
+
+    async def create_webchat_session(self):
+        try:
+            body = await self._json_body()
+            payload = await self.webchat_proxy.create_session(
+                self._current_username(),
+                display_name=self._string_or_none(body.get("display_name")),
+                project_ref=self._clean_project_ref(self._body_project_ref(body)),
+                context_items=self._body_context_items(body) or [],
+            )
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
+
+    async def webchat_session(self, session_id: str):
+        try:
+            payload = await self.webchat_proxy.get_session(
+                self._current_username(),
+                session_id,
+            )
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
+
+    async def rename_webchat_session(self, session_id: str):
+        try:
+            body = await self._json_body()
+            display_name = self._string_or_none(body.get("display_name"))
+            if not display_name:
+                raise ValueError("Missing display_name.")
+            payload = await self.webchat_proxy.rename_session(
+                self._current_username(),
+                session_id,
+                display_name,
+            )
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
+
+    async def webchat_send(self):
+        try:
+            body = await self._json_body()
+            payload = await self.webchat_proxy.start_send(
+                self._current_username(),
+                body,
+            )
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
+
+    async def webchat_send_events(self):
+        try:
+            request_id = self._query("request_id")
+            response = QuartResponse(
+                self.webchat_proxy.stream_send_events(
+                    self._current_username(),
+                    request_id,
+                ),
+                content_type="text/event-stream",
+            )
+            response.timeout = None
+            return response
+        except Exception as exc:
+            return self._error(exc)
+
+    async def cancel_webchat_send(self):
+        try:
+            body = await self._json_body()
+            request_id = self._string_or_none(body.get("request_id"))
+            if not request_id:
+                raise ValueError("Missing request_id.")
+            payload = await self.webchat_proxy.cancel_send(
+                self._current_username(),
+                request_id,
+                session_id=self._string_or_none(body.get("session_id")),
+            )
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
+
+    async def stop_webchat_session(self):
+        try:
+            body = await self._json_body()
+            session_id = self._string_or_none(body.get("session_id"))
+            if not session_id:
+                raise ValueError("Missing session_id.")
+            payload = await self.webchat_proxy.stop_session(
+                self._current_username(),
+                session_id,
+            )
+            return jsonify({"status": "ok", "data": payload})
+        except Exception as exc:
+            return self._error(exc)
+
     async def chat(self):
         try:
             body = await self._json_body()
@@ -583,6 +733,11 @@ class UnderstandAnythingWebApi:
     async def _json_body(self) -> dict[str, Any]:
         body = await request.get_json(silent=True)
         return body if isinstance(body, dict) else {}
+
+    @staticmethod
+    def _current_username() -> str:
+        username = g.get("username", "guest")
+        return str(username or "guest")
 
     @staticmethod
     def _body_context_items(body: dict[str, Any]) -> list[Any] | None:
@@ -657,6 +812,14 @@ class UnderstandAnythingWebApi:
             "project_path": project_path,
             "project_ref": body.get("project") or body.get("project_ref"),
         }
+
+    @staticmethod
+    def _clean_project_ref(project_ref: dict[str, Any]) -> dict[str, Any]:
+        clean: dict[str, Any] = {}
+        for key, value in project_ref.items():
+            if isinstance(value, str) and value.strip():
+                clean[key] = value.strip()
+        return clean
 
     @staticmethod
     def _job_flags(body: dict[str, Any]) -> list[str]:
@@ -855,5 +1018,8 @@ class UnderstandAnythingWebApi:
 
     @staticmethod
     def _error(exc: Exception):
-        status_code = 400 if isinstance(exc, (ValueError, PathSecurityError)) else 500
+        if isinstance(exc, PermissionError):
+            status_code = 403
+        else:
+            status_code = 400 if isinstance(exc, (ValueError, PathSecurityError)) else 500
         return jsonify({"status": "error", "message": str(exc)}), status_code

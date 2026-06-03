@@ -586,7 +586,7 @@ class GitHubRepoManager:
                 proc.communicate(),
                 timeout=timeout_seconds or self.git_timeout_seconds,
             )
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
