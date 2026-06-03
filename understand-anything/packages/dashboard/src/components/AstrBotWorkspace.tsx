@@ -34,6 +34,7 @@ import {
   selectRecoverableJob,
 } from "../utils/jobTracking";
 import { getStorageItem, removeStorageItem, setStorageItem } from "../utils/safeBrowser";
+import { analyzeStartBlocker } from "../utils/workspaceRegressionGuards";
 
 interface AstrBotWorkspaceProps {
   bridge: AstrBotPluginPageBridge;
@@ -628,44 +629,58 @@ export default function AstrBotWorkspace({
     }
   };
 
+  const analysisBlockerForTarget = useCallback(
+    (target: string): string | null =>
+      analyzeStartBlocker({
+        target,
+        subagentError,
+        subagentsReady,
+        computerUseReady,
+        localRuntimeReady,
+        runtimeBlockingReasons: runtimeReadiness?.blocking_reasons ?? [],
+        projectTargetRequiredMessage: t(
+          "workspace.projectTargetRequired",
+          "Project target is required.",
+        ),
+        subagentsRequiredMessage: t(
+          "workspace.subagentsRequired",
+          "Register UA SubAgents before starting analysis.",
+        ),
+        computerUseRequiredMessage: t(
+          "workspace.computerUseRequired",
+          "Enable Computer Use runtime before starting analysis.",
+        ),
+        runtimeUnavailableMessage: t(
+          "workspace.runtimeUnavailable",
+          "Understand Anything runtime is not ready.",
+        ),
+        githubAnalysisReady: runtimeReadiness?.github_analysis_ready ?? true,
+        githubBlockingReason: runtimeReadiness?.github_blocking_reason || "",
+        gitUnavailableMessage: t(
+          "workspace.gitUnavailable",
+          "Git is unavailable on this AstrBot host.",
+        ),
+      }),
+    [
+      computerUseReady,
+      localRuntimeReady,
+      runtimeReadiness?.blocking_reasons,
+      runtimeReadiness?.github_analysis_ready,
+      runtimeReadiness?.github_blocking_reason,
+      subagentError,
+      subagentsReady,
+      t,
+    ],
+  );
+
   const startAnalysisForTarget = async (
     target: string,
     nextAutoUpdate = autoUpdate,
   ) => {
     const trimmedTarget = target.trim();
-    if (!trimmedTarget) {
-      setError(t("workspace.projectTargetRequired", "Project target is required."));
-      return;
-    }
-    if (subagentError) {
-      setError(subagentError);
-      return;
-    }
-    if (!subagentsReady) {
-      setError(t("workspace.subagentsRequired", "Register UA SubAgents before starting analysis."));
-      return;
-    }
-    if (!computerUseReady) {
-      setError(
-        t(
-          "workspace.computerUseRequired",
-          "Enable Computer Use runtime before starting analysis.",
-        ),
-      );
-      return;
-    }
-    if (!localRuntimeReady) {
-      const reason =
-        runtimeReadiness?.blocking_reasons?.join(" ") ||
-        t("workspace.runtimeUnavailable", "Understand Anything runtime is not ready.");
-      setError(reason);
-      return;
-    }
-    if (looksLikeGitHubTarget(trimmedTarget) && !runtimeReadiness?.github_analysis_ready) {
-      setError(
-        runtimeReadiness?.github_blocking_reason ||
-          t("workspace.gitUnavailable", "Git is unavailable on this AstrBot host."),
-      );
+    const blocker = analysisBlockerForTarget(trimmedTarget);
+    if (blocker) {
+      setError(blocker);
       return;
     }
     setStarting(true);
@@ -846,11 +861,7 @@ export default function AstrBotWorkspace({
   const canStartAnalysis =
     !starting &&
     analysisTargetReady &&
-    !subagentError &&
-    subagentsReady &&
-    computerUseReady &&
-    localRuntimeReady &&
-    gitReady;
+    analysisBlockerForTarget(projectTarget) === null;
 
   return (
     <div className="min-h-screen w-screen bg-root text-text-primary noise-overlay overflow-auto">
@@ -1417,14 +1428,8 @@ export default function AstrBotWorkspace({
                               type="button"
                               onClick={() => void restartProject(selectedProject)}
                               disabled={
-                                !projectAnalysisTarget(selectedProject) ||
                                 starting ||
-                                Boolean(subagentError) ||
-                                !subagentsReady ||
-                                !computerUseReady ||
-                                !localRuntimeReady ||
-                                (looksLikeGitHubTarget(projectAnalysisTarget(selectedProject)) &&
-                                  runtimeReadiness?.github_analysis_ready === false)
+                                analysisBlockerForTarget(projectAnalysisTarget(selectedProject)) !== null
                               }
                               className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                             >

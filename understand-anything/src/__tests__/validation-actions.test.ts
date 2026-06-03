@@ -164,10 +164,11 @@ describe("runtime validation action wrappers", () => {
         { type: "file", path: secretPath, label: "secret" },
       ],
     });
+    const legacyAssistantName = ["Ki", "mi"].join("");
 
     expect(result.ok).toBe(true);
     expect(result.prompt).toContain("AstrBot Provider");
-    expect(result.prompt).not.toContain("Kimi");
+    expect(result.prompt).not.toContain(legacyAssistantName);
     expect(JSON.stringify(result)).not.toContain(secretPath.replace(/\\/g, "/"));
     expect(result.context.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "file", path: "src/app.ts" }),

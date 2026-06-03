@@ -127,4 +127,21 @@ describe("dashboard i18n", () => {
     expect(guidance).not.toContain("#/config");
     expect(guidance).not.toContain("provider_settings.computer_use_runtime");
   });
+
+  it("localizes AssistantWorkbench WebChat labels from local messages", () => {
+    expect(translateLocal("zh-CN", "assistant.modeChat", "")).toBe("问答");
+    expect(translateLocal("en-US", "assistant.modeChat", "")).toBe("Chat");
+    expect(translateLocal("zh-CN", "assistant.sseUnavailable", "")).toContain(
+      "SSE bridge 不可用"
+    );
+    expect(translateLocal("en-US", "assistant.sseUnavailable", "")).toContain(
+      "SSE bridge is unavailable"
+    );
+    expect(translateLocal("zh-CN", "assistant.contextCount", "", { count: 2 })).toBe(
+      "2 个上下文已加入"
+    );
+    expect(translateLocal("en-US", "assistant.contextCount", "", { count: 2 })).toBe(
+      "2 context items added"
+    );
+  });
 });
