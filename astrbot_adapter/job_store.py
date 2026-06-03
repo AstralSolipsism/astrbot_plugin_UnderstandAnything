@@ -22,7 +22,7 @@ class JobStatus(StrEnum):
 PROGRESS_PHASES: tuple[tuple[str, str, int], ...] = (
     ("queued", "Queued", 0),
     ("source", "Preparing source", 15),
-    ("confirmation", "Confirm scan scope", 20),
+    ("confirmation", "Prepare scan rules", 20),
     ("runtime", "Preparing runtime", 30),
     ("agent", "Running analysis", 55),
     ("validate", "Validating outputs", 85),
@@ -214,7 +214,7 @@ class JobStore:
         confirmation: dict[str, Any],
     ) -> None:
         self.set_progress(
-            job_id, "confirmation", "Waiting for scan scope confirmation.", 20
+            job_id, "confirmation", "Preparing scan rules.", 20
         )
         self._update(
             job_id,

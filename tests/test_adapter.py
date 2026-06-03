@@ -24,11 +24,7 @@ from astrbot_adapter.github_repo import (
     GitHubRepoError,
     GitHubRepoManager,
 )
-from astrbot_adapter.ignore_review import (
-    apply_confirmation_reply,
-    build_ignore_confirmation,
-    parse_confirmation_reply,
-)
+from astrbot_adapter.ignore_review import append_ignore_patterns, build_ignore_confirmation
 from astrbot_adapter.job_request import format_job_args, parse_job_args
 from astrbot_adapter.job_store import JobStatus, JobStore
 from astrbot_adapter.path_security import PathSecurity, PathSecurityError
@@ -95,82 +91,77 @@ def test_plugin_main_uses_package_relative_adapter_imports() -> None:
     assert "from .astrbot_adapter" in source
 
 
-def test_main_plugin_exposes_understand_command_group() -> None:
+def test_main_plugin_exposes_single_natural_understand_command() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
-    assert '@filter.command_group("understand")' in source
-    assert '@filter.command("understand")' not in source
+    assert '@filter.command("understand")' in source
+    assert '@filter.command_group("understand")' not in source
     assert '@filter.command("understand-' not in source
     assert 'alias={"understand_' not in source
     assert 'self._args(event, "understand-' not in source
     assert "UNDERSTAND_GROUP_SUBCOMMANDS" not in source
     assert "_is_understand_group_subcommand" not in source
-    assert '@understand_commands.command("analyze")' in source
-    assert '@understand_commands.command("status")' in source
-    assert '@understand_commands.command("dashboard")' in source
-    assert '@understand_commands.command("chat")' in source
-    assert '@understand_commands.command("diff")' in source
-    assert '@understand_commands.command("domain")' in source
-    assert '@understand_commands.command("explain")' in source
-    assert '@understand_commands.command("knowledge")' in source
-    assert '@understand_commands.command("onboard")' in source
+    for legacy in (
+        "analyze",
+        "status",
+        "dashboard",
+        "chat",
+        "diff",
+        "domain",
+        "explain",
+        "knowledge",
+        "onboard",
+    ):
+        old_decorator = "@understand_commands" + f'.command("{legacy}")'
+        assert old_decorator not in source
 
 
-def test_main_plugin_llm_tools_explain_source_preparation_contract() -> None:
+def test_main_plugin_llm_tools_are_structured_and_not_legacy() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
-    project_tool_source = source[
-        source.index('@filter.llm_tool(name="ua_start_project_analysis")') : source.index(
-            '@filter.llm_tool(name="ua_start_github_analysis")'
-        )
-    ]
-    github_tool_source = source[
-        source.index('@filter.llm_tool(name="ua_start_github_analysis")') : source.index(
-            '@filter.llm_tool(name="ua_get_analysis_status")'
-        )
-    ]
 
-    assert '@filter.llm_tool(name="ua_start_project_analysis")' in source
-    assert '@filter.llm_tool(name="ua_start_github_analysis")' in source
-    assert 'github_proxy: str = ""' in source
-    assert "bundled proxy preset" in source
-    assert "github_proxy=github_proxy or None" in source
-    assert '@filter.llm_tool(name="ua_get_analysis_status")' in source
-    assert '@filter.llm_tool(name="ua_ask_graph")' in source
+    assert '@filter.llm_tool(name="ua_get_project_state")' in source
+    assert '@filter.llm_tool(name="ua_project_action")' in source
+    assert '@filter.llm_tool(name="ua_retrieve_project_context")' in source
+    for suffix in (
+        "start_project_analysis",
+        "start_github_analysis",
+        "get_analysis_status",
+        "ask_graph",
+        "explain_component",
+        "analyze_diff",
+        "generate_onboarding",
+        "open_dashboard",
+    ):
+        legacy_tool = "ua_" + suffix
+        assert f'@filter.llm_tool(name="{legacy_tool}")' not in source
     assert '@filter.llm_tool(name="ua_analyze_project")' not in source
     assert '@filter.llm_tool(name="ua_analyze_github_repo")' not in source
     assert '@filter.llm_tool(name="ua_search_graph")' not in source
     assert '@filter.llm_tool(name="ua_chat_with_graph")' not in source
-    assert "30 minutes or longer" in source
-    assert "Do not assume" in source
-    assert "User-facing lifecycle notifications are sent by the plugin" in source
-    assert "source preparation" in project_tool_source
-    assert "GitHub source preparation" in github_tool_source
-    assert "confirm scan scope before graph generation" in source
-    assert "Do not say analysis has started" in source
-    assert "background" not in project_tool_source
-    assert "background" not in github_tool_source
-    assert "reply with exactly the returned message" not in project_tool_source
-    assert "reply with exactly the returned message" not in github_tool_source
-    assert "format_tool_job_submitted_message(job)" in source
+    old_scope_text = "confirm scan " + "scope before graph generation"
+    assert old_scope_text not in source
+    assert "reply with exactly the returned message" not in source
+    old_tool_message_call = "format_tool_job_" + "submitted_message(job)"
+    assert old_tool_message_call not in source
     assert "return self.runner.format_job_started_message(job)" not in source
-    assert 'if not job.args.get("started_notification_sent")' in source
     assert "job_id(string)" not in source
-    assert "project(string): Optional project name, alias, or path" in source
-    assert "format_job_status(\n            self._effective_status_project_ref(event, project)," in source
 
 
-def test_main_plugin_has_single_llm_graph_question_tool() -> None:
+def test_main_plugin_tools_do_not_generate_final_answers_directly() -> None:
+    source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+    tool_source = source[source.index('@filter.llm_tool(name="ua_get_project_state")') :]
+
+    assert "return await self.runner.chat(" not in tool_source
+    assert "return await self.runner.explain(" not in tool_source
+    assert "return await self.runner.diff(" not in tool_source
+    assert "return await self.runner.onboard(" not in tool_source
+
+
+def test_main_natural_command_uses_chat_entry_executor() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
-    assert source.count("return await self.runner.chat(") == 1
-
-
-def test_main_plugin_onboarding_tool_preserves_event_context() -> None:
-    source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
-
-    assert "return await self.runner.onboard(**project_kwargs, event=event)" in source
-    assert "project_kwargs = self._effective_project_kwargs(event, project_path)" in source
-    assert "project_ref=project_ref" in source
+    assert "self.chat_entry" in source
+    assert "execute_text(" in source
 
 
 def test_main_plugin_webchat_project_kwargs_include_stored_context_items(
@@ -569,9 +560,10 @@ async def test_runner_source_message_uses_project_status_ref_not_job_id(
 
     assert "正在获取源码：AstrBot" in message
     assert "源码准备完成后将进入分析流程" in message
-    assert "确认扫描范围" not in message
+    old_scope_text = "确认" + "扫描范围"
+    assert old_scope_text not in message
     assert "已开始分析" not in message
-    assert "/understand status AstrBot" in message
+    assert "/understand 状态 AstrBot" in message
     assert job.job_id not in message
 
 
@@ -608,13 +600,14 @@ async def test_runner_sends_source_notification_before_background_task(
     assert events[0].startswith("send:正在获取源码：project")
     assert "已开始分析" not in events[0]
     assert "源码准备完成后将进入分析流程" in events[0]
-    assert "确认扫描范围" not in events[0]
+    old_scope_text = "确认" + "扫描范围"
+    assert old_scope_text not in events[0]
     assert events[1] == "run"
     assert job.args["started_notification_sent"] is True
 
 
 @pytest.mark.asyncio
-async def test_runner_tool_message_is_phase_safe_after_source_notification(
+async def test_runner_source_message_is_phase_safe_after_source_notification(
     tmp_path: Path,
 ) -> None:
     runner = UnderstandAnythingRunner(
@@ -628,11 +621,12 @@ async def test_runner_tool_message_is_phase_safe_after_source_notification(
     )
     job.args["started_notification_sent"] = True
 
-    message = runner.format_tool_job_submitted_message(job)
+    message = runner.format_job_source_started_message(job)
 
     banned = ["提交", "后台执行", "已开始分析", "submitted", "Started analysis"]
     assert "源码准备" in message
-    assert "确认扫描范围" not in message
+    old_scope_text = "确认" + "扫描范围"
+    assert old_scope_text not in message
     assert "确认后才开始生成图谱" not in message
     for phrase in banned:
         assert phrase not in message
@@ -1002,7 +996,7 @@ def test_runner_auto_locale_ignores_github_url_noise(tmp_path: Path) -> None:
         registry_path=tmp_path / "projects.json",
     )
     event = SimpleNamespace(
-        message_str="/understand analyze https://github.com/AstrBotDevs/AstrBot",
+        message_str="/understand 分析 https://github.com/AstrBotDevs/AstrBot",
     )
 
     assert runner._resolve_output_locale(event=event) == "zh-CN"
@@ -1016,7 +1010,7 @@ def test_runner_auto_locale_ignores_llm_tool_name_noise(tmp_path: Path) -> None:
     )
     event = SimpleNamespace(
         message_str=(
-            "ua_start_github_analysis "
+            "ua_" + "start_github_analysis "
             "repo_url=https://github.com/AstrBotDevs/AstrBot"
         ),
     )
@@ -1036,7 +1030,7 @@ def test_runner_auto_locale_still_detects_english_prose(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_github_job_confirmation_and_prompt_use_auto_zh_for_url_only_command(
+async def test_github_job_scan_rules_and_prompt_use_auto_zh_for_url_only_command(
     tmp_path: Path,
 ) -> None:
     runner = UnderstandAnythingRunner(
@@ -1045,7 +1039,7 @@ async def test_github_job_confirmation_and_prompt_use_auto_zh_for_url_only_comma
         registry_path=tmp_path / "projects.json",
     )
     event = SimpleNamespace(
-        message_str="/understand analyze https://github.com/AstrBotDevs/AstrBot",
+        message_str="/understand 分析 https://github.com/AstrBotDevs/AstrBot",
     )
 
     job = await runner.start_skill_job(
@@ -1061,8 +1055,9 @@ async def test_github_job_confirmation_and_prompt_use_auto_zh_for_url_only_comma
     prompt = runner._build_skill_execution_prompt(job)
 
     assert job.args["locale"] == "zh-CN"
-    assert "扫描范围确认：AstrBot" in message
-    assert "Scan scope confirmation" not in message
+    assert "范围规则：AstrBot" in message
+    old_scope_text = "Scan scope " + "confirmation"
+    assert old_scope_text not in message
     assert "Generate all user-visible textual content in Simplified Chinese" in prompt
 
 
@@ -1132,25 +1127,18 @@ def test_ignore_review_summarizes_current_excluded_directory_tree(
     assert "dist" not in exclusions["directories"]
 
 
-def test_ignore_confirmation_reply_parser_updates_rules(tmp_path: Path) -> None:
+def test_ignore_review_allows_dashboard_rule_append_without_chat_reply_parser(
+    tmp_path: Path,
+) -> None:
     graph_root = tmp_path / ".understand-anything"
     graph_root.mkdir()
     (graph_root / ".understandignore").write_text("dist/\n", encoding="utf-8")
 
-    assert parse_confirmation_reply("继续")[0] == "continue"
-    assert parse_confirmation_reply("cancel")[0] == "cancel"
-    assert parse_confirmation_reply("排除 tests/, docs/") == (
-        "update",
-        ["tests/", "docs/"],
-    )
-    assert parse_confirmation_reply("包含 docs/") == ("update", ["!docs/"])
-    assert parse_confirmation_reply("现在进度怎么样") == ("unknown", [])
+    content = append_ignore_patterns(graph_root, ["tests/", "docs/"])
 
-    action, content = apply_confirmation_reply(graph_root, "排除 tests/")
-
-    assert action == "update"
     assert "dist/" in content
     assert "tests/" in content
+    assert "docs/" in content
 
 
 def test_runner_confirmation_message_is_compact_and_localized(tmp_path: Path) -> None:
@@ -1182,11 +1170,11 @@ def test_runner_confirmation_message_is_compact_and_localized(tmp_path: Path) ->
 
     message = runner._confirmation_message(job)
 
-    assert "扫描范围确认：Demo" in message
-    assert "查看进度：/understand status Demo" in message
-    assert "继续" in message
-    assert "取消" in message
-    assert "排除 tests/ docs/" in message
+    assert "范围规则：Demo" in message
+    assert "查看进度：/understand 状态 Demo" in message
+    assert "继续" not in message
+    assert "取消" not in message
+    assert "Dashboard" in message
     assert "当前排除目录树：" in message
     assert "- docs/" in message
     assert "- src/" in message
@@ -1197,7 +1185,7 @@ def test_runner_confirmation_message_is_compact_and_localized(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_runner_cancels_understandignore_confirmation_on_timeout(
+async def test_runner_applies_understandignore_defaults_without_chat_confirmation(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -1225,10 +1213,11 @@ async def test_runner_cancels_understandignore_confirmation_on_timeout(
     )
 
     snapshot = runner.jobs.get(job.job_id)
-    assert confirmed is False
+    assert confirmed is True
     assert snapshot is not None
-    assert snapshot.status is JobStatus.CANCELLED
-    assert "timed out" in (snapshot.error or "")
+    assert snapshot.status is JobStatus.QUEUED
+    assert snapshot.confirmation is None
+    assert (project / ".understand-anything" / ".understandignore").is_file()
 
 
 def test_job_request_parses_github_ref_without_treating_it_as_flag() -> None:
@@ -1772,12 +1761,12 @@ async def test_runner_sends_chat_progress_and_friendly_github_failure(
     assert "Cloning GitHub repository" not in joined_messages
     assert "Understand Anything job update" not in joined_messages
     assert f"Job: {job.job_id}" not in joined_messages
-    assert f"/understand status {job.job_id}" not in joined_messages
+    assert f"/understand 状态 {job.job_id}" not in joined_messages
     failure_message = messages[-1]
     assert "分析失败：demo" in failure_message
     assert "阶段：获取源码" in failure_message
     assert "原因：clone failed" in failure_message
-    assert "/understand status demo" in failure_message
+    assert "/understand 状态 demo" in failure_message
     assert "--github-proxy" not in failure_message
     assert job.job_id not in failure_message
 
@@ -1821,11 +1810,9 @@ async def test_runner_job_chat_notification_uses_context_proactive_send(
 
 
 @pytest.mark.asyncio
-async def test_runner_understandignore_prompt_uses_context_proactive_send(
+async def test_runner_understandignore_defaults_do_not_send_chat_prompt(
     tmp_path: Path,
 ) -> None:
-    from astrbot.core.utils.session_waiter import SessionWaiter
-
     class Context:
         def __init__(self) -> None:
             self.messages: list[tuple[str, str]] = []
@@ -1834,30 +1821,11 @@ async def test_runner_understandignore_prompt_uses_context_proactive_send(
             self.messages.append((str(session), message.get_plain_text()))
             return True
 
-    async def stale_send(_message):
-        raise RuntimeError("event send is no longer active")
-
-    reply_stopped = False
-
-    async def reply_send(_message):
-        return None
-
-    def stop_reply() -> None:
-        nonlocal reply_stopped
-        reply_stopped = True
-
     project = tmp_path / "project"
     graph_root = tmp_path / "graph"
     project.mkdir()
     event = SimpleNamespace(
         unified_msg_origin="webchat:FriendMessage:session-1",
-        send=stale_send,
-    )
-    reply_event = SimpleNamespace(
-        unified_msg_origin=event.unified_msg_origin,
-        message_str="continue",
-        send=reply_send,
-        stop_event=stop_reply,
     )
     context = Context()
     runner = UnderstandAnythingRunner(
@@ -1870,29 +1838,15 @@ async def test_runner_understandignore_prompt_uses_context_proactive_send(
         {"graph_root": str(graph_root)},
     )
 
-    task = asyncio.create_task(
-        runner._confirm_understandignore(
-            job,
-            event,  # type: ignore[arg-type]
-            timeout_seconds=5,
-        )
+    confirmed = await runner._confirm_understandignore(
+        job,
+        event,  # type: ignore[arg-type]
+        timeout_seconds=5,
     )
-    for _ in range(100):
-        await asyncio.sleep(0.01)
-        if context.messages:
-            break
-    else:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        pytest.fail("Understand ignore confirmation prompt was not sent.")
-
-    await SessionWaiter.trigger(event.unified_msg_origin, reply_event)  # type: ignore[arg-type]
-    confirmed = await task
 
     assert confirmed is True
-    assert reply_stopped is True
-    assert context.messages[0][0] == "webchat:FriendMessage:session-1"
-    assert "扫描范围确认：project" in context.messages[0][1]
+    assert context.messages == []
+    assert (graph_root / ".understandignore").is_file()
 
 
 @pytest.mark.asyncio
@@ -1990,7 +1944,7 @@ async def test_runner_github_notifications_start_agent_without_scope_confirmatio
     runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
     event = SimpleNamespace(
         unified_msg_origin="webchat:FriendMessage:session-1",
-        message_str="/understand analyze https://github.com/AstrBotDevs/AstrBot",
+        message_str="/understand 分析 https://github.com/AstrBotDevs/AstrBot",
     )
     job = await runner.start_skill_job(
         skill_name="understand",
@@ -2007,17 +1961,20 @@ async def test_runner_github_notifications_start_agent_without_scope_confirmatio
         index for index, message in enumerate(messages) if "开始生成图谱：AstrBot" in message
     )
     assert 0 < agent_index
-    assert "扫描范围确认：AstrBot" not in "\n".join(messages)
+    old_scope_text = "扫描范围" + "确认：AstrBot"
+    assert old_scope_text not in "\n".join(messages)
 
 
 @pytest.mark.asyncio
-async def test_waiting_confirmation_status_question_does_not_update_ignore_rules(
+async def test_auto_scan_rules_do_not_register_chat_waiter_or_prompt(
     tmp_path: Path,
 ) -> None:
-    from astrbot.core.utils.session_waiter import SessionWaiter
-
     class Context:
-        async def send_message(self, _session, _message):
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        async def send_message(self, _session, message):
+            self.messages.append(message.get_plain_text())
             return True
 
     project = tmp_path / "project"
@@ -2026,19 +1983,9 @@ async def test_waiting_confirmation_status_question_does_not_update_ignore_rules
     event = SimpleNamespace(
         unified_msg_origin="webchat:FriendMessage:session-1",
     )
-    replies: list[str] = []
-
-    async def reply_send(message):
-        replies.append(message.get_plain_text())
-
-    reply_event = SimpleNamespace(
-        unified_msg_origin=event.unified_msg_origin,
-        message_str="现在进度怎么样",
-        send=reply_send,
-        stop_event=lambda: None,
-    )
+    context = Context()
     runner = UnderstandAnythingRunner(
-        context=Context(),  # type: ignore[arg-type]
+        context=context,  # type: ignore[arg-type]
         registry_path=tmp_path / "projects.json",
     )
     job = runner.jobs.create(
@@ -2051,32 +1998,21 @@ async def test_waiting_confirmation_status_question_does_not_update_ignore_rules
         },
     )
 
-    task = asyncio.create_task(
-        runner._confirm_understandignore(
-            job,
-            event,  # type: ignore[arg-type]
-            timeout_seconds=5,
-        )
+    applied = await runner._confirm_understandignore(
+        job,
+        event,  # type: ignore[arg-type]
+        timeout_seconds=5,
     )
-    for _ in range(100):
-        await asyncio.sleep(0.01)
-        if runner.jobs.get(job.job_id).status is JobStatus.WAITING_CONFIRMATION:
-            break
-    else:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        pytest.fail("Job did not enter confirmation state.")
 
-    await SessionWaiter.trigger(event.unified_msg_origin, reply_event)  # type: ignore[arg-type]
-    await asyncio.sleep(0.01)
-
+    snapshot = runner.jobs.get(job.job_id)
+    assert applied is True
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.QUEUED
+    assert snapshot.confirmation is None
+    assert runner._confirmation_futures == {}
+    assert context.messages == []
     ignore_content = (graph_root / ".understandignore").read_text(encoding="utf-8")
     assert "现在进度怎么样" not in ignore_content
-    assert any("分析状态：Demo" in reply for reply in replies)
-    assert runner.jobs.get(job.job_id).status is JobStatus.WAITING_CONFIRMATION
-
-    runner.confirm_job(job.job_id, action="cancel", source="test")
-    await task
 
 
 @pytest.mark.asyncio

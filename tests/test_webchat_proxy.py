@@ -267,11 +267,9 @@ def test_main_llm_tools_resolve_default_project_from_webchat_context() -> None:
     assert "self.webchat_context_store = self.web_api.webchat_proxy.context_store" in source
     assert "def _effective_project_kwargs(" in source
     assert "def _effective_status_project_ref(" in source
-    assert "self._effective_status_project_ref(event, project)" in source
-    assert "**self._effective_project_kwargs(event, project)" in source
-    assert source.count(
-        "project_kwargs = self._effective_project_kwargs(event, project_path)",
-    ) == 2
+    assert "project_hint or self._effective_status_project_ref(event)" in source
+    assert "project_kwargs=self._effective_project_kwargs(event, project_hint)" in source
+    assert "project_kwargs=self._effective_project_kwargs(event, project_hint)," in source
     assert "unified_msg_origin" in source
 
 

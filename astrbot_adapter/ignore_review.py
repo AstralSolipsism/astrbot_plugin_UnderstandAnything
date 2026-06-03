@@ -72,8 +72,6 @@ DETECTED_DIRECTORY_CANDIDATES = (
 )
 
 TEST_FILE_PATTERNS = ("*.test.*", "*.spec.*", "*.snap")
-CONTINUE_WORDS = {"继续", "确认", "开始", "运行", "ok", "yes", "y", "continue", "go"}
-CANCEL_WORDS = {"取消", "停止", "cancel", "stop", "no", "n"}
 
 
 def build_ignore_confirmation(
@@ -102,8 +100,9 @@ def build_ignore_confirmation(
             "current_exclusions": current_exclusions,
         },
         "instructions": (
-            "Reply with continue/ok to proceed, cancel to stop, "
-            "exclude <patterns> to add exclusions, or include <patterns> to force include."
+            "Scan rules are generated automatically. Edit this content from the "
+            "Dashboard project ignore editor when rerunning analysis needs a "
+            "different scope."
         ),
         "expires_at": time.time() + timeout_seconds,
     }
@@ -150,33 +149,6 @@ def write_ignore_content(graph_root: Path, content: str) -> str:
     normalized = content.replace("\r\n", "\n").strip()
     ignore_path.write_text(normalized + ("\n" if normalized else ""), encoding="utf-8")
     return ignore_path.read_text(encoding="utf-8")
-
-
-def apply_confirmation_reply(graph_root: Path, reply: str) -> tuple[str, str]:
-    action, payload = parse_confirmation_reply(reply)
-    if action != "update":
-        return action, ""
-    content = append_ignore_patterns(graph_root, payload)
-    return action, content
-
-
-def parse_confirmation_reply(reply: str) -> tuple[str, list[str]]:
-    text = str(reply or "").strip()
-    normalized = text.casefold()
-    if normalized in CONTINUE_WORDS:
-        return "continue", []
-    if normalized in CANCEL_WORDS:
-        return "cancel", []
-
-    for prefix in ("排除", "exclude"):
-        payload = _strip_prefix(text, prefix)
-        if payload is not None:
-            return "update", _patterns_from_text(payload, force_include=False)
-    for prefix in ("包含", "保留", "include"):
-        payload = _strip_prefix(text, prefix)
-        if payload is not None:
-            return "update", _patterns_from_text(payload, force_include=True)
-    return "unknown", []
 
 
 def append_ignore_patterns(graph_root: Path, patterns: list[str]) -> str:
@@ -324,32 +296,6 @@ def _matches_directory_pattern(rel_path: str, pattern: str) -> bool:
         rel,
         f"*/{normalized}/*",
     )
-
-
-def _strip_prefix(text: str, prefix: str) -> str | None:
-    pattern = rf"^\s*{re.escape(prefix)}(?:\s+|:|：)(.*)$"
-    match = re.match(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-    return match.group(1).strip() if match else None
-
-
-def _patterns_from_text(text: str, *, force_include: bool) -> list[str]:
-    cleaned = text.replace("```", "").replace("，", "\n").replace(",", "\n")
-    parts: list[str] = []
-    for line in cleaned.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if " " in stripped and not any(
-            char in stripped for char in ("/", "\\", "*", "!")
-        ):
-            parts.extend(item.strip() for item in stripped.split() if item.strip())
-        else:
-            parts.append(stripped)
-    if force_include:
-        return [
-            pattern if pattern.startswith("!") else f"!{pattern}" for pattern in parts
-        ]
-    return parts
 
 
 def _normalize_pattern(pattern: str) -> str:

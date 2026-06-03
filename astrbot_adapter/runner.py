@@ -33,12 +33,7 @@ from .github_repo import (
     GitHubRepoError,
     GitHubRepoManager,
 )
-from .ignore_review import (
-    apply_confirmation_reply,
-    build_ignore_confirmation,
-    parse_confirmation_reply,
-    write_ignore_content,
-)
+from .ignore_review import build_ignore_confirmation, write_ignore_content
 from .job_request import format_job_args, parse_job_args, quote_arg, split_args
 from .job_store import JobSnapshot, JobStatus, JobStore
 from .llm_dispatcher import LLMDispatcher, read_prompt_file
@@ -681,32 +676,6 @@ class UnderstandAnythingRunner:
             f"查看进度：{status_command}"
         )
 
-    def format_tool_job_submitted_message(self, job: JobSnapshot) -> str:
-        if not job.args.get("started_notification_sent"):
-            return self.format_job_source_started_message(
-                job,
-                job_label=str(job.args.get("job_label") or "analysis"),
-            )
-        locale = self._job_locale(job)
-        name = self._job_display_name(job)
-        return self._localized(
-            locale,
-            zh=(
-                f"内部状态：{name} 源码准备中；用户可见的源码准备通知已由插件发送。"
-                "不要复述为分析正在运行。"
-            ),
-            en=(
-                f"Internal status: source preparation for {name} is in progress; "
-                "the plugin already sent the user-facing source preparation "
-                "notification. Do not describe the analysis as running."
-            ),
-            ru=(
-                f"Внутренний статус: идет подготовка исходного кода для {name}; "
-                "плагин уже отправил пользователю уведомление о подготовке "
-                "исходного кода. Не описывайте анализ как выполняющийся."
-            ),
-        )
-
     def format_job_status(self, project_ref: str | None = None) -> str:
         job, ambiguous = self._select_status_job(project_ref)
         locale = self._resolve_output_locale()
@@ -789,15 +758,11 @@ class UnderstandAnythingRunner:
             lines.append(
                 self._localized(
                     locale,
-                    zh="操作：回复 `继续` / `取消`，或更新 .understandignore 规则。",
+                    zh="范围规则：已生成，可在 Dashboard 查看或调整。",
                     en=(
-                        "Action: reply `continue` / `cancel`, or update "
-                        ".understandignore rules."
+                        "Scan rules: generated and available in the Dashboard."
                     ),
-                    ru=(
-                        "Действие: ответьте `continue` / `cancel` или обновите "
-                        "правила .understandignore."
-                    ),
+                    ru="Правила сканирования созданы и доступны в Dashboard.",
                 )
             )
         if job.error and failed_step:
@@ -1107,18 +1072,9 @@ class UnderstandAnythingRunner:
         if phase == "confirmation":
             message = self._localized(
                 locale,
-                zh=(
-                    f"需要确认扫描范围：{name}\n"
-                    "回复：继续 / 取消，或更新 .understandignore 规则。"
-                ),
-                en=(
-                    f"Scan scope needs confirmation: {name}\n"
-                    "Reply: continue / cancel, or update .understandignore rules."
-                ),
-                ru=(
-                    f"Нужно подтвердить область сканирования: {name}\n"
-                    "Ответьте: continue / cancel или обновите .understandignore."
-                ),
+                zh=f"范围规则已生成：{name}\n可在 Dashboard 查看或调整。",
+                en=f"Scan rules generated: {name}\nReview them in the Dashboard.",
+                ru=f"Правила сканирования созданы: {name}\nПроверьте их в Dashboard.",
             )
             return "progress:confirmation", message
         if phase == "agent":
@@ -1142,15 +1098,15 @@ class UnderstandAnythingRunner:
             locale,
             zh=(
                 f"分析完成：{name}\n"
-                f"可以使用 /understand chat --project {project_ref} <问题>"
+                f"可以继续使用 /understand 询问 {project_ref} 的问题"
             ),
             en=(
                 f"Analysis finished: {name}\n"
-                f"Ask questions with /understand chat --project {project_ref} <query>"
+                f"Ask follow-up questions with /understand about {project_ref}."
             ),
             ru=(
                 f"Анализ завершен: {name}\n"
-                f"Задавайте вопросы: /understand chat --project {project_ref} <вопрос>"
+                f"Задавайте вопросы через /understand о {project_ref}."
             ),
         )
 
@@ -1438,123 +1394,13 @@ class UnderstandAnythingRunner:
             graph_root,
             timeout_seconds=timeout_seconds,
         )
-        self.jobs.mark_waiting_confirmation(job.job_id, confirmation)
-        self.jobs.append_log(job.job_id, "Waiting for .understandignore confirmation.")
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
-        self._confirmation_futures[job.job_id] = future
-        try:
-            if event is not None:
-                await self._wait_for_message_confirmation(job, event, timeout_seconds)
-            else:
-                await self._wait_for_dashboard_confirmation(job, timeout_seconds)
-        except (TimeoutError, asyncio.TimeoutError):
-            self.jobs.mark_cancelled(
-                job.job_id, "Understand ignore confirmation timed out."
-            )
-            return False
-        finally:
-            self._confirmation_futures.pop(job.job_id, None)
-
-        snapshot = self.jobs.get(job.job_id)
-        if snapshot is None or snapshot.status is not JobStatus.QUEUED:
-            return False
+        job.args["ignore_rules"] = {
+            "ignore_path": confirmation.get("ignore_path"),
+            "summary": confirmation.get("summary", {}),
+            "source": "auto",
+        }
+        self.jobs.append_log(job.job_id, "Default .understandignore rules applied.")
         return True
-
-    async def _wait_for_dashboard_confirmation(
-        self,
-        job: JobSnapshot,
-        timeout_seconds: int,
-    ) -> None:
-        future = self._confirmation_futures[job.job_id]
-        await asyncio.wait_for(future, timeout_seconds)
-
-    async def _wait_for_message_confirmation(
-        self,
-        job: JobSnapshot,
-        event: AstrMessageEvent,
-        timeout_seconds: int,
-    ) -> None:
-        from astrbot.core.utils.session_waiter import SessionController, session_waiter
-
-        @session_waiter(timeout_seconds)
-        async def waiter(
-            controller: SessionController,
-            reply_event: AstrMessageEvent,
-        ) -> None:
-            reply_text = str(getattr(reply_event, "message_str", "") or "")
-            action, _payload = parse_confirmation_reply(reply_text)
-            if action == "unknown":
-                await reply_event.send(
-                    MessageChain().message(
-                        self._confirmation_fallback_message(job, reply_text),
-                    ),
-                )
-                controller.keep(timeout_seconds, reset_timeout=True)
-                reply_event.stop_event()
-                return
-            snapshot = self.confirm_job_from_message(
-                job.job_id,
-                reply_text,
-                source="conversation",
-            )
-            if action == "update":
-                await reply_event.send(
-                    MessageChain().message(
-                        self._confirmation_message(job)
-                        + "\n\n"
-                        + self._localized(
-                            self._job_locale(job),
-                            zh="规则已更新。回复 `继续` 开始分析，或继续发送 `排除 ...` / `包含 ...`。",
-                            en=(
-                                "Rules updated. Reply `continue` to start analysis, "
-                                "or keep sending `exclude ...` / `include ...`."
-                            ),
-                            ru=(
-                                "Правила обновлены. Ответьте `continue`, чтобы начать "
-                                "анализ, или продолжайте отправлять `exclude ...` / "
-                                "`include ...`."
-                            ),
-                        )
-                    ),
-                )
-                controller.keep(timeout_seconds, reset_timeout=True)
-                reply_event.stop_event()
-                return
-            if snapshot.status is JobStatus.CANCELLED:
-                await reply_event.send(
-                    MessageChain().message(
-                        self._localized(
-                            self._job_locale(job),
-                            zh="已取消 Understand Anything 分析。",
-                            en="Understand Anything analysis cancelled.",
-                            ru="Анализ Understand Anything отменен.",
-                        )
-                    )
-                )
-            else:
-                await reply_event.send(
-                    MessageChain().message(
-                        self._localized(
-                            self._job_locale(job),
-                            zh="已确认，开始分析。",
-                            en="Confirmed. Starting analysis.",
-                            ru="Подтверждено. Анализ начинается.",
-                        )
-                    )
-                )
-            controller.stop()
-            reply_event.stop_event()
-
-        waiter_task = asyncio.create_task(waiter(event))
-        await asyncio.sleep(0)
-        await self._send_job_chat_message(
-            job,
-            event,
-            self._confirmation_message(job),
-            key="confirmation:understandignore",
-        )
-        await waiter_task
 
     def _confirmation_message(self, job: JobSnapshot) -> str:
         snapshot = self.jobs.get(job.job_id)
@@ -1562,9 +1408,9 @@ class UnderstandAnythingRunner:
         if not confirmation:
             return self._localized(
                 self._job_locale(job),
-                zh=f"扫描范围确认：{self._job_display_name(job)}",
-                en=f"Confirm scan scope: {self._job_display_name(job)}",
-                ru=f"Подтвердите область сканирования: {self._job_display_name(job)}",
+                zh=f"范围规则：{self._job_display_name(job)}",
+                en=f"Scan rules: {self._job_display_name(job)}",
+                ru=f"Правила сканирования: {self._job_display_name(job)}",
             )
         summary = confirmation.get("summary", {})
         detected_dirs = ", ".join(summary.get("detected_dirs", [])) or "none"
@@ -1575,32 +1421,29 @@ class UnderstandAnythingRunner:
         return self._localized(
             locale,
             zh=(
-                f"扫描范围确认：{name}\n"
+                f"范围规则：{name}\n"
                 f"建议排除目录：{detected_dirs}\n"
                 f"已采纳 .gitignore 建议：{gitignore_count} 条\n"
                 f"{exclusion_tree}\n"
                 f"查看进度：{self._status_command(job)}\n\n"
-                "回复 `继续` 开始分析，回复 `取消` 停止。\n"
-                "需要调整范围时，发送 `排除 tests/ docs/` 或 `包含 dist/`。"
+                "需要调整范围时，请在 Dashboard 编辑 ignore 规则，或用 `/understand 重新分析，忽略 <路径>`。"
             ),
             en=(
-                f"Scan scope confirmation: {name}\n"
+                f"Scan rules: {name}\n"
                 f"Suggested excluded directories: {detected_dirs}\n"
                 f".gitignore suggestions applied: {gitignore_count}\n"
                 f"{exclusion_tree}\n"
                 f"Progress: {self._status_command(job)}\n\n"
-                "Reply `continue` to start analysis, or `cancel` to stop.\n"
-                "To adjust scope, send `exclude tests/ docs/` or `include dist/`."
+                "Adjust ignore rules in the Dashboard, or rerun with `/understand 重新分析，忽略 <path>`."
             ),
             ru=(
-                f"Подтверждение области сканирования: {name}\n"
+                f"Правила сканирования: {name}\n"
                 f"Рекомендуемые исключения: {detected_dirs}\n"
                 f"Применено правил из .gitignore: {gitignore_count}\n"
                 f"{exclusion_tree}\n"
                 f"Статус: {self._status_command(job)}\n\n"
-                "Ответьте `continue`, чтобы начать анализ, или `cancel`, чтобы "
-                "остановить.\nДля изменения области отправьте `exclude tests/ docs/` "
-                "или `include dist/`."
+                "Изменить правила можно в Dashboard или повторным запуском "
+                "`/understand 重新分析，忽略 <path>`."
             ),
         )
 
@@ -1663,50 +1506,6 @@ class UnderstandAnythingRunner:
         walk(tree, 0)
         return lines
 
-    def _confirmation_fallback_message(self, job: JobSnapshot, message: str) -> str:
-        locale = self._job_locale(job)
-        if self._status_command_requested(message):
-            project_ref = self._status_ref_from_command(message)
-            return self.format_job_status(project_ref or self._status_ref_for_job(job))
-        if self._is_status_query(message):
-            return (
-                self.format_job_status(self._status_ref_for_job(job))
-                + "\n\n"
-                + self._localized(
-                    locale,
-                    zh="当前仍在等待扫描范围确认。回复 `继续` 开始分析，或 `取消` 停止。",
-                    en=(
-                        "The job is still waiting for scan scope confirmation. "
-                        "Reply `continue` to start analysis, or `cancel` to stop."
-                    ),
-                    ru=(
-                        "Задача ожидает подтверждения области сканирования. "
-                        "Ответьте `continue`, чтобы начать, или `cancel`, чтобы "
-                        "остановить."
-                    ),
-                )
-            )
-        return self._localized(
-            locale,
-            zh=(
-                "当前需要先确认扫描范围。\n"
-                "可回复：`继续`、`取消`、`排除 tests/ docs/`、`包含 dist/`。\n"
-                "查看进度可以直接问“进度怎么样”。"
-            ),
-            en=(
-                "Please confirm the scan scope first.\n"
-                "You can reply: `continue`, `cancel`, `exclude tests/ docs/`, "
-                "`include dist/`.\n"
-                "Ask `status?` to check progress."
-            ),
-            ru=(
-                "Сначала подтвердите область сканирования.\n"
-                "Можно ответить: `continue`, `cancel`, `exclude tests/ docs/`, "
-                "`include dist/`.\n"
-                "Спросите `status?`, чтобы проверить прогресс."
-            ),
-        )
-
     @staticmethod
     def _is_status_query(message: str) -> bool:
         text = str(message or "").strip().casefold()
@@ -1730,19 +1529,6 @@ class UnderstandAnythingRunner:
         ):
             return True
         return False
-
-    @staticmethod
-    def _status_command_requested(message: str) -> bool:
-        text = str(message or "").strip().casefold()
-        return text.startswith(("/understand status", "understand status"))
-
-    @staticmethod
-    def _status_ref_from_command(message: str) -> str | None:
-        text = str(message or "").strip()
-        for prefix in ("/understand status", "understand status"):
-            if text.casefold().startswith(prefix):
-                return text[len(prefix) :].strip() or None
-        return None
 
     def confirm_job(
         self,
@@ -1771,7 +1557,7 @@ class UnderstandAnythingRunner:
             return self.jobs._require(job_id)
         if normalized == "cancel":
             self.jobs.mark_cancelled(
-                job_id, "User cancelled .understandignore confirmation."
+                job_id, "User cancelled analysis before applying scan rules."
             )
             self._resolve_confirmation(job_id, "cancel")
             return self.jobs._require(job_id)
@@ -1780,32 +1566,10 @@ class UnderstandAnythingRunner:
                 write_ignore_content(graph_root, content)
             self.jobs.clear_confirmation(job_id)
             self.jobs.mark_queued(job_id)
-            self.jobs.append_log(job_id, f".understandignore confirmed from {source}.")
+            self.jobs.append_log(job_id, f".understandignore accepted from {source}.")
             self._resolve_confirmation(job_id, "continue")
             return self.jobs._require(job_id)
         raise ValueError(f"Unsupported confirmation action: {action}")
-
-    def confirm_job_from_message(
-        self,
-        job_id: str,
-        message: str,
-        *,
-        source: str,
-    ) -> JobSnapshot:
-        action, content = apply_confirmation_reply(
-            self._job_graph_root(self.jobs._require(job_id)), message
-        )
-        if action == "update":
-            confirmation = build_ignore_confirmation(
-                self.jobs._require(job_id).project_root,
-                self._job_graph_root(self.jobs._require(job_id)),
-            )
-            confirmation["content"] = content
-            confirmation["source"] = source
-            self.jobs.mark_waiting_confirmation(job_id, confirmation)
-            self.jobs.append_log(job_id, f".understandignore updated from {source}.")
-            return self.jobs._require(job_id)
-        return self.confirm_job(job_id, action=action, source=source)
 
     def _resolve_confirmation(self, job_id: str, value: str) -> None:
         future = self._confirmation_futures.get(job_id)
@@ -2224,7 +1988,7 @@ class UnderstandAnythingRunner:
         return quote_arg(self._status_ref_for_job(job))
 
     def _status_command(self, job: JobSnapshot) -> str:
-        return f"/understand status {self._command_status_ref(job)}"
+        return f"/understand 状态 {self._command_status_ref(job)}"
 
     @staticmethod
     def _initial_project_display_name(
@@ -2306,9 +2070,9 @@ class UnderstandAnythingRunner:
             ),
             JobStatus.WAITING_CONFIRMATION: self._localized(
                 locale,
-                zh="等待确认",
-                en="waiting for confirmation",
-                ru="ожидает подтверждения",
+                zh="范围规则已生成",
+                en="scan rules ready",
+                ru="правила сканирования готовы",
             ),
             JobStatus.FINISHED: self._localized(
                 locale,
@@ -2343,9 +2107,9 @@ class UnderstandAnythingRunner:
             ),
             "confirmation": self._localized(
                 locale,
-                zh="确认扫描范围",
-                en="confirm scan scope",
-                ru="подтверждение области сканирования",
+                zh="范围规则",
+                en="scan rules",
+                ru="правила сканирования",
             ),
             "runtime": self._localized(
                 locale,

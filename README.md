@@ -23,37 +23,49 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 
 ## 命令
 
-- `/understand analyze [path|https://github.com/owner/repo[/tree/<branch-or-tag>[/sub/path]]] [--full|--auto-update|--no-auto-update|--review] [--github-proxy <preset>]`
-- `/understand status [project-name|alias|path]`
-- `/understand dashboard [path]`
-- `/understand chat [--project <name|id|alias>] <query>`
-- `/understand diff [--project <name|id|alias>|path]`
-- `/understand domain [path] [--full]`
-- `/understand explain [--project <name|id|alias>] <file-path[:symbol]>`
-- `/understand knowledge <wiki-directory>`
-- `/understand onboard [--project <name|id|alias>|path]`
+聊天侧只暴露一个自然语言入口：
+
+- `/understand <任务>`
+
+常见用法：
+
+- `/understand 分析 D:\AboutDEV\AstrBot`
+- `/understand 分析 https://github.com/owner/repo`
+- `/understand 状态`
+- `/understand 停止当前分析`
+- `/understand 打开面板`
+- `/understand 诊断`
+- `/understand 修复插件运行依赖`
+- `/understand 重新分析 AstrBot，忽略 tests dist node_modules`
+- `/understand AstrBot 的 WebChat 代理是怎么接上的？`
+- `/understand 解释 webchat_proxy.py 的职责`
+- `/understand 分析这次 git diff 的风险`
+- `/understand 给这个项目生成新手上手说明`
+
+旧的多子命令入口已经移除。聊天入口会先用规则和状态机处理明确操作；
+只有模糊意图解析才会使用一次轻量 LLM。状态、停止、打开面板、诊断、
+修复、明确路径分析、GitHub URL 分析和重新分析不会调用 LLM。
 
 ## 项目空间
 
-`/understand analyze` 成功启动分析时会把目标项目登记到 AstrBot 插件数据目录：
+`/understand 分析 <项目路径或 GitHub 地址>` 成功启动分析时会把目标项目登记到 AstrBot 插件数据目录：
 `data/plugin_data/astrbot_plugin_UnderstandAnything/projects.json`。
 
 登记记录包含 `project_id`、`name`、`aliases`、`path`、`graph_root`、
 `last_job_id`、`last_analyzed_at` 和 `auto_update`。项目名优先取图谱里的
-`project.name`，缺失时使用目录名；聊天状态查询使用项目名、别名或路径，
-例如 `/understand status AstrBot` 或 `/understand status AstrBotDevs/AstrBot`。
+`project.name`，缺失时使用目录名；聊天状态和问答会使用项目名、别名或路径，
+例如 `/understand 状态 AstrBot` 或 `/understand AstrBot 的入口在哪里？`。
 
 聊天、解释、diff 和 onboarding 会按以下顺序解析项目：
 
-1. 显式 `--project <name|id|alias>`。
-2. 显式项目路径。
+1. 自然语言中明确提到的项目名、别名或路径。
+2. WebChat/Dashboard 当前上下文中的项目引用。
 3. 只有一个已登记项目时使用该项目。
 
-如果已经登记多个项目且未指定 `--project`，插件会拒绝执行并返回可用项目列表，
+如果已经登记多个项目且用户没有说明项目名、别名或路径，插件会拒绝执行并返回可用项目列表，
 避免跨会话误用上一次分析的项目。
 
-Dashboard API 同样支持 `project_id`、`project_name`、`project_path`，并提供
-`GET /api/plug/astrbot_plugin_UnderstandAnything/projects` 供页面列出项目。
+Dashboard API 同样支持 `project_id`、`project_name`、`project_path`，供页面列出项目。
 
 ## 输出
 
@@ -101,8 +113,8 @@ Dashboard 保留参考项目 React 体验，只调整数据访问层：
 `/tree/<branch-or-tag>/<sub/path>` 地址时，插件会自动解析分支或标签，并只分析该子目录。
 
 GitHub 访问默认使用自动模式：先直连 GitHub；如果 `ls-remote`、`clone` 或 `fetch`
-出现可重试网络错误，会依次切换内置代理预设。Dashboard 代理下拉框和
-`--github-proxy <preset>` 只表示“优先使用该预设”，失败后仍会继续尝试直连和其他内置预设。
+出现可重试网络错误，会依次切换内置代理预设。Dashboard 代理下拉框只表示“优先使用该预设”，
+失败后仍会继续尝试直连和其他内置预设。
 
 `auto_build` 表示是否允许插件在首次使用时自动修复缺失的内置运行依赖。关闭后，如果
 `understand-anything/node_modules` 或必要 `dist` 缺失，Dashboard 会提示手动执行“修复插件运行依赖”。
