@@ -88,6 +88,53 @@ describe("project-scoped dashboard state", () => {
     expect(cleared.viewMode).toBe("structural");
   });
 
+  it("uses synchronous search without creating a worker in AstrBot plugin page contexts", () => {
+    const originalWindow = globalThis.window;
+    const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, "window");
+    const originalWorker = globalThis.Worker;
+    const workerCtor = vi.fn();
+
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          pathname: "/api/plugin/page/content/astrbot_plugin_UnderstandAnything/dashboard/",
+          search: "?asset_token=token",
+        },
+      },
+    });
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      value: workerCtor,
+    });
+
+    try {
+      const state = useDashboardStore.getState();
+      state.setSearchQuery("index");
+      state.setGraph(graph("plugin-page"));
+
+      const updated = useDashboardStore.getState();
+      expect(workerCtor).not.toHaveBeenCalled();
+      expect(updated.searchEngine).not.toBeNull();
+      expect(updated.searchResults.map((result) => result.nodeId)).toEqual([
+        "plugin-page:node",
+      ]);
+    } finally {
+      if (hadWindow) {
+        Object.defineProperty(globalThis, "window", {
+          configurable: true,
+          value: originalWindow,
+        });
+      } else {
+        Reflect.deleteProperty(globalThis, "window");
+      }
+      Object.defineProperty(globalThis, "Worker", {
+        configurable: true,
+        value: originalWorker,
+      });
+    }
+  });
+
   it("falls back to synchronous search when sandboxing blocks worker creation", () => {
     const originalWorker = globalThis.Worker;
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);

@@ -9,6 +9,7 @@ import type {
 } from "@understand-anything/core/types";
 import type { ReactFlowInstance } from "@xyflow/react";
 import type { GraphRendererController } from "./canvas/graphRendererController";
+import { isAstrBotPluginPageContext } from "./utils/pluginPageContext";
 
 export type Persona = "non-technical" | "junior" | "experienced";
 export type NavigationLevel = "overview" | "layer-detail";
@@ -150,7 +151,7 @@ let searchWorkerVersion = 0;
 let searchRequestId = 0;
 
 function canUseSearchWorker(): boolean {
-  return !searchWorkerDisabled && typeof Worker !== "undefined";
+  return !isAstrBotPluginPageContext() && !searchWorkerDisabled && typeof Worker !== "undefined";
 }
 
 function disableSearchWorker(error: unknown): null {
