@@ -125,8 +125,8 @@ function dataUrl(fileName: string, token: string | null): string {
 }
 
 /**
- * Resolve the access token from the URL query string or sessionStorage.
- * If found in the URL, persist to sessionStorage and strip the param from the address bar.
+ * Resolve the access token from the URL query string or safe browser storage.
+ * If found in the URL, persist it when storage is available and strip the param.
  */
 function resolveInitialToken(): string | null {
   if (isAstrBotPluginPageContext()) return "__astrbot__";

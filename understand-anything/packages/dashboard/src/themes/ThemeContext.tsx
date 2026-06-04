@@ -11,6 +11,7 @@ import type { HeadingFont, PresetId, ThemeConfig, ThemePreset } from "./types.ts
 import { DEFAULT_THEME_CONFIG } from "./types.ts";
 import { getPreset } from "./presets.ts";
 import { applyTheme } from "./theme-engine.ts";
+import { getStorageItem, setStorageItem } from "../utils/safeBrowser.ts";
 
 const STORAGE_KEY = "ua-theme";
 
@@ -24,9 +25,9 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function loadFromLocalStorage(): ThemeConfig | null {
+function loadStoredTheme(): ThemeConfig | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = getStorageItem("local", STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed.presetId === "string" && typeof parsed.accentId === "string") {
@@ -38,16 +39,16 @@ function loadFromLocalStorage(): ThemeConfig | null {
   }
 }
 
-function saveToLocalStorage(config: ThemeConfig): void {
+function saveStoredTheme(config: ThemeConfig): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    setStorageItem("local", STORAGE_KEY, JSON.stringify(config));
   } catch {
     // Storage full or unavailable — ignore
   }
 }
 
 function resolveInitialTheme(metaTheme?: ThemeConfig | null): ThemeConfig {
-  return loadFromLocalStorage() ?? metaTheme ?? DEFAULT_THEME_CONFIG;
+  return loadStoredTheme() ?? metaTheme ?? DEFAULT_THEME_CONFIG;
 }
 
 interface ThemeProviderProps {
@@ -63,14 +64,14 @@ export function ThemeProvider({ metaTheme, children }: ThemeProviderProps) {
   useEffect(() => {
     applyTheme(config);
     if (initialized.current) {
-      saveToLocalStorage(config);
+      saveStoredTheme(config);
     }
     initialized.current = true;
   }, [config]);
 
-  // Update if metaTheme arrives later (async fetch) and no localStorage preference exists
+  // Update if metaTheme arrives later and no stored preference exists.
   useEffect(() => {
-    if (metaTheme && !loadFromLocalStorage()) {
+    if (metaTheme && !loadStoredTheme()) {
       setConfig(metaTheme);
     }
   }, [metaTheme]);

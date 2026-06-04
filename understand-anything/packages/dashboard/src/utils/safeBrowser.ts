@@ -34,6 +34,14 @@ export function removeStorageItem(kind: StorageKind, key: string): void {
 
 export function safeReplaceState(url: string): void {
   try {
+    const search = window.location?.search ?? "";
+    const pathname = window.location?.pathname ?? "";
+    if (
+      pathname.includes("/api/plugin/page/content/") ||
+      new URLSearchParams(search).has("asset_token")
+    ) {
+      return;
+    }
     window.history.replaceState(null, "", url);
   } catch {
     // Sandboxed plugin iframes may reject same-document URL mutations.
