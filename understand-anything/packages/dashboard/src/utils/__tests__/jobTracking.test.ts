@@ -9,6 +9,7 @@ import {
   projectAnalysisTarget,
   recentActivity,
   selectRecoverableJob,
+  visibleProjectError,
 } from "../jobTracking";
 
 function job(
@@ -33,6 +34,14 @@ function job(
     },
     created_at: 1,
     updated_at: 1,
+  };
+}
+
+function projectWithError(error = "Previous failed run."): ProjectSummary {
+  return {
+    project_id: "p1",
+    name: "Demo",
+    last_error: error,
   };
 }
 
@@ -67,6 +76,29 @@ describe("dashboard job tracking helpers", () => {
       "Preparing runtime",
     );
     expect(recentActivity(job("j2", "running", "p1"))).toBe("running");
+  });
+
+  it("hides stale project errors once a newer project job is active or finished", () => {
+    const project = projectWithError();
+
+    expect(visibleProjectError(project, job("active", "running", "p1"))).toBeNull();
+    expect(visibleProjectError(project, job("confirm", "waiting_confirmation", "p1"))).toBeNull();
+    expect(visibleProjectError(project, job("done", "finished", "p1"))).toBeNull();
+    expect(visibleProjectError(project, job("cancelled", "cancelled", "p1"))).toBeNull();
+  });
+
+  it("keeps current failed job errors discoverable when no newer job supersedes them", () => {
+    const project = projectWithError();
+    const failedJob = {
+      ...job("failed", "failed", "p1"),
+      error: "Current failed run.",
+    };
+
+    expect(visibleProjectError(project, failedJob)).toBe("Current failed run.");
+    expect(visibleProjectError(project, job("failed", "failed", "p1"))).toBe(
+      "Previous failed run.",
+    );
+    expect(visibleProjectError(project, null)).toBe("Previous failed run.");
   });
 
   it("restarts GitHub projects from source metadata and local projects from path", () => {

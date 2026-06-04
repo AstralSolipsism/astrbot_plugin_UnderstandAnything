@@ -3,17 +3,43 @@ import { AlertCircle, CheckCircle2, Clock3, Info, Loader2, TerminalSquare } from
 import { Conversation, ConversationContent, ConversationEmptyState } from "./ai-elements/conversation";
 import { Message, MessageResponse } from "./ai-elements/message";
 import { normalizeJobObservations, type JobObservation, type ObservableJob } from "../utils/jobObservations";
+import { useI18n } from "../i18n";
 
 interface JobObservationConversationProps {
   job: ObservableJob;
 }
 
-function statusLabel(status: string | undefined): string {
-  if (status === "running") return "运行中";
-  if (status === "completed" || status === "succeeded" || status === "finished") return "完成";
-  if (status === "failed") return "失败";
-  if (status === "queued") return "排队";
-  return "记录";
+type Translate = ReturnType<typeof useI18n>["t"];
+type Locale = ReturnType<typeof useI18n>["locale"];
+
+function statusLabel(status: string | undefined, t: Translate): string {
+  if (status === "queued") return t("workspace.jobStatusQueued", "Queued");
+  if (status === "running") return t("workspace.jobStatusRunning", "Running");
+  if (status === "waiting_confirmation") {
+    return t("workspace.jobStatusWaitingConfirmation", "Waiting for confirmation");
+  }
+  if (status === "completed" || status === "succeeded" || status === "finished") {
+    return t("workspace.jobStatusFinished", "Finished");
+  }
+  if (status === "failed") return t("workspace.jobStatusFailed", "Failed");
+  if (status === "cancelled") return t("workspace.jobStatusCancelled", "Cancelled");
+  return t("workspace.jobStatusRecord", "Record");
+}
+
+function terminalJobStatus(status: string | undefined): boolean {
+  return ["completed", "succeeded", "finished", "failed", "cancelled"].includes(status ?? "");
+}
+
+function effectiveObservationStatus(
+  jobStatus: ObservableJob["status"],
+  observation: JobObservation,
+): string | undefined {
+  if (observation.level === "error") return "failed";
+  if (observation.level === "success") return "completed";
+  if (observation.status === "running" && terminalJobStatus(jobStatus)) {
+    return "completed";
+  }
+  return observation.status;
 }
 
 function levelTone(level: JobObservation["level"]): string {
@@ -37,10 +63,10 @@ function LevelIcon({ level, status }: { level: JobObservation["level"]; status?:
   return <Info className="h-3.5 w-3.5" />;
 }
 
-function formatObservationTime(value: string): string {
+function formatObservationTime(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString("zh-CN", { hour12: false });
+  return date.toLocaleTimeString(locale, { hour12: false });
 }
 
 function observationSpeech(observation: JobObservation): string {
@@ -62,7 +88,15 @@ function detailCommand(details: Record<string, unknown> | undefined): string | n
   return typeof command === "string" && command.trim() ? command : null;
 }
 
-function SpeechBubble({ observation, speaker }: { observation: JobObservation; speaker: string }) {
+function SpeechBubble({
+  locale,
+  observation,
+  speaker,
+}: {
+  locale: Locale;
+  observation: JobObservation;
+  speaker: string;
+}) {
   const isError = observation.level === "error";
   const lines = observationLines(observation);
   return (
@@ -75,7 +109,7 @@ function SpeechBubble({ observation, speaker }: { observation: JobObservation; s
                 {speaker}
               </span>
               <span className="min-w-0 truncate">{observation.stage ?? observation.title}</span>
-              <span className="shrink-0 whitespace-nowrap font-mono">{formatObservationTime(observation.createdAt)}</span>
+              <span className="shrink-0 whitespace-nowrap font-mono">{formatObservationTime(observation.createdAt, locale)}</span>
             </div>
             <MessageResponse>{line}</MessageResponse>
           </div>
@@ -85,32 +119,51 @@ function SpeechBubble({ observation, speaker }: { observation: JobObservation; s
   );
 }
 
-function KindLabel({ observation }: { observation: JobObservation }) {
-  const label = observation.kind === "command"
-    ? "命令"
-    : observation.kind === "validation"
-      ? "校验"
-      : observation.kind === "artifact"
-        ? "产物"
-        : observation.kind === "success"
-          ? "完成"
-          : observation.kind === "error"
-            ? "错误"
-            : "系统";
+function kindLabel(observation: JobObservation, t: Translate): string {
+  if (observation.kind === "command") return t("workspace.jobObservationCommand", "Command");
+  if (observation.kind === "validation") {
+    return t("workspace.jobObservationValidation", "Validation");
+  }
+  if (observation.kind === "artifact") return t("workspace.jobObservationArtifact", "Artifact");
+  if (observation.kind === "success") return t("workspace.jobObservationSuccess", "Done");
+  if (observation.kind === "error") return t("workspace.jobObservationError", "Error");
+  return t("workspace.jobObservationSystem", "System");
+}
+
+function KindLabel({
+  effectiveStatus,
+  observation,
+  t,
+}: {
+  effectiveStatus?: string;
+  observation: JobObservation;
+  t: Translate;
+}) {
+  const label = kindLabel(observation, t);
 
   return (
     <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap ${levelTone(observation.level)}`}>
       {observation.kind === "command" ? (
         <TerminalSquare className="h-3.5 w-3.5" />
       ) : (
-        <LevelIcon level={observation.level} status={observation.status} />
+        <LevelIcon level={observation.level} status={effectiveStatus} />
       )}
       {label}
     </span>
   );
 }
 
-function StatusLine({ observation }: { observation: JobObservation }) {
+function StatusLine({
+  effectiveStatus,
+  locale,
+  observation,
+  t,
+}: {
+  effectiveStatus?: string;
+  locale: Locale;
+  observation: JobObservation;
+  t: Translate;
+}) {
   const command = observation.kind === "command" ? detailCommand(observation.details) : null;
   return (
     <div className="flex min-w-0 items-start gap-2 text-xs leading-5">
@@ -118,18 +171,18 @@ function StatusLine({ observation }: { observation: JobObservation }) {
         {observation.kind === "command" ? (
           <TerminalSquare className="h-3.5 w-3.5" />
         ) : (
-          <LevelIcon level={observation.level} status={observation.status} />
+          <LevelIcon level={observation.level} status={effectiveStatus} />
         )}
       </span>
       <div className="min-w-0 flex-1 border-b border-border-subtle/70 pb-2">
         <div className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-hidden">
-          <KindLabel observation={observation} />
+          <KindLabel observation={observation} effectiveStatus={effectiveStatus} t={t} />
           <span className="inline-flex shrink-0 items-center rounded-full border border-border-subtle bg-root/60 px-1.5 py-0.5 text-[11px] whitespace-nowrap text-text-muted">
-            {statusLabel(observation.status)}
+            {statusLabel(effectiveStatus, t)}
           </span>
           <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] whitespace-nowrap text-text-muted">
             <Clock3 className="h-3 w-3" />
-            {formatObservationTime(observation.createdAt)}
+            {formatObservationTime(observation.createdAt, locale)}
           </span>
           <span className="shrink-0 whitespace-nowrap font-medium text-text-primary" title={observation.title}>
             {observation.title}
@@ -148,31 +201,83 @@ function StatusLine({ observation }: { observation: JobObservation }) {
   );
 }
 
-function ObservationMessage({ observation }: { observation: JobObservation }) {
-  if (observation.kind === "assistant") return <SpeechBubble observation={observation} speaker="AstrBot Provider" />;
-  if (observation.kind === "error") return <SpeechBubble observation={observation} speaker="Dashboard" />;
-  return <StatusLine observation={observation} />;
+function ObservationMessage({
+  jobStatus,
+  locale,
+  observation,
+  t,
+}: {
+  jobStatus: ObservableJob["status"];
+  locale: Locale;
+  observation: JobObservation;
+  t: Translate;
+}) {
+  const effectiveStatus = effectiveObservationStatus(jobStatus, observation);
+  if (observation.kind === "assistant") {
+    return (
+      <SpeechBubble
+        locale={locale}
+        observation={observation}
+        speaker={t("workspace.jobSpeakerProvider", "AstrBot Provider")}
+      />
+    );
+  }
+  if (observation.kind === "error") {
+    return (
+      <SpeechBubble
+        locale={locale}
+        observation={observation}
+        speaker={t("workspace.jobSpeakerDashboard", "Dashboard")}
+      />
+    );
+  }
+  return (
+    <StatusLine
+      locale={locale}
+      observation={observation}
+      effectiveStatus={effectiveStatus}
+      t={t}
+    />
+  );
 }
 
 export default function JobObservationConversation({ job }: JobObservationConversationProps) {
+  const { locale, t } = useI18n();
   const observations = useMemo(() => normalizeJobObservations(job), [job]);
 
   return (
-    <Conversation className="h-[420px] rounded-md border border-border-subtle bg-root">
+    <Conversation className="min-h-[240px] rounded-md border border-border-subtle bg-root [height:clamp(260px,38dvh,420px)]">
       <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-2">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">任务对话流</div>
-          <div className="mt-0.5 text-xs text-text-secondary">AstrBot Provider 和 SubAgent 输出会作为消息追加，命令和校验保留为紧凑事件。</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+            {t("workspace.jobConversationTitle", "Task conversation")}
+          </div>
+          <div className="mt-0.5 text-xs text-text-secondary">
+            {t(
+              "workspace.jobConversationDescription",
+              "Provider and SubAgent output is shown as messages; commands and validation stay compact.",
+            )}
+          </div>
         </div>
         <span className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-1 text-[11px] ${levelTone(job.status === "failed" ? "error" : job.status === "succeeded" || job.status === "finished" ? "success" : "info")}`}>
-          {statusLabel(job.status)}
+          {statusLabel(job.status, t)}
         </span>
       </div>
       <ConversationContent className="space-y-3 p-3">
         {observations.length === 0 ? (
-          <ConversationEmptyState>暂无过程观察。</ConversationEmptyState>
+          <ConversationEmptyState>
+            {t("workspace.jobConversationEmpty", "No process observations yet.")}
+          </ConversationEmptyState>
         ) : (
-          observations.map((observation) => <ObservationMessage key={observation.id} observation={observation} />)
+          observations.map((observation) => (
+            <ObservationMessage
+              key={observation.id}
+              jobStatus={job.status}
+              locale={locale}
+              observation={observation}
+              t={t}
+            />
+          ))
         )}
       </ConversationContent>
     </Conversation>

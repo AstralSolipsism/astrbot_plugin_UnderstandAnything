@@ -44,7 +44,9 @@ describe("AstrBot workspace regression guards", () => {
         "jobs/<job_id>",
         "jobs/<job_id>/events",
         "jobs/<job_id>/confirm",
+        "jobs/<job_id>/retry",
         "projects/delete",
+        "projects/check-updates",
         "projects/ignore",
       ]),
     );

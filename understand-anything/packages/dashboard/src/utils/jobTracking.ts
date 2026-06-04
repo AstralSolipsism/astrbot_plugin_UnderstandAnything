@@ -39,6 +39,30 @@ export function jobForProject(
   return projectJobs.find(isActiveJob) ?? projectJobs[0] ?? null;
 }
 
+function storedProjectError(project: ProjectSummary): string | null {
+  const value = project.last_error ?? project.lastError ?? null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function jobError(job: JobSnapshot | null | undefined): string | null {
+  const value = job?.error ?? null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function visibleProjectError(
+  project: ProjectSummary,
+  latestProjectJob: JobSnapshot | null | undefined,
+): string | null {
+  const status = latestProjectJob?.status;
+  if (isActiveJob(latestProjectJob)) return null;
+  if (status === "finished") return null;
+  if (status === "cancelled") return null;
+  if (status === "failed") {
+    return jobError(latestProjectJob) ?? storedProjectError(project);
+  }
+  return storedProjectError(project);
+}
+
 export function selectRecoverableJob(
   jobs: JobSnapshot[],
   currentJob?: JobSnapshot | null,

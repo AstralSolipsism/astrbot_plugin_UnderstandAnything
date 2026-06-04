@@ -48,6 +48,15 @@ export interface ProjectSummary {
   edge_count?: number;
   edgeCount?: number;
   auto_update?: boolean;
+  autoUpdate?: boolean;
+  graph_ready?: boolean;
+  graphReady?: boolean;
+  current_job?: JobSnapshot | null;
+  currentJob?: JobSnapshot | null;
+  recent_job?: JobSnapshot | null;
+  recentJob?: JobSnapshot | null;
+  can_retry?: boolean;
+  canRetry?: boolean;
 }
 
 export interface ProjectIgnorePayload {
@@ -120,6 +129,7 @@ export interface RuntimeReadiness {
   dependency_state: {
     node_modules: boolean;
     core_dist: boolean;
+    assistant_dist: boolean;
     runtime_dist: boolean;
   };
   blocking_reasons: string[];
@@ -131,6 +141,7 @@ export interface RuntimeStatus {
   understand_anything_root: RuntimePathState;
   runtime_dist: RuntimePathState;
   core_dist: RuntimePathState;
+  assistant_dist: RuntimePathState;
   dashboard_dist: RuntimePathState;
   dashboard_page: RuntimePathState;
   node_modules: RuntimePathState;
@@ -258,6 +269,8 @@ export interface JobSnapshot {
   startedAt?: string | null;
   endedAt?: string | null;
   durationMs?: number;
+  can_retry?: boolean;
+  canRetry?: boolean;
   summary?: string | null;
   created_at: number;
   updated_at: number;

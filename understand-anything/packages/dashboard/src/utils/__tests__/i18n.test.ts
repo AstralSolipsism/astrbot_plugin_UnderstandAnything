@@ -103,6 +103,24 @@ describe("dashboard i18n", () => {
     );
   });
 
+  it("localizes analysis tracking and job conversation labels", () => {
+    expect(translateLocal("zh-CN", "workspace.analysisTrackingDescription", "")).toContain(
+      "任务过程",
+    );
+    expect(translateLocal("zh-CN", "workspace.jobConversationTitle", "")).toBe(
+      "任务对话流",
+    );
+    expect(translateLocal("zh-CN", "workspace.jobStatusWaitingConfirmation", "")).toBe(
+      "等待确认",
+    );
+    expect(translateLocal("en-US", "workspace.jobObservationCommand", "")).toBe(
+      "Command",
+    );
+    expect(translateLocal("ru-RU", "workspace.analysisTracking", "")).toBe(
+      "Отслеживание анализа",
+    );
+  });
+
   it("localizes Computer Use setup guidance without unsupported routes", () => {
     const guidance = [
       translateLocal("zh-CN", "workspace.computerUseDisabledTitle", ""),

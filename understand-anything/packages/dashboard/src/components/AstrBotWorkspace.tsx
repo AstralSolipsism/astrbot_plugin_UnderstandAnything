@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "../i18n";
+import JobObservationConversation from "./JobObservationConversation";
 import {
   type AstrBotPluginPageBridge,
   type JobSnapshot,
@@ -21,6 +22,7 @@ import {
   pluginPost,
   projectParamsFromProject,
 } from "../utils/astrbotBridge";
+import { type ObservableJob } from "../utils/jobObservations";
 import {
   buildAnalysisJobPayload,
   looksLikeGitHubTarget,
@@ -32,9 +34,11 @@ import {
   projectAnalysisTarget,
   recentActivity,
   selectRecoverableJob,
+  visibleProjectError,
 } from "../utils/jobTracking";
 import { getStorageItem, removeStorageItem, setStorageItem } from "../utils/safeBrowser";
 import { analyzeStartBlocker } from "../utils/workspaceRegressionGuards";
+import { type AssistantMode, useDashboardStore } from "../store";
 
 interface AstrBotWorkspaceProps {
   bridge: AstrBotPluginPageBridge;
@@ -43,6 +47,19 @@ interface AstrBotWorkspaceProps {
 
 type LoadState = "loading" | "ready" | "error";
 type ConfirmationAction = "continue" | "cancel" | "update";
+type Translate = ReturnType<typeof useI18n>["t"];
+
+function jobStatusLabel(status: JobSnapshot["status"] | string | undefined, t: Translate): string {
+  if (status === "queued") return t("workspace.jobStatusQueued", "Queued");
+  if (status === "running") return t("workspace.jobStatusRunning", "Running");
+  if (status === "waiting_confirmation") {
+    return t("workspace.jobStatusWaitingConfirmation", "Waiting for confirmation");
+  }
+  if (status === "finished") return t("workspace.jobStatusFinished", "Finished");
+  if (status === "failed") return t("workspace.jobStatusFailed", "Failed");
+  if (status === "cancelled") return t("workspace.jobStatusCancelled", "Cancelled");
+  return status || "-";
+}
 
 function isJobSnapshot(value: unknown): value is JobSnapshot {
   return Boolean(
@@ -58,6 +75,26 @@ function formatDate(timestamp: number | null | undefined, emptyLabel: string): s
   return new Date(timestamp * 1000).toLocaleString();
 }
 
+function formatDateValue(
+  value: number | string | null | undefined,
+  emptyLabel: string,
+): string {
+  if (typeof value === "number") return formatDate(value, emptyLabel);
+  if (typeof value === "string" && value.trim()) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date.toLocaleString();
+  }
+  return emptyLabel;
+}
+
+function formatDurationMs(value: number | undefined): string {
+  if (!value) return "-";
+  if (value < 1000) return `${value}ms`;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
 function githubAlias(project: ProjectSummary): string | null {
   return (
     project.aliases?.find(
@@ -67,6 +104,74 @@ function githubAlias(project: ProjectSummary): string | null {
         !alias.includes("\\") &&
         !alias.includes(":"),
     ) ?? null
+  );
+}
+
+function graphReady(project: ProjectSummary): boolean {
+  return Boolean(
+    project.graph_ready ??
+      project.graphReady ??
+      project.last_analyzed_at ??
+      project.lastAnalyzedAt,
+  );
+}
+
+function projectCount(
+  project: ProjectSummary,
+  snakeKey: "node_count" | "edge_count",
+  camelKey: "nodeCount" | "edgeCount",
+): number {
+  const value = project[snakeKey] ?? project[camelKey] ?? 0;
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function embeddedProjectJob(project: ProjectSummary): JobSnapshot | null {
+  return (
+    project.current_job ??
+    project.currentJob ??
+    project.recent_job ??
+    project.recentJob ??
+    null
+  );
+}
+
+function canRetryJob(job: JobSnapshot | null | undefined): boolean {
+  return Boolean(job?.can_retry ?? job?.canRetry);
+}
+
+function observableJob(job: JobSnapshot): ObservableJob {
+  return {
+    id: job.job_id,
+    status: job.status,
+    stage: job.progress?.phase ?? job.stage ?? job.phase ?? job.kind,
+    startedAt: job.startedAt ?? undefined,
+    summary: job.summary ?? undefined,
+    error: job.error ?? undefined,
+    recentLogs: job.recentLogs ?? job.logs ?? [],
+    observations: job.observations?.map((observation) => ({
+      ...observation,
+      createdAt:
+        observation.createdAt ??
+        (typeof observation.timestamp === "number"
+          ? new Date(observation.timestamp * 1000).toISOString()
+          : new Date().toISOString()),
+      level: observation.level ?? "info",
+    })) as ObservableJob["observations"],
+  };
+}
+
+function ProjectMetric({
+  label,
+  value,
+}: {
+  label: string;
+  value: ReactNode;
+}) {
+  return (
+    <div className="rounded-md bg-root px-3 py-2">
+      <div className="text-xs text-text-muted">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium text-text-primary">{value}</div>
+    </div>
   );
 }
 
@@ -261,12 +366,15 @@ export default function AstrBotWorkspace({
     readSubAgentGuideDismissed,
   );
   const [currentJob, setCurrentJob] = useState<JobSnapshot | null>(null);
-  const [showJobLogs, setShowJobLogs] = useState(false);
   const [confirmationContent, setConfirmationContent] = useState("");
   const [confirmingAction, setConfirmingAction] = useState<ConfirmationAction | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [jobRefreshNotice, setJobRefreshNotice] = useState<string | null>(null);
+  const [projectActionKey, setProjectActionKey] = useState<string | null>(null);
+  const [showProjectLogs, setShowProjectLogs] = useState(false);
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [environmentDetailsOpen, setEnvironmentDetailsOpen] = useState(false);
   const [ignorePanelOpen, setIgnorePanelOpen] = useState(false);
   const [ignorePayload, setIgnorePayload] = useState<ProjectIgnorePayload | null>(null);
   const [ignoreContent, setIgnoreContent] = useState("");
@@ -372,6 +480,7 @@ export default function AstrBotWorkspace({
     setIgnorePayload(null);
     setIgnoreContent("");
     setIgnoreError(null);
+    setShowProjectLogs(false);
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -466,6 +575,9 @@ export default function AstrBotWorkspace({
     if (openedFinishedJobId === currentJob.job_id) return;
     setOpenedFinishedJobId(currentJob.job_id);
     void loadWorkspace();
+    if (!["understand", "understand-domain", "understand-knowledge"].includes(currentJob.kind)) {
+      return;
+    }
     const projectId =
       typeof currentJob.args.project_id === "string" ? currentJob.args.project_id : "";
     onOpenProject(projectId ? { project_id: projectId } : { project_path: currentJob.project_root });
@@ -476,6 +588,7 @@ export default function AstrBotWorkspace({
     return [
       ["runtimeItems.runtimeDist", "Runtime dist", status.runtime.runtime_dist?.exists],
       ["runtimeItems.coreDist", "Core dist", status.runtime.core_dist?.exists],
+      ["runtimeItems.assistantDist", "Assistant dist", status.runtime.assistant_dist?.exists],
       ["runtimeItems.dashboardDist", "Dashboard dist", status.runtime.dashboard_dist?.exists],
       ["runtimeItems.dashboardPage", "Dashboard page", status.runtime.dashboard_page?.exists],
       ["runtimeItems.nodeModules", "Node modules", status.runtime.node_modules?.exists],
@@ -503,9 +616,10 @@ export default function AstrBotWorkspace({
     return projects[0] ?? null;
   }, [projects, selectedProjectId]);
   const selectedProjectJob = selectedProject
-    ? jobForProject(selectedProject, jobs)
+    ? (jobForProject(selectedProject, jobs) ?? embeddedProjectJob(selectedProject))
     : null;
   const focusedJob = selectedProject ? selectedProjectJob : currentJob;
+  const activeCurrentJob = isActiveJob(currentJob) ? currentJob : null;
 
   const subagentsReady = Boolean(subagents?.ready);
   const showSubagentGuide = Boolean(
@@ -673,9 +787,22 @@ export default function AstrBotWorkspace({
     ],
   );
 
+  const recordStartedJob = (job: JobSnapshot) => {
+    setCurrentJob(job);
+    setShowProjectLogs(false);
+    setJobs((previousJobs) => [
+      job,
+      ...previousJobs.filter((item) => item.job_id !== job.job_id),
+    ]);
+    const projectId =
+      typeof job.args.project_id === "string" ? job.args.project_id : "";
+    if (projectId) setSelectedProjectId(projectId);
+  };
+
   const startAnalysisForTarget = async (
     target: string,
     nextAutoUpdate = autoUpdate,
+    nextFullAnalysis = fullAnalysis,
   ) => {
     const trimmedTarget = target.trim();
     const blocker = analysisBlockerForTarget(trimmedTarget);
@@ -692,18 +819,14 @@ export default function AstrBotWorkspace({
         "jobs/start",
         buildAnalysisJobPayload({
           target: trimmedTarget,
-          fullAnalysis,
+          fullAnalysis: nextFullAnalysis,
           autoUpdate: nextAutoUpdate,
           githubProxy,
           locale,
         }),
       );
-      setCurrentJob(job);
-      setShowJobLogs(false);
-      setJobs((previousJobs) => [
-        job,
-        ...previousJobs.filter((item) => item.job_id !== job.job_id),
-      ]);
+      recordStartedJob(job);
+      setCreateProjectOpen(false);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : String(startError));
     } finally {
@@ -716,13 +839,59 @@ export default function AstrBotWorkspace({
     await startAnalysisForTarget(projectTarget);
   };
 
-  const restartProject = async (project: ProjectSummary) => {
+  const restartProject = async (
+    project: ProjectSummary,
+    nextFullAnalysis = true,
+  ) => {
     const target = projectAnalysisTarget(project);
     if (!target) {
       setError(t("workspace.projectTargetRequired", "Project target is required."));
       return;
     }
-    await startAnalysisForTarget(target, Boolean(project.auto_update));
+    setProjectActionKey(`${project.project_id}:analyze`);
+    try {
+      await startAnalysisForTarget(
+        target,
+        Boolean(project.auto_update ?? project.autoUpdate),
+        nextFullAnalysis,
+      );
+    } finally {
+      setProjectActionKey(null);
+    }
+  };
+
+  const checkProjectUpdates = async (project: ProjectSummary) => {
+    setProjectActionKey(`${project.project_id}:check`);
+    setError(null);
+    try {
+      const job = await pluginPost<JobSnapshot>(
+        bridge,
+        "projects/check-updates",
+        { project_id: project.project_id, locale },
+      );
+      recordStartedJob(job);
+    } catch (checkError) {
+      setError(errorMessage(checkError));
+    } finally {
+      setProjectActionKey(null);
+    }
+  };
+
+  const retryFailedJob = async (job: JobSnapshot) => {
+    setProjectActionKey(`${job.job_id}:retry`);
+    setError(null);
+    try {
+      const retry = await pluginPost<JobSnapshot>(
+        bridge,
+        `jobs/${job.job_id}/retry`,
+        { locale },
+      );
+      recordStartedJob(retry);
+    } catch (retryError) {
+      setError(errorMessage(retryError));
+    } finally {
+      setProjectActionKey(null);
+    }
   };
 
   const [projectPendingDelete, setProjectPendingDelete] = useState<ProjectSummary | null>(null);
@@ -862,18 +1031,38 @@ export default function AstrBotWorkspace({
     !starting &&
     analysisTargetReady &&
     analysisBlockerForTarget(projectTarget) === null;
+  const showCreateProjectForm = createProjectOpen || projects.length === 0;
+  const readyRuntimeToolCount = runtimeToolItems.filter(({ tool }) => tool.supported).length;
+  const readyRuntimeItemCount = runtimeItems.filter(([, , exists]) => Boolean(exists)).length;
+  const enabledComputerUseCount = computerUseConfigs.filter((config) => config.enabled).length;
+  const openProjectGraph = useCallback(
+    (project: ProjectSummary) => {
+      onOpenProject(projectParamsFromProject(project));
+    },
+    [onOpenProject],
+  );
+  const openProjectAssistant = useCallback(
+    (project: ProjectSummary, mode: AssistantMode) => {
+      useDashboardStore.getState().setAssistantMode(mode);
+      onOpenProject(projectParamsFromProject(project));
+    },
+    [onOpenProject],
+  );
 
   return (
-    <div className="min-h-screen w-screen bg-root text-text-primary noise-overlay overflow-auto">
-      <div className="mx-auto max-w-[1280px] px-4 py-5 sm:px-6 sm:py-7">
-        <header className="mb-5 border-b border-border-subtle pb-5">
+    <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-root text-text-primary noise-overlay">
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-[1400px] flex-col overflow-hidden px-3 py-3 sm:px-5 sm:py-5">
+        <header className="shrink-0 border-b border-border-subtle pb-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="min-w-0">
               <h1 className="font-heading text-2xl text-text-primary">
-                Understand Anything
+                {t("workspace.projectPortalTitle", "项目理解仪表盘")}
               </h1>
               <p className="mt-1 max-w-2xl text-sm text-text-secondary">
-                {t("workspace.subtitle", "Plugin workspace")}
+                {t(
+                  "workspace.projectPortalSubtitle",
+                  "管理项目图谱、启动增量分析，并从同一入口进入问答、解释、变更影响和 onboarding。",
+                )}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -896,218 +1085,54 @@ export default function AstrBotWorkspace({
         </header>
 
         {error && (
-          <div className="mb-5 rounded-md border border-red-700 bg-red-900/30 px-4 py-3 text-sm text-red-200">
+          <div className="mt-3 shrink-0 rounded-md border border-red-700 bg-red-900/30 px-4 py-3 text-sm text-red-200">
             {error}
           </div>
         )}
 
         {loadState === "loading" && (
-          <Panel className="p-5">
+          <Panel className="mt-4 p-5">
             <div className="text-sm text-text-secondary">{t("common.loading", "Loading")}</div>
           </Panel>
         )}
 
         {status && (
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
-            <main className="flex flex-col gap-5">
-              <Panel className="order-2 p-4 sm:p-5">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <h2 className="font-heading text-xl text-text-primary">
-                      {t("workspace.analyzeProject", "Analyze Project")}
-                    </h2>
-                    <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-secondary">
-                      {t(
-                        "workspace.analyzeProjectDescription",
-                        "Start with a local project directory or GitHub repository URL. Finished jobs open directly into the graph view.",
-                      )}
-                    </p>
-                  </div>
-                  <StatusPill
-                    ready={canStartAnalysis}
-                    label={canStartAnalysis ? t("common.ready", "Ready") : t("workspace.setupRequired", "Setup required")}
-                  />
-                </div>
-
-                <form onSubmit={startAnalysis} className="mt-5 space-y-4">
-                  <label className="block">
-                    <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
-                      {t("workspace.projectTarget", "Project Target")}
-                    </span>
-                    <input
-                      type="text"
-                      value={projectTarget}
-                      onChange={(event) => setProjectTarget(event.target.value)}
-                      placeholder={t(
-                        "workspace.projectTargetPlaceholder",
-                        "https://github.com/owner/repo/tree/main/packages/app or D:\\path\\to\\project",
-                      )}
-                      className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                    />
-                  </label>
-
-                  {analyzingGithubTarget && (
-                    <label className="block">
-                      <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
-                        {t("workspace.githubProxy", "Git clone proxy")}
-                      </span>
-                      <select
-                        value={githubProxy}
-                        onChange={(event) => setGithubProxy(event.target.value)}
-                        className="w-full rounded-md border border-border-subtle bg-elevated px-3 py-2.5 text-sm text-text-primary focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                      >
-                        <option value="">
-                          {t(
-                            "workspace.githubProxyDirect",
-                            "Automatic: direct, then proxies",
-                          )}
-                        </option>
-                        {githubProxyPresets.map((proxy) => (
-                          <option key={proxy} value={proxy}>
-                            {proxy}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="mt-1 text-xs leading-relaxed text-text-muted">
-                        {t(
-                          "workspace.githubProxyDescription",
-                          "Direct GitHub is tried first. If it fails with a network error, AstrBot falls back to bundled proxy presets.",
-                        )}
-                      </p>
-                    </label>
-                  )}
-
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex flex-wrap gap-3">
-                      <div className="inline-flex items-center gap-2 text-sm text-text-secondary">
-                        <label className="inline-flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={fullAnalysis}
-                            onChange={(event) => setFullAnalysis(event.target.checked)}
-                            className="h-4 w-4 accent-[var(--color-accent)]"
-                          />
-                          {t("workspace.fullAnalysis", "Full analysis")}
-                        </label>
-                        <OptionHelp
-                          label={t(
-                            "workspace.fullAnalysisHelpLabel",
-                            "What does full analysis do?",
-                          )}
-                        >
-                          {t(
-                            "workspace.fullAnalysisHelp",
-                            "Force this run to rebuild the whole graph from scratch. Leave it off to reuse the existing graph and analyze only changed files when possible.",
-                          )}
-                        </OptionHelp>
-                      </div>
-                      <div className="inline-flex items-center gap-2 text-sm text-text-secondary">
-                        <label className="inline-flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={autoUpdate}
-                            onChange={(event) => setAutoUpdate(event.target.checked)}
-                            className="h-4 w-4 accent-[var(--color-accent)]"
-                          />
-                          {t("workspace.autoUpdate", "Auto update")}
-                        </label>
-                        <OptionHelp
-                          label={t(
-                            "workspace.autoUpdateHelpLabel",
-                            "What does auto update do?",
-                          )}
-                        >
-                          {t(
-                            "workspace.autoUpdateHelp",
-                            "Save this project for background updates. When Git HEAD changes later, AstrBot can start an incremental analysis automatically.",
-                          )}
-                        </OptionHelp>
-                      </div>
-                    </div>
-                    <button
-                      type="submit"
-                      disabled={!canStartAnalysis}
-                      className="rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                    >
-                      {starting
-                        ? t("workspace.starting", "Starting")
-                        : t("workspace.startAnalysis", "Start Analysis")}
-                    </button>
-                  </div>
-                </form>
-
-                <div className="mt-4 grid gap-2 md:grid-cols-2">
-                  {!subagentsReady && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                      {subagentError ||
-                        t("workspace.subagentsBlocked", "Register UA SubAgents from this panel before starting analysis jobs.")}
-                    </div>
-                  )}
-                  {!computerUseReady && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                      <div>
-                        {t(
-                          "workspace.computerUseBlocked",
-                          "Enable Computer Use runtime before starting analysis jobs.",
-                        )}
-                      </div>
-                      <div className="mt-1 text-xs text-amber-100/80">
-                        {t("workspace.computerUseSetupPath", "Config -> General -> Computer Use -> Runtime")} ·{" "}
-                        {t("workspace.computerUseSetupValue", "local or sandbox")}
-                      </div>
-                    </div>
-                  )}
-                  {!localRuntimeReady && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                      <div>
-                        {t(
-                          "workspace.runtimeBlocked",
-                          "Understand Anything runtime must be ready before starting analysis jobs.",
-                        )}
-                      </div>
-                      {runtimeReadiness?.blocking_reasons?.length ? (
-                        <div className="mt-1 text-xs text-amber-100/80">
-                          {runtimeReadiness.blocking_reasons.join(" ")}
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-                  {!gitReady && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                      {t("workspace.gitUnavailable", "Git is unavailable on this AstrBot host.")}
-                    </div>
-                  )}
-                </div>
-              </Panel>
-
-              {currentJob && (
-                <Panel className="order-3 p-4 sm:p-5">
+          <div className="mt-4 grid min-h-0 flex-1 gap-4 overflow-y-auto pr-1 lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)] lg:overflow-hidden lg:pr-0">
+            <main className="order-2 flex min-h-0 flex-col gap-4 lg:order-2 lg:overflow-hidden">
+              {activeCurrentJob && (
+                <Panel className="order-3 max-h-[30dvh] shrink-0 overflow-y-auto p-4 sm:p-5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h2 className="font-heading text-lg text-text-primary">
                         {t("workspace.analysisTracking", "Analysis Tracking")}
                       </h2>
+                      <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                        {t(
+                          "workspace.analysisTrackingDescription",
+                          "Active job summary and required actions. The selected project's task process keeps the detailed timeline.",
+                        )}
+                      </p>
                       <div className="mt-1 truncate font-mono text-xs text-text-muted">
-                        {currentJob.project_root}
+                        {activeCurrentJob.project_root}
                       </div>
                     </div>
                     <span className="shrink-0 rounded-full bg-root px-2 py-1 text-xs font-semibold text-accent">
-                      {currentJob.status}
+                      {jobStatusLabel(activeCurrentJob.status, t)}
                     </span>
                   </div>
                   <div className="mt-4">
                     <div className="flex items-center justify-between gap-3 text-sm">
                       <span className="font-semibold text-text-primary">
-                        {currentJob.progress?.label || currentJob.kind}
+                        {activeCurrentJob.progress?.label || activeCurrentJob.kind}
                       </span>
                       <span className="font-mono text-xs text-text-muted">
-                        {Math.round(currentJob.progress?.percent ?? 0)}%
+                        {Math.round(activeCurrentJob.progress?.percent ?? 0)}%
                       </span>
                     </div>
                     <div className="mt-2 h-2 overflow-hidden rounded-full bg-root">
                       <div
                         className="h-full rounded-full bg-accent transition-[width]"
-                        style={{ width: `${Math.round(currentJob.progress?.percent ?? 0)}%` }}
+                        style={{ width: `${Math.round(activeCurrentJob.progress?.percent ?? 0)}%` }}
                       />
                     </div>
                   </div>
@@ -1116,30 +1141,10 @@ export default function AstrBotWorkspace({
                       {jobRefreshNotice}
                     </div>
                   )}
-                  {currentJob.progress?.steps?.length ? (
-                    <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                      {currentJob.progress.steps.map((step) => (
-                        <div
-                          key={step.phase}
-                          className={`rounded-md border px-3 py-2 text-xs ${
-                            step.status === "complete"
-                              ? "border-green-400/20 bg-green-400/10 text-green-200"
-                              : step.status === "active"
-                                ? "border-accent/40 bg-accent/10 text-accent"
-                                : step.status === "failed" || step.status === "cancelled"
-                                  ? "border-red-700 bg-red-900/30 text-red-200"
-                                  : "border-border-subtle bg-elevated text-text-muted"
-                          }`}
-                        >
-                          <div className="font-semibold">{step.label}</div>
-                          <div className="mt-1 font-mono uppercase tracking-wider">
-                            {step.status}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  {currentJob.status === "waiting_confirmation" && currentConfirmation && (
+                  <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-2 text-sm text-text-secondary">
+                    {recentActivity(activeCurrentJob)}
+                  </div>
+                  {activeCurrentJob.status === "waiting_confirmation" && currentConfirmation && (
                     <div className="mt-4 rounded-lg border border-accent/30 bg-accent/10 p-4">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                         <div>
@@ -1236,37 +1241,11 @@ export default function AstrBotWorkspace({
                       </div>
                     </div>
                   )}
-                  <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-2 text-sm text-text-secondary">
-                    {recentActivity(currentJob)}
-                  </div>
-                  {currentJob.error && (
-                    <div className="mt-2 text-sm text-red-200">{currentJob.error}</div>
-                  )}
-                  {currentJob.logs.length > 0 && (
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={() => setShowJobLogs((value) => !value)}
-                        className="rounded-md border border-border-medium bg-elevated px-3 py-2 text-xs font-semibold text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                      >
-                        {showJobLogs
-                          ? t("workspace.hideRawLogs", "Hide raw logs")
-                          : t("workspace.showRawLogs", "Show raw logs")}
-                      </button>
-                      {showJobLogs && (
-                        <div className="mt-2 max-h-[220px] overflow-auto rounded-md bg-root p-2 font-mono text-xs text-text-secondary">
-                          {currentJob.logs.map((line, index) => (
-                            <div key={`${line}-${index}`}>{line}</div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </Panel>
               )}
 
-              <Panel className="order-1 p-4 sm:p-5">
-                <div className="mb-4 flex items-center justify-between gap-3">
+              <Panel className="order-1 flex min-h-0 flex-1 flex-col overflow-hidden p-4 sm:p-5">
+                <div className="mb-4 flex shrink-0 items-center justify-between gap-3">
                   <div>
                     <h2 className="font-heading text-xl text-text-primary">{t("common.projects", "Projects")}</h2>
                     <p className="mt-1 text-sm text-text-secondary">
@@ -1279,17 +1258,53 @@ export default function AstrBotWorkspace({
                 </div>
 
                 {projects.length === 0 ? (
-                  <div className="rounded-md border border-border-subtle bg-elevated p-4 text-sm text-text-secondary">
-                    {t("workspace.noProjects", "No registered projects yet. Add a local path or GitHub repository below to start analysis.")}
+                  <div className="min-h-0 overflow-y-auto rounded-md border border-border-subtle bg-elevated p-5">
+                    <div className="max-w-2xl">
+                      <div className="text-xs font-semibold uppercase tracking-wider text-accent">
+                        {t("workspace.noProjectsBadge", "No registered projects yet")}
+                      </div>
+                      <h3 className="mt-2 font-heading text-2xl text-text-primary">
+                        {t("workspace.emptyProjectTitle", "Create your first project graph")}
+                      </h3>
+                      <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+                        {t(
+                          "workspace.emptyProjectDescription",
+                          "Start from a local workspace or GitHub repository. The dashboard will track the analysis conversation, graph artifacts, and follow-up project actions here.",
+                        )}
+                      </p>
+                    </div>
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      {[
+                        t("workspace.emptyProjectLocal", "Local path"),
+                        t("workspace.emptyProjectGithub", "GitHub repository"),
+                        t("workspace.emptyProjectConversation", "Analysis conversation"),
+                      ].map((label) => (
+                        <div
+                          key={label}
+                          className="rounded-md border border-border-subtle bg-root px-3 py-2 text-sm font-semibold text-text-secondary"
+                        >
+                          {label}
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCreateProjectOpen(true)}
+                      className="mt-5 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    >
+                      {t("workspace.addProject", "Add project")}
+                    </button>
                   </div>
                 ) : (
-                  <div className="grid gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.1fr)]">
-                    <div className="space-y-2">
+                  <div className="grid min-h-0 flex-1 grid-rows-[minmax(160px,0.45fr)_minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(220px,0.9fr)_minmax(0,1.1fr)] xl:grid-rows-none">
+                    <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
                       {projects.map((project) => {
-                        const projectJob = jobForProject(project, jobs);
+                        const projectJob =
+                          jobForProject(project, jobs) ?? embeddedProjectJob(project);
                         const projectActive = isActiveJob(projectJob);
                         const projectJobStatus = projectJob?.status;
                         const selected = selectedProject?.project_id === project.project_id;
+                        const ready = graphReady(project);
                         return (
                           <button
                             type="button"
@@ -1324,14 +1339,28 @@ export default function AstrBotWorkspace({
                                       : "bg-root text-text-muted"
                                 }`}
                               >
-                                {projectJobStatus ??
-                                  (project.last_analyzed_at
+                                {projectJobStatus
+                                  ? jobStatusLabel(projectJobStatus, t)
+                                  : ready
                                     ? t("workspace.graphReady", "Ready")
-                                    : t("workspace.notAnalyzed", "Not analyzed"))}
+                                    : t("workspace.notAnalyzed", "Not analyzed")}
                               </span>
                             </div>
-                            <div className="mt-2 text-xs text-text-muted">
-                              {formatDate(project.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
+                            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-muted">
+                              <span>
+                                {formatDateValue(
+                                  project.lastAnalyzedAt ?? project.last_analyzed_at,
+                                  t("workspace.notAnalyzed", "Not analyzed"),
+                                )}
+                              </span>
+                              {ready && (
+                                <span>
+                                  {t("workspace.graphSizeCompact", "{nodes} nodes · {edges} edges", {
+                                    nodes: projectCount(project, "node_count", "nodeCount"),
+                                    edges: projectCount(project, "edge_count", "edgeCount"),
+                                  })}
+                                </span>
+                              )}
                             </div>
                             {projectJob && (
                               <div className="mt-2 truncate rounded-md bg-root px-2 py-1.5 text-xs text-text-secondary">
@@ -1343,181 +1372,425 @@ export default function AstrBotWorkspace({
                       })}
                     </div>
 
-                    <div className="rounded-md border border-border-subtle bg-elevated p-4">
+                    <div className="min-h-0 overflow-y-auto rounded-md border border-border-subtle bg-elevated p-4">
                       {selectedProject ? (
-                        <>
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-                                {t("workspace.selectedProject", "Selected project")}
-                              </div>
-                              <h3 className="mt-1 truncate font-heading text-xl text-text-primary">
-                                {selectedProject.name}
-                              </h3>
-                              <div className="mt-1 truncate font-mono text-xs text-text-muted">
-                                {selectedProject.path}
-                              </div>
-                            </div>
-                            <StatusPill
-                              ready={Boolean(selectedProject.last_analyzed_at)}
-                              label={
-                                selectedProject.last_analyzed_at
-                                  ? t("workspace.graphReady", "Ready")
-                                  : t("workspace.notAnalyzed", "Not analyzed")
-                              }
-                            />
-                          </div>
-
-                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                            <div className="rounded-md bg-root px-3 py-2">
-                              <div className="text-xs text-text-muted">
-                                {t("workspace.lastAnalyzed", "Last analyzed")}
-                              </div>
-                              <div className="mt-1 text-sm text-text-primary">
-                                {formatDate(selectedProject.last_analyzed_at, t("workspace.notAnalyzed", "Not analyzed"))}
-                              </div>
-                            </div>
-                            <div className="rounded-md bg-root px-3 py-2">
-                              <div className="text-xs text-text-muted">
-                                {t("workspace.autoUpdate", "Auto update")}
-                              </div>
-                              <div className="mt-1 text-sm text-text-primary">
-                                {selectedProject.auto_update ? t("common.on", "On") : t("common.off", "Off")}
-                              </div>
-                            </div>
-                          </div>
-
-                          {focusedJob && (
-                            <div className="mt-4 rounded-md border border-border-subtle bg-root p-3">
-                              <div className="flex items-center justify-between gap-3">
+                        (() => {
+                          const ready = graphReady(selectedProject);
+                          const activeJob = isActiveJob(selectedProjectJob);
+                          const lastError = visibleProjectError(
+                            selectedProject,
+                            selectedProjectJob,
+                          );
+                          const checkBusy =
+                            projectActionKey === `${selectedProject.project_id}:check`;
+                          const analyzeBusy =
+                            starting ||
+                            projectActionKey === `${selectedProject.project_id}:analyze`;
+                          const retryBusy = focusedJob
+                            ? projectActionKey === `${focusedJob.job_id}:retry`
+                            : false;
+                          const projectBlocker = analysisBlockerForTarget(
+                            projectAnalysisTarget(selectedProject),
+                          );
+                          const projectCapabilityActions: Array<{
+                            key: string;
+                            label: string;
+                            description: string;
+                            onClick: () => void;
+                          }> = [
+                            {
+                              key: "graph",
+                              label: t("workspace.capabilityGraph", "Graph explorer"),
+                              description: t(
+                                "workspace.capabilityGraphDescription",
+                                "Inspect files, symbols, dependencies, domains, and knowledge links.",
+                              ),
+                              onClick: () => openProjectGraph(selectedProject),
+                            },
+                            {
+                              key: "chat",
+                              label: t("workspace.capabilityChat", "Ask graph"),
+                              description: t(
+                                "workspace.capabilityChatDescription",
+                                "Ask what a module does or how code pieces relate.",
+                              ),
+                              onClick: () => openProjectAssistant(selectedProject, "chat"),
+                            },
+                            {
+                              key: "explain",
+                              label: t("workspace.capabilityExplain", "Explain code"),
+                              description: t(
+                                "workspace.capabilityExplainDescription",
+                                "Explain a file, function, class, module, or concept.",
+                              ),
+                              onClick: () => openProjectAssistant(selectedProject, "explain"),
+                            },
+                            {
+                              key: "diff",
+                              label: t("workspace.capabilityDiff", "Change impact"),
+                              description: t(
+                                "workspace.capabilityDiffDescription",
+                                "Review git diff or PR impact against the project graph.",
+                              ),
+                              onClick: () => openProjectAssistant(selectedProject, "diff"),
+                            },
+                            {
+                              key: "onboarding",
+                              label: t("workspace.capabilityOnboarding", "Onboarding"),
+                              description: t(
+                                "workspace.capabilityOnboardingDescription",
+                                "Generate a maintainer-oriented project onboarding document.",
+                              ),
+                              onClick: () => openProjectAssistant(selectedProject, "onboarding"),
+                            },
+                          ];
+                          return (
+                            <>
+                              <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <div className="text-sm font-semibold text-text-primary">
-                                    {focusedJob.progress?.label || focusedJob.kind}
+                                  <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                                    {t("workspace.selectedProject", "Selected project")}
                                   </div>
-                                  <div className="mt-1 truncate text-xs text-text-muted">
-                                    {recentActivity(focusedJob)}
+                                  <h3 className="mt-1 truncate font-heading text-xl text-text-primary">
+                                    {selectedProject.name}
+                                  </h3>
+                                  <div className="mt-1 truncate font-mono text-xs text-text-muted">
+                                    {selectedProject.path}
                                   </div>
                                 </div>
-                                <span className="shrink-0 rounded-full bg-elevated px-2 py-1 text-[11px] font-semibold text-accent">
-                                  {focusedJob.status}
-                                </span>
-                              </div>
-                              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-elevated">
-                                <div
-                                  className="h-full rounded-full bg-accent transition-[width]"
-                                  style={{ width: `${Math.round(focusedJob.progress?.percent ?? 0)}%` }}
+                                <StatusPill
+                                  ready={ready}
+                                  label={
+                                    ready
+                                      ? t("workspace.graphReady", "Ready")
+                                      : t("workspace.notAnalyzed", "Not analyzed")
+                                  }
                                 />
                               </div>
-                              {jobRefreshNotice && focusedJob.job_id === currentJobId && (
-                                <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-2 text-xs text-text-muted">
-                                  {jobRefreshNotice}
+
+                              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                <ProjectMetric
+                                  label={t("workspace.graphStatus", "Graph status")}
+                                  value={selectedProject.status ?? (ready ? "ready" : "empty")}
+                                />
+                                <ProjectMetric
+                                  label={t("workspace.lastAnalyzed", "Last analyzed")}
+                                  value={formatDateValue(
+                                    selectedProject.lastAnalyzedAt ??
+                                      selectedProject.last_analyzed_at,
+                                    t("workspace.notAnalyzed", "Not analyzed"),
+                                  )}
+                                />
+                                <ProjectMetric
+                                  label={t("workspace.nodeCount", "Nodes")}
+                                  value={projectCount(selectedProject, "node_count", "nodeCount")}
+                                />
+                                <ProjectMetric
+                                  label={t("workspace.edgeCount", "Edges")}
+                                  value={projectCount(selectedProject, "edge_count", "edgeCount")}
+                                />
+                                <ProjectMetric
+                                  label={t("workspace.autoUpdate", "Auto update")}
+                                  value={
+                                    <>
+                                      {selectedProject.auto_update ?? selectedProject.autoUpdate
+                                        ? t("common.on", "On")
+                                        : t("common.off", "Off")}
+                                      {(selectedProject.auto_update ?? selectedProject.autoUpdate) &&
+                                        status?.config.auto_update_poll_interval ? (
+                                          <span className="ml-1 text-xs text-text-muted">
+                                            {t(
+                                              "workspace.pollEveryMinutes",
+                                              "every {minutes} min",
+                                              {
+                                                minutes:
+                                                  status.config.auto_update_poll_interval,
+                                              },
+                                            )}
+                                          </span>
+                                        ) : null}
+                                    </>
+                                  }
+                                />
+                                <ProjectMetric
+                                  label={t("workspace.recentJob", "Recent job")}
+                                  value={focusedJob ? jobStatusLabel(focusedJob.status, t) : "-"}
+                                />
+                              </div>
+
+                              {lastError && (
+                                <div className="mt-4 rounded-md border border-red-700/50 bg-red-950/30 px-3 py-2 text-sm leading-relaxed text-red-100">
+                                  <div className="font-semibold">
+                                    {t("workspace.lastError", "Last error")}
+                                  </div>
+                                  <div className="mt-1">{lastError}</div>
                                 </div>
                               )}
-                            </div>
-                          )}
 
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => onOpenProject(projectParamsFromProject(selectedProject))}
-                              className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                            >
-                              {t("workspace.openGraph", "Open graph")}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void restartProject(selectedProject)}
-                              disabled={
-                                starting ||
-                                analysisBlockerForTarget(projectAnalysisTarget(selectedProject)) !== null
-                              }
-                              className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                            >
-                              {t("workspace.reanalyzeProject", "Reanalyze")}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void loadIgnoreRules(selectedProject)}
-                              className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                            >
-                              {t("workspace.scanRules", "Scan rules")}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void deleteProject(selectedProject)}
-                              disabled={
-                                deletingProjectId === selectedProject.project_id ||
-                                isActiveJob(selectedProjectJob)
-                              }
-                              className="rounded-md border border-red-700/60 bg-red-900/20 px-3 py-2 text-sm font-semibold text-red-200 transition-colors hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
-                            >
-                              {deletingProjectId === selectedProject.project_id
-                                ? t("workspace.deletingProject", "Deleting")
-                                : t("workspace.deleteProject", "Delete")}
-                            </button>
-                          </div>
-
-                          {ignorePanelOpen && (
-                            <div className="mt-4 rounded-md border border-border-subtle bg-root p-3">
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <div className="text-sm font-semibold text-text-primary">
-                                    {t("workspace.scanRulesTitle", "Scan exclusion rules")}
-                                  </div>
-                                  <div className="mt-1 text-xs leading-relaxed text-text-muted">
-                                    {ignorePayload?.exists
-                                      ? t("workspace.scanRulesExisting", "These rules are active for the next scan.")
-                                      : t("workspace.scanRulesSuggested", "These are commented suggestions. Save only the rules you want to activate.")}
-                                  </div>
-                                </div>
+                              <div className="mt-4 flex flex-wrap gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => setIgnorePanelOpen(false)}
-                                  className="rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                  onClick={() => openProjectGraph(selectedProject)}
+                                  disabled={!ready}
+                                  className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                                 >
-                                  {t("common.close", "Close")}
+                                  {t("workspace.openGraph", "Open graph")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void checkProjectUpdates(selectedProject)}
+                                  disabled={checkBusy || activeJob}
+                                  className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                >
+                                  {checkBusy
+                                    ? t("workspace.checkingUpdates", "Checking")
+                                    : t("workspace.checkUpdates", "Check updates")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void restartProject(selectedProject, !ready)}
+                                  disabled={analyzeBusy || activeJob || projectBlocker !== null}
+                                  className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                >
+                                  {ready
+                                    ? t("workspace.pullAndIncrementalUpdate", "Pull and update")
+                                    : t("workspace.pullAndFullAnalysis", "Run full analysis")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void restartProject(selectedProject, true)}
+                                  disabled={analyzeBusy || activeJob || projectBlocker !== null}
+                                  className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                >
+                                  {t("workspace.reanalyzeProject", "Reanalyze")}
+                                </button>
+                                {focusedJob && canRetryJob(focusedJob) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void retryFailedJob(focusedJob)}
+                                    disabled={retryBusy || activeJob}
+                                    className="rounded-md border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300"
+                                  >
+                                    {retryBusy
+                                      ? t("workspace.retryingFailedJob", "Retrying")
+                                      : t("workspace.retryFailedJob", "Retry failed task")}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => void loadIgnoreRules(selectedProject)}
+                                  className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                >
+                                  {t("workspace.scanRules", "Scan rules")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void deleteProject(selectedProject)}
+                                  disabled={
+                                    deletingProjectId === selectedProject.project_id ||
+                                    activeJob
+                                  }
+                                  className="rounded-md border border-red-700/60 bg-red-900/20 px-3 py-2 text-sm font-semibold text-red-200 transition-colors hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400"
+                                >
+                                  {deletingProjectId === selectedProject.project_id
+                                    ? t("workspace.deletingProject", "Deleting")
+                                    : t("workspace.deleteProject", "Delete")}
                                 </button>
                               </div>
-                              {ignoreLoading ? (
-                                <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-3 text-sm text-text-secondary">
-                                  {t("common.loading", "Loading")}
-                                </div>
-                              ) : (
-                                <>
-                                  <textarea
-                                    value={ignoreContent}
-                                    onChange={(event) => setIgnoreContent(event.target.value)}
-                                    rows={10}
-                                    className="mt-3 w-full rounded-md border border-border-subtle bg-elevated px-3 py-2 font-mono text-xs leading-relaxed text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                                  />
-                                  {ignoreError && (
-                                    <div className="mt-2 text-sm text-red-200">
-                                      {ignoreError}
+
+                              {ready && (
+                                <div className="mt-5 rounded-md border border-border-subtle bg-root p-3">
+                                  <div className="flex flex-wrap items-end justify-between gap-3">
+                                    <div>
+                                      <div className="text-sm font-semibold text-text-primary">
+                                        {t("workspace.projectCapabilities", "Project capabilities")}
+                                      </div>
+                                      <div className="mt-1 text-xs leading-relaxed text-text-muted">
+                                        {t(
+                                          "workspace.projectCapabilitiesDescription",
+                                          "Continue from the generated graph with the same project context.",
+                                        )}
+                                      </div>
                                     </div>
-                                  )}
-                                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() => void saveIgnoreRules()}
-                                      disabled={ignoreSaving}
-                                      className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                                    >
-                                      {ignoreSaving
-                                        ? t("workspace.savingScanRules", "Saving")
-                                        : t("workspace.saveScanRules", "Save scan rules")}
-                                    </button>
-                                    <span className="truncate font-mono text-xs text-text-muted">
-                                      {ignorePayload?.ignore_path}
+                                  </div>
+                                  <div className="mt-3 grid gap-2 sm:grid-cols-2 2xl:grid-cols-3">
+                                    {projectCapabilityActions.map((action) => (
+                                      <button
+                                        type="button"
+                                        key={action.key}
+                                        onClick={action.onClick}
+                                        className="rounded-md border border-border-subtle bg-elevated px-3 py-2 text-left transition-colors hover:border-border-medium hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                      >
+                                        <span className="block text-sm font-semibold text-text-primary">
+                                          {action.label}
+                                        </span>
+                                        <span className="mt-1 block text-xs leading-relaxed text-text-muted">
+                                          {action.description}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {focusedJob ? (
+                                <div className="mt-5 rounded-md border border-border-subtle bg-root p-3">
+                                  <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="text-sm font-semibold text-text-primary">
+                                        {t("workspace.analysisProcess", "Analysis process")}
+                                      </div>
+                                      <div className="mt-1 truncate text-xs text-text-muted">
+                                        {recentActivity(focusedJob)}
+                                      </div>
+                                    </div>
+                                    <span className="shrink-0 rounded-full bg-elevated px-2 py-1 text-[11px] font-semibold text-accent">
+                                      {jobStatusLabel(focusedJob.status, t)}
                                     </span>
                                   </div>
-                                </>
+                                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                                    <ProjectMetric
+                                      label={t("workspace.currentStage", "Current stage")}
+                                      value={focusedJob.progress?.label || focusedJob.kind}
+                                    />
+                                    <ProjectMetric
+                                      label={t("workspace.startedAt", "Started")}
+                                      value={formatDateValue(
+                                        focusedJob.startedAt,
+                                        t("workspace.notStarted", "Not started"),
+                                      )}
+                                    />
+                                    <ProjectMetric
+                                      label={t("workspace.duration", "Duration")}
+                                      value={formatDurationMs(focusedJob.durationMs)}
+                                    />
+                                  </div>
+                                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-elevated">
+                                    <div
+                                      className="h-full rounded-full bg-accent transition-[width]"
+                                      style={{
+                                        width: `${Math.round(focusedJob.progress?.percent ?? 0)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                  {jobRefreshNotice && focusedJob.job_id === currentJobId && (
+                                    <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-2 text-xs text-text-muted">
+                                      {jobRefreshNotice}
+                                    </div>
+                                  )}
+                                  <div className="mt-3 overflow-hidden rounded-md border border-border-subtle bg-elevated">
+                                    <JobObservationConversation job={observableJob(focusedJob)} />
+                                  </div>
+                                  {(focusedJob.logs?.length ?? 0) > 0 && (
+                                    <div className="mt-3">
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowProjectLogs((value) => !value)}
+                                        className="rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                      >
+                                        {showProjectLogs
+                                          ? t("workspace.hideRawLogs", "Hide raw logs")
+                                          : t("workspace.showRawLogs", "Show raw logs")}
+                                      </button>
+                                      {showProjectLogs && (
+                                        <div className="mt-2 max-h-56 overflow-auto rounded-md bg-elevated p-3 font-mono text-xs leading-relaxed text-text-muted">
+                                          {focusedJob.logs.map((line, index) => (
+                                            <div key={`${focusedJob.job_id}-detail-log-${index}`}>
+                                              {line}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="mt-5 rounded-md border border-border-subtle bg-root px-3 py-3 text-sm text-text-secondary">
+                                  {t("workspace.noRecentJob", "No recent job is recorded for this project.")}
+                                </div>
                               )}
-                            </div>
-                          )}
-                        </>
+
+                              {ignorePanelOpen && (
+                                <div className="mt-4 rounded-md border border-border-subtle bg-root p-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <div className="text-sm font-semibold text-text-primary">
+                                        {t("workspace.scanRulesTitle", "Scan exclusion rules")}
+                                      </div>
+                                      <div className="mt-1 text-xs leading-relaxed text-text-muted">
+                                        {ignorePayload?.exists
+                                          ? t("workspace.scanRulesExisting", "These rules are active for the next scan.")
+                                          : t("workspace.scanRulesSuggested", "These are commented suggestions. Save only the rules you want to activate.")}
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setIgnorePanelOpen(false)}
+                                      className="rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                    >
+                                      {t("common.close", "Close")}
+                                    </button>
+                                  </div>
+                                  {ignoreLoading ? (
+                                    <div className="mt-3 rounded-md border border-border-subtle bg-elevated px-3 py-3 text-sm text-text-secondary">
+                                      {t("common.loading", "Loading")}
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <textarea
+                                        value={ignoreContent}
+                                        onChange={(event) => setIgnoreContent(event.target.value)}
+                                        rows={10}
+                                        className="mt-3 w-full rounded-md border border-border-subtle bg-elevated px-3 py-2 font-mono text-xs leading-relaxed text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                      />
+                                      {ignoreError && (
+                                        <div className="mt-2 text-sm text-red-200">
+                                          {ignoreError}
+                                        </div>
+                                      )}
+                                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => void saveIgnoreRules()}
+                                          disabled={ignoreSaving}
+                                          className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                        >
+                                          {ignoreSaving
+                                            ? t("workspace.savingScanRules", "Saving")
+                                            : t("workspace.saveScanRules", "Save scan rules")}
+                                        </button>
+                                        <span className="truncate font-mono text-xs text-text-muted">
+                                          {ignorePayload?.ignore_path}
+                                        </span>
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()
                       ) : (
-                        <div className="rounded-md border border-border-subtle bg-root p-4 text-sm text-text-secondary">
-                          {t("workspace.noProjects", "No registered projects yet. Add a local path or GitHub repository below to start analysis.")}
+                        <div className="rounded-md border border-border-subtle bg-root p-5">
+                          <div className="text-xs font-semibold uppercase tracking-wider text-accent">
+                            {t("workspace.noProjectsBadge", "No registered projects yet")}
+                          </div>
+                          <h3 className="mt-2 font-heading text-xl text-text-primary">
+                            {t("workspace.emptyProjectTitle", "Create your first project graph")}
+                          </h3>
+                          <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+                            {t(
+                              "workspace.emptyProjectDescription",
+                              "Start from a local workspace or GitHub repository. The dashboard will track the analysis conversation, graph artifacts, and follow-up project actions here.",
+                            )}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setCreateProjectOpen(true)}
+                            className="mt-4 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                          >
+                            {t("workspace.addProject", "Add project")}
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1587,7 +1860,183 @@ export default function AstrBotWorkspace({
               )}
             </main>
 
-            <aside className="space-y-4 xl:sticky xl:top-5 xl:self-start">
+            <aside className="order-1 flex min-h-0 flex-col gap-4 overflow-y-auto pr-1 lg:order-1">
+              <Panel className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-heading text-lg text-text-primary">
+                      {t("workspace.projectManagement", "Project management")}
+                    </h2>
+                    <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                      {t(
+                        "workspace.projectManagementDescription",
+                        "Add a local path or GitHub repository, then track analysis from the selected project.",
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCreateProjectOpen((value) => !value)}
+                    className="shrink-0 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {showCreateProjectForm
+                      ? t("common.close", "Close")
+                      : t("workspace.addProject", "Add project")}
+                  </button>
+                </div>
+
+                {showCreateProjectForm && (
+                  <form onSubmit={startAnalysis} className="mt-4 space-y-4 border-t border-border-subtle pt-4">
+                    <label className="block">
+                      <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
+                        {t("workspace.projectTarget", "Project Target")}
+                      </span>
+                      <input
+                        type="text"
+                        value={projectTarget}
+                        onChange={(event) => setProjectTarget(event.target.value)}
+                        placeholder={t(
+                          "workspace.projectTargetPlaceholder",
+                          "https://github.com/owner/repo/tree/main/packages/app or D:\\path\\to\\project",
+                        )}
+                        className="w-full rounded-md border border-border-subtle bg-root px-3 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      />
+                    </label>
+
+                    {analyzingGithubTarget && (
+                      <label className="block">
+                        <span className="mb-1 block text-xs uppercase tracking-wider text-text-muted">
+                          {t("workspace.githubProxy", "Git clone proxy")}
+                        </span>
+                        <select
+                          value={githubProxy}
+                          onChange={(event) => setGithubProxy(event.target.value)}
+                          className="w-full rounded-md border border-border-subtle bg-root px-3 py-2.5 text-sm text-text-primary focus:border-accent focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        >
+                          <option value="">
+                            {t(
+                              "workspace.githubProxyDirect",
+                              "Automatic: direct, then proxies",
+                            )}
+                          </option>
+                          {githubProxyPresets.map((proxy) => (
+                            <option key={proxy} value={proxy}>
+                              {proxy}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-xs leading-relaxed text-text-muted">
+                          {t(
+                            "workspace.githubProxyDescription",
+                            "Direct GitHub is tried first. If it fails with a network error, AstrBot falls back to bundled proxy presets.",
+                          )}
+                        </p>
+                      </label>
+                    )}
+
+                    <div className="space-y-2">
+                      <div className="inline-flex items-center gap-2 text-sm text-text-secondary">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={fullAnalysis}
+                            onChange={(event) => setFullAnalysis(event.target.checked)}
+                            className="h-4 w-4 accent-[var(--color-accent)]"
+                          />
+                          {t("workspace.fullAnalysis", "Full analysis")}
+                        </label>
+                        <OptionHelp
+                          label={t(
+                            "workspace.fullAnalysisHelpLabel",
+                            "What does full analysis do?",
+                          )}
+                        >
+                          {t(
+                            "workspace.fullAnalysisHelp",
+                            "Force this run to rebuild the whole graph from scratch. Leave it off to reuse the existing graph and analyze only changed files when possible.",
+                          )}
+                        </OptionHelp>
+                      </div>
+                      <div className="inline-flex items-center gap-2 text-sm text-text-secondary">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={autoUpdate}
+                            onChange={(event) => setAutoUpdate(event.target.checked)}
+                            className="h-4 w-4 accent-[var(--color-accent)]"
+                          />
+                          {t("workspace.autoUpdate", "Auto update")}
+                        </label>
+                        <OptionHelp
+                          label={t(
+                            "workspace.autoUpdateHelpLabel",
+                            "What does auto update do?",
+                          )}
+                        >
+                          {t(
+                            "workspace.autoUpdateHelp",
+                            "Save this project for background updates. Configure the polling interval in plugin settings; AstrBot checks in minutes, not seconds.",
+                          )}
+                        </OptionHelp>
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={!canStartAnalysis}
+                      className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-root transition-[filter,opacity] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    >
+                      {starting
+                        ? t("workspace.starting", "Starting")
+                        : t("workspace.startAnalysis", "Start Analysis")}
+                    </button>
+
+                    <div className="space-y-2">
+                      {!subagentsReady && (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                          {subagentError ||
+                            t("workspace.subagentsBlocked", "Register UA SubAgents from setup before starting analysis jobs.")}
+                        </div>
+                      )}
+                      {!computerUseReady && (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                          <div>
+                            {t(
+                              "workspace.computerUseBlocked",
+                              "Enable Computer Use runtime before starting analysis jobs.",
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-amber-100/80">
+                            {t("workspace.computerUseSetupPath", "Config -> General -> Computer Use -> Runtime")} ·{" "}
+                            {t("workspace.computerUseSetupValue", "local or sandbox")}
+                          </div>
+                        </div>
+                      )}
+                      {!localRuntimeReady && (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                          <div>
+                            {t(
+                              "workspace.runtimeBlocked",
+                              "Understand Anything runtime must be ready before starting analysis jobs.",
+                            )}
+                          </div>
+                          {runtimeReadiness?.blocking_reasons?.length ? (
+                            <div className="mt-1 text-xs text-amber-100/80">
+                              {runtimeReadiness.blocking_reasons.join(" ")}
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                      {!gitReady && (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                          {t("workspace.gitUnavailable", "Git is unavailable on this AstrBot host.")}
+                        </div>
+                      )}
+                    </div>
+                  </form>
+                )}
+              </Panel>
+
               <Panel className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -1732,11 +2181,75 @@ export default function AstrBotWorkspace({
               )}
 
               <Panel className="p-4">
-                <details className="group">
-                  <summary className="cursor-pointer list-none text-sm font-semibold text-text-primary transition-colors hover:text-accent">
-                    {t("workspace.environmentDetails", "Environment details")}
-                  </summary>
-                  <div className="mt-4 space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-heading text-base text-text-primary">
+                      {t("workspace.environmentDetails", "Environment details")}
+                    </h2>
+                    <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+                      {t(
+                        "workspace.environmentDetailsSummary",
+                        "Runtime health is summarized here. Open diagnostics only when setup or analysis is blocked.",
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEnvironmentDetailsOpen((value) => !value)}
+                    className="shrink-0 rounded-md border border-border-medium bg-elevated px-2.5 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {environmentDetailsOpen
+                      ? t("common.hide", "Hide")
+                      : t("common.show", "Show")}
+                  </button>
+                </div>
+
+                <div className="mt-4 grid gap-2">
+                  <div className="rounded-md border border-border-subtle bg-elevated px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-text-primary">
+                        {t("workspace.runtimeToolCheck", "Runtime tool check")}
+                      </span>
+                      <span className="text-xs font-semibold text-text-secondary">
+                        {t("workspace.availableOfTotal", "{ready}/{total} ready", {
+                          ready: readyRuntimeToolCount,
+                          total: runtimeToolItems.length,
+                        })}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border-subtle bg-elevated px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-text-primary">
+                        {t("workspace.computerUseRuntime", "Computer Use runtime")}
+                      </span>
+                      <span className="text-xs font-semibold text-text-secondary">
+                        {computerUseConfigs.length
+                          ? t("workspace.availableOfTotal", "{ready}/{total} ready", {
+                              ready: enabledComputerUseCount,
+                              total: computerUseConfigs.length,
+                            })
+                          : computerUseRuntimeLabel}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border-subtle bg-elevated px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-text-primary">
+                        {t("workspace.runtimeFiles", "Runtime files")}
+                      </span>
+                      <span className="text-xs font-semibold text-text-secondary">
+                        {t("workspace.availableOfTotal", "{ready}/{total} ready", {
+                          ready: readyRuntimeItemCount,
+                          total: runtimeItems.length,
+                        })}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {environmentDetailsOpen && (
+                  <div className="mt-4 space-y-4 border-t border-border-subtle pt-4">
                     <div>
                       <div className="mb-2 text-[11px] uppercase tracking-wider text-text-muted">
                         {t("workspace.runtimeToolCheck", "Runtime tool check")}
@@ -1807,7 +2320,7 @@ export default function AstrBotWorkspace({
 
                     <div>
                       <div className="mb-2 text-[11px] uppercase tracking-wider text-text-muted">
-                        {t("common.runtime", "Runtime")}
+                        {t("workspace.runtimeFiles", "Runtime files")}
                       </div>
                       <div className="space-y-2">
                         {runtimeItems.map(([key, fallback, exists]) => (
@@ -1828,7 +2341,7 @@ export default function AstrBotWorkspace({
                       </div>
                     </div>
                   </div>
-                </details>
+                )}
               </Panel>
             </aside>
           </div>
