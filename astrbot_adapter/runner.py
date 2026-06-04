@@ -932,6 +932,7 @@ class UnderstandAnythingRunner:
                 subagent_dispatcher = UnderstandAnythingSubAgentDispatcher(
                     self.context,
                     log_fn=lambda message: self.jobs.append_log(job.job_id, message),
+                    language_directive=self._language_directive_for_job(job),
                 )
                 if job.kind in {
                     "understand",

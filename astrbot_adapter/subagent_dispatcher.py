@@ -42,11 +42,13 @@ class UnderstandAnythingSubAgentDispatcher:
         *,
         log_fn: LogFn | None = None,
         handoff_executor: HandoffExecutor | None = None,
+        language_directive: str | None = None,
     ) -> None:
         self.context = context
         self.log_fn = log_fn
         self.handoff_executor = handoff_executor or self._execute_handoff
         self._uses_custom_handoff_executor = handoff_executor is not None
+        self.language_directive = str(language_directive or "").strip()
 
     def tool_set(self) -> ToolSet:
         return ToolSet(
@@ -194,7 +196,7 @@ class UnderstandAnythingSubAgentDispatcher:
                 handoff,
                 run_context,
                 {
-                    "input": input_text,
+                    "input": self._input_with_language_directive(input_text),
                     "background_task": False,
                 },
             )
@@ -401,6 +403,23 @@ class UnderstandAnythingSubAgentDispatcher:
                 f"Allowed roles: {', '.join(sorted(ROLE_NAMES))}",
             )
         return normalized
+
+    def _input_with_language_directive(self, input_text: str) -> str:
+        if not self.language_directive:
+            return input_text
+        if self.language_directive in input_text:
+            return input_text
+        return (
+            "Language directive for this UA worker task:\n"
+            f"{self.language_directive}\n\n"
+            "Apply this directive to every user-visible text field you write, "
+            "including project descriptions, node summaries, layer descriptions, "
+            "domain flow/step summaries, tour titles/descriptions, and final notes. "
+            "Do not translate code identifiers, file paths, schema keys, IDs, or "
+            "established technical terms.\n\n"
+            "Worker task input:\n"
+            f"{input_text}"
+        )
 
     @staticmethod
     def _output_state(path: str) -> dict[str, Any]:

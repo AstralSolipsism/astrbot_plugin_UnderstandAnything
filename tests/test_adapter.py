@@ -3876,8 +3876,8 @@ async def test_runner_runs_runtime_validation_around_agent_workflow(
             return {"ready": True}
 
     class DummySubAgentDispatcher:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def __init__(self, *_args, **kwargs):
+            events.append(f"subagent-language:{kwargs.get('language_directive')}")
 
         def ensure_ready(self):
             return None
@@ -3936,6 +3936,11 @@ async def test_runner_runs_runtime_validation_around_agent_workflow(
     assert events == [
         "runtime:ready",
         "runtime:preflight_inventory",
+        (
+            "subagent-language:Generate all user-visible textual content in "
+            "Simplified Chinese. Keep code identifiers, file paths, schema keys, "
+            "tags, and established technical terms unchanged when appropriate."
+        ),
         "agent",
         "runtime:validate_outputs",
     ]
@@ -5315,6 +5320,39 @@ def test_dispatcher_reports_missing_persisted_subagent_role() -> None:
     assert result["status"] == "failed"
     assert "not registered or loaded" in result["error"]
 
+
+def test_subagent_dispatcher_prepends_language_directive_to_role_input() -> None:
+    captured: dict[str, str] = {}
+    directive = (
+        "Generate all user-visible textual content in Simplified Chinese. "
+        "Keep code identifiers, file paths, schema keys, tags, and established "
+        "technical terms unchanged when appropriate."
+    )
+
+    async def fake_handoff(_handoff, _run_context, tool_args):
+        captured["input"] = str(tool_args["input"])
+        return "ok"
+
+    dispatcher = UnderstandAnythingSubAgentDispatcher(
+        _DummyContext(),  # type: ignore[arg-type]
+        handoff_executor=fake_handoff,
+        language_directive=directive,
+    )
+
+    result = asyncio.run(
+        dispatcher.run_role(
+            _dummy_event(),  # type: ignore[arg-type]
+            role="file-analyzer",
+            input_text="analyze this batch",
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert captured["input"].startswith("Language directive for this UA worker task:")
+    assert directive in captured["input"]
+    assert "project descriptions, node summaries, layer descriptions" in captured["input"]
+    assert "domain flow/step summaries" in captured["input"]
+    assert captured["input"].endswith("analyze this batch")
 
 def test_subagent_batches_respect_max_concurrency() -> None:
     active = 0
