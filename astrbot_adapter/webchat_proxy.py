@@ -5,9 +5,10 @@ import json
 import mimetypes
 import time
 import uuid
+from collections.abc import AsyncIterator
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from .constants import PLUGIN_NAME, PLUGIN_ROOT
 
@@ -238,7 +239,9 @@ class UnderstandAnythingWebChatProxy:
         )
         return {
             "sessions": [
-                self._session_payload(item.get("session") if isinstance(item, dict) else item)
+                self._session_payload(
+                    item.get("session") if isinstance(item, dict) else item
+                )
                 for item in sessions
             ],
             "total": total,
@@ -540,7 +543,9 @@ class UnderstandAnythingWebChatProxy:
             platform_id=str(session.platform_id),
             is_group=bool(getattr(session, "is_group", 0)),
         )
-        request_stop = getattr(self.active_event_registry, "request_agent_stop_all", None)
+        request_stop = getattr(
+            self.active_event_registry, "request_agent_stop_all", None
+        )
         stopped_count = request_stop(umo) if callable(request_stop) else 0
         return {"stopped_count": stopped_count}
 
@@ -704,13 +709,17 @@ def _default_context_path() -> Path:
     try:
         from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-        return Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME / "webchat-contexts.json"
+        return (
+            Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME / "webchat-contexts.json"
+        )
     except Exception:
         return PLUGIN_ROOT / ".plugin_data" / "webchat-contexts.json"
 
 
 def _default_queue_mgr() -> Any:
-    from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+    from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
+        webchat_queue_mgr,
+    )
 
     return webchat_queue_mgr
 
@@ -839,9 +848,7 @@ def _jsonable_record(record: Any) -> dict[str, Any]:
         raw = record
     else:
         raw = {
-            key: value
-            for key, value in vars(record).items()
-            if not key.startswith("_")
+            key: value for key, value in vars(record).items() if not key.startswith("_")
         }
     return {str(key): _jsonable_value(value) for key, value in raw.items()}
 

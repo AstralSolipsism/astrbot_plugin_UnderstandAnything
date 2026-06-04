@@ -138,9 +138,15 @@ class ChatCommandParser:
                 query=raw,
                 mode="explain",
             )
-        if any(keyword in normalized for keyword in ("当前改动", "现在改动", "diff", "变更")):
+        if any(
+            keyword in normalized
+            for keyword in ("当前改动", "现在改动", "diff", "变更")
+        ):
             return ChatIntent(intent="diff", query=raw, mode="diff")
-        if any(keyword in normalized for keyword in ("项目导览", "导览", "onboarding", "新手指南")):
+        if any(
+            keyword in normalized
+            for keyword in ("项目导览", "导览", "onboarding", "新手指南")
+        ):
             return ChatIntent(intent="onboard", query=raw, mode="onboard")
         if any(keyword in normalized for keyword in ("领域", "domain", "业务图谱")):
             return ChatIntent(intent="domain", query=raw, mode="domain")
@@ -260,7 +266,11 @@ class ChatStateResolver:
         if selected == "ambiguous":
             return ChatState(
                 name="ambiguous_project",
-                available_actions=["select_project", "start_analysis", "open_dashboard"],
+                available_actions=[
+                    "select_project",
+                    "start_analysis",
+                    "open_dashboard",
+                ],
             )
         if selected is None:
             failed = _latest_failed_job(self.runner)
@@ -310,14 +320,23 @@ class ChatStateMachine:
 
     def validate(self, state: ChatState, intent: ChatIntent) -> ChatValidation:
         if state.name.startswith("blocked_") and intent.intent in START_INTENTS:
-            reason = "；".join(item for item in state.blockers if item) or "当前环境未就绪"
+            reason = (
+                "；".join(item for item in state.blockers if item) or "当前环境未就绪"
+            )
             return ChatValidation(False, reason)
         if state.name == "analysis_running" and intent.intent in START_INTENTS:
-            return ChatValidation(False, "已经有分析任务在运行，请先查看状态或停止当前任务。")
+            return ChatValidation(
+                False, "已经有分析任务在运行，请先查看状态或停止当前任务。"
+            )
         if state.name == "source_preparing" and intent.intent in START_INTENTS:
-            return ChatValidation(False, "项目源码正在准备中，请先查看状态或停止当前任务。")
+            return ChatValidation(
+                False, "项目源码正在准备中，请先查看状态或停止当前任务。"
+            )
         if state.name == "no_project" and intent.intent in CONTENT_INTENTS:
-            return ChatValidation(False, "还没有可用项目，请先发送 `/understand 分析 <项目路径或 GitHub 地址>`。")
+            return ChatValidation(
+                False,
+                "还没有可用项目，请先发送 `/understand 分析 <项目路径或 GitHub 地址>`。",
+            )
         if state.name == "ambiguous_project" and intent.intent in CONTENT_INTENTS:
             return ChatValidation(False, "当前匹配到多个项目，请先说明要使用哪个项目。")
         if state.name != "graph_ready" and intent.intent in CONTENT_INTENTS:
@@ -342,14 +361,16 @@ class ChatActionExecutor:
                 intent.project_hint or _project_ref_from_kwargs(project_kwargs),
             )
         if intent.intent == "open_dashboard":
-            return (
-                f"打开 AstrBot WebUI，进入插件 `{PLUGIN_NAME}`，然后打开 Dashboard 页面。"
-            )
+            return f"打开 AstrBot WebUI，进入插件 `{PLUGIN_NAME}`，然后打开 Dashboard 页面。"
         if intent.intent == "diagnose":
             return ToolResultPresenter(self.runner).project_state(intent.project_hint)
         if intent.intent == "repair_runtime":
             payload = await self.runner.runtime.repair()
-            return "修复完成。" if payload.get("ready") else "修复已执行，但运行环境仍未就绪。"
+            return (
+                "修复完成。"
+                if payload.get("ready")
+                else "修复已执行，但运行环境仍未就绪。"
+            )
         if intent.intent == "stop_job":
             return self._stop_latest_active_job()
         if intent.intent in START_INTENTS:
@@ -391,7 +412,8 @@ class ChatActionExecutor:
                 skill_name="understand-domain",
                 job_label="domain analysis",
                 event=event,
-                project_ref=intent.project_hint or _project_ref_from_kwargs(project_kwargs),
+                project_ref=intent.project_hint
+                or _project_ref_from_kwargs(project_kwargs),
             )
             return self.runner.format_job_source_started_message(
                 job,
@@ -547,7 +569,9 @@ class ToolResultPresenter:
         mode: str = "ask",
         project_kwargs: dict[str, Any] | None = None,
     ) -> str:
-        kwargs = _content_project_kwargs(project_kwargs or {}, ChatIntent(project_hint=project_hint, intent="ask"))
+        kwargs = _content_project_kwargs(
+            project_kwargs or {}, ChatIntent(project_hint=project_hint, intent="ask")
+        )
         if project_hint:
             kwargs["project_ref"] = project_hint
         try:
