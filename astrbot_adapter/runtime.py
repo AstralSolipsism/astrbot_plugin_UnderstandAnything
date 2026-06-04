@@ -102,6 +102,14 @@ class UnderstandAnythingRuntime:
                 "build",
             )
             actions.append("pnpm --filter @understand-anything/core build")
+        if not self._assistant_dist_index().is_file():
+            await self._run(
+                tools.pnpm.path,
+                "--filter",
+                "@understand-anything/assistant",
+                "build",
+            )
+            actions.append("pnpm --filter @understand-anything/assistant build")
         if not self._dist_index().is_file():
             await self._run(tools.pnpm.path, "build")
             actions.append("pnpm build")
@@ -149,10 +157,14 @@ class UnderstandAnythingRuntime:
     def _dist_index(self) -> Path:
         return self.root / "dist" / "index.js"
 
+    def _assistant_dist_index(self) -> Path:
+        return self.root / "packages" / "assistant" / "dist" / "index.js"
+
     def _repair_needed(self) -> bool:
         return not (
             (self.root / "node_modules").exists()
             and (self.root / "packages" / "core" / "dist" / "index.js").is_file()
+            and self._assistant_dist_index().is_file()
             and self._dist_index().is_file()
         )
 

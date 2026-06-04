@@ -101,6 +101,9 @@ def runtime_dependency_state(root: Path) -> dict[str, bool]:
     return {
         "node_modules": (root / "node_modules").exists(),
         "core_dist": (root / "packages" / "core" / "dist" / "index.js").is_file(),
+        "assistant_dist": (
+            root / "packages" / "assistant" / "dist" / "index.js"
+        ).is_file(),
         "runtime_dist": (root / "dist" / "index.js").is_file(),
     }
 
