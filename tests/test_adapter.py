@@ -24,7 +24,10 @@ from astrbot_adapter.github_repo import (
     GitHubRepoError,
     GitHubRepoManager,
 )
-from astrbot_adapter.ignore_review import append_ignore_patterns, build_ignore_confirmation
+from astrbot_adapter.ignore_review import (
+    append_ignore_patterns,
+    build_ignore_confirmation,
+)
 from astrbot_adapter.job_request import format_job_args, parse_job_args
 from astrbot_adapter.job_store import JobStatus, JobStore
 from astrbot_adapter.path_security import PathSecurity, PathSecurityError
@@ -149,7 +152,9 @@ def test_main_plugin_llm_tools_are_structured_and_not_legacy() -> None:
 
 def test_main_plugin_tools_do_not_generate_final_answers_directly() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
-    tool_source = source[source.index('@filter.llm_tool(name="ua_get_project_state")') :]
+    tool_source = source[
+        source.index('@filter.llm_tool(name="ua_get_project_state")') :
+    ]
 
     assert "return await self.runner.chat(" not in tool_source
     assert "return await self.runner.explain(" not in tool_source
@@ -174,7 +179,9 @@ def test_main_plugin_webchat_project_kwargs_include_stored_context_items(
     plugin = plugin_module.UnderstandAnythingPlugin.__new__(
         plugin_module.UnderstandAnythingPlugin,
     )
-    plugin.webchat_context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    plugin.webchat_context_store = WebChatSessionContextStore(
+        tmp_path / "contexts.json"
+    )
     plugin.webchat_context_store.update(
         session_id="s1",
         username="alice",
@@ -222,19 +229,30 @@ def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
     )
     page_assets_dir = PLUGIN_ROOT / "pages" / "dashboard" / "assets"
     js_assets = list(page_assets_dir.glob("*.js"))
+    bridge_loader = (
+        PLUGIN_ROOT
+        / "understand-anything"
+        / "packages"
+        / "dashboard"
+        / "src"
+        / "utils"
+        / "pluginPageContext.ts"
+    ).read_text(encoding="utf-8")
 
-    bridge_index = source_html.index("/api/plugin/page/bridge-sdk.js")
     app_index = source_html.index("/src/main.tsx")
-    page_bridge_index = page_html.index("/api/plugin/page/bridge-sdk.js")
     page_app_index = page_html.index('src="./assets/index-')
-    assert bridge_index < app_index
-    assert page_bridge_index < page_app_index
-    assert "i18n_scope" in source_html
-    assert '"page"' in source_html
-    assert "i18n_scope" in page_html
-    assert '"page"' in page_html
-    assert "asset_token" in source_html
-    assert "asset_token" in page_html
+    assert app_index >= 0
+    assert page_app_index >= 0
+    assert "document.write" not in source_html
+    assert "document.write" not in dist_html
+    assert "document.write" not in page_html
+    assert "/api/plugin/page/bridge-sdk.js" not in source_html
+    assert "/api/plugin/page/bridge-sdk.js" not in page_html
+    assert "bridge-sdk.js" in bridge_loader
+    assert '["", "api", "plugin", "page", "bridge-sdk.js"]' in bridge_loader
+    assert "i18n_scope" in bridge_loader
+    assert '"page"' in bridge_loader
+    assert "asset_token" in bridge_loader
     for built_html in (dist_html, page_html):
         # AstrBot embeds plugin pages in a sandboxed iframe without allow-same-origin.
         # ES module scripts loaded from that opaque origin require CORS headers on
@@ -1062,7 +1080,9 @@ async def test_github_job_scan_rules_and_prompt_use_auto_zh_for_url_only_command
         event=event,  # type: ignore[arg-type]
         start_task=False,
     )
-    confirmation = build_ignore_confirmation(job.project_root, Path(job.args["graph_root"]))
+    confirmation = build_ignore_confirmation(
+        job.project_root, Path(job.args["graph_root"])
+    )
     runner.jobs.mark_waiting_confirmation(job.job_id, confirmation)
 
     message = runner._confirmation_message(job)
@@ -1276,8 +1296,7 @@ async def test_runner_start_job_uses_github_proxy_from_raw_args(
     job = await runner.start_skill_job(
         skill_name="understand",
         raw_args=(
-            "https://github.com/AstralSolipsism/demo "
-            "--github-proxy https://gh.llkk.cc"
+            "https://github.com/AstralSolipsism/demo --github-proxy https://gh.llkk.cc"
         ),
         start_task=False,
     )
@@ -1972,7 +1991,9 @@ async def test_runner_github_notifications_start_agent_without_scope_confirmatio
     assert snapshot.status is JobStatus.FINISHED
     assert messages[0].startswith("正在获取源码：AstrBot")
     agent_index = next(
-        index for index, message in enumerate(messages) if "开始生成图谱：AstrBot" in message
+        index
+        for index, message in enumerate(messages)
+        if "开始生成图谱：AstrBot" in message
     )
     assert 0 < agent_index
     old_scope_text = "扫描范围" + "确认：AstrBot"
@@ -2562,18 +2583,29 @@ async def test_web_api_projects_include_dashboard_status_fields(
     project = tmp_path / "project"
     graph_root = project / ".understand-anything"
     graph_root.mkdir(parents=True)
+    (graph_root / "knowledge-graph.json").write_text(
+        json.dumps({"nodes": [{"id": "file:a.py"}], "edges": []}),
+        encoding="utf-8",
+    )
     registry = ProjectRegistry(tmp_path / "projects.json")
     record = registry.register(project)
+    jobs = JobStore()
+    failed_job = jobs.create(
+        "understand",
+        project,
+        {"project_id": record.project_id, "graph_root": str(graph_root)},
+    )
+    jobs.mark_failed(failed_job.job_id, "Invalid graph.")
     registry.update_status(
         record.project_id,
         ProjectStatus.FAILED,
-        current_job_id="job-1",
-        last_job_id="job-1",
+        current_job_id=failed_job.job_id,
+        last_job_id=failed_job.job_id,
         last_error="Invalid graph.",
         node_count=2,
         edge_count=3,
     )
-    runner = SimpleNamespace(config={}, registry=registry, jobs=JobStore())
+    runner = SimpleNamespace(config={}, registry=registry, jobs=jobs)
     api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
     app = Quart(__name__)
 
@@ -2583,11 +2615,17 @@ async def test_web_api_projects_include_dashboard_status_fields(
     payload = await response.get_json()
     project_payload = payload["data"]["projects"][0]
     assert project_payload["status"] == "failed"
-    assert project_payload["current_job_id"] == "job-1"
-    assert project_payload["last_job_id"] == "job-1"
+    assert project_payload["current_job_id"] == failed_job.job_id
+    assert project_payload["last_job_id"] == failed_job.job_id
     assert project_payload["last_error"] == "Invalid graph."
     assert project_payload["node_count"] == 2
     assert project_payload["edge_count"] == 3
+    assert project_payload["graph_ready"] is True
+    assert project_payload["graphReady"] is True
+    assert project_payload["current_job"] is None
+    assert project_payload["recent_job"]["job_id"] == failed_job.job_id
+    assert project_payload["can_retry"] is True
+    assert project_payload["canRetry"] is True
 
 
 @pytest.mark.asyncio
@@ -2617,7 +2655,9 @@ async def test_web_api_confirms_dashboard_understandignore_job(
         job.job_id,
         build_ignore_confirmation(project, graph_root),
     )
-    runner._confirmation_futures[job.job_id] = asyncio.get_running_loop().create_future()
+    runner._confirmation_futures[job.job_id] = (
+        asyncio.get_running_loop().create_future()
+    )
     api = UnderstandAnythingWebApi(context=None, runner=runner)  # type: ignore[arg-type]
     app = Quart(__name__)
 
@@ -2982,6 +3022,11 @@ def test_runtime_readiness_allows_local_analysis_without_git(
         "export {};",
         encoding="utf-8",
     )
+    (runtime_root / "packages" / "assistant" / "dist").mkdir(parents=True)
+    (runtime_root / "packages" / "assistant" / "dist" / "index.js").write_text(
+        "export {};",
+        encoding="utf-8",
+    )
     (runtime_root / "dist").mkdir()
     (runtime_root / "dist" / "index.js").write_text("export {};", encoding="utf-8")
 
@@ -2998,6 +3043,33 @@ def test_runtime_readiness_allows_local_analysis_without_git(
     assert readiness["local_analysis_ready"] is True
     assert readiness["github_analysis_ready"] is False
     assert "git" in readiness["github_blocking_reason"].lower()
+
+
+def test_runtime_readiness_requires_assistant_workspace_dist(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "understand-anything"
+    (runtime_root / "node_modules").mkdir(parents=True)
+    (runtime_root / "packages" / "core" / "dist").mkdir(parents=True)
+    (runtime_root / "packages" / "core" / "dist" / "index.js").write_text(
+        "export {};",
+        encoding="utf-8",
+    )
+    (runtime_root / "dist").mkdir()
+    (runtime_root / "dist" / "index.js").write_text("export {};", encoding="utf-8")
+
+    readiness = runtime_readiness(
+        runtime_root,
+        RuntimeToolset(
+            node=_runtime_tool("node"),
+            pnpm=_runtime_tool("pnpm"),
+            git=_runtime_tool("git"),
+        ),
+        auto_repair_enabled=False,
+    )
+
+    assert readiness["repair_needed"] is True
+    assert readiness["dependency_state"]["assistant_dist"] is False
+    assert readiness["local_analysis_ready"] is False
+    assert "incomplete" in " ".join(readiness["blocking_reasons"]).lower()
 
 
 @pytest.mark.asyncio
@@ -3021,6 +3093,10 @@ async def test_runtime_repair_runs_only_inside_bundled_runtime(
             core_dist = runtime_root / "packages" / "core" / "dist"
             core_dist.mkdir(parents=True)
             (core_dist / "index.js").write_text("export {};", encoding="utf-8")
+        elif "@understand-anything/assistant" in command:
+            assistant_dist = runtime_root / "packages" / "assistant" / "dist"
+            assistant_dist.mkdir(parents=True)
+            (assistant_dist / "index.js").write_text("export {};", encoding="utf-8")
         elif "build" in command:
             dist = runtime_root / "dist"
             dist.mkdir()
@@ -3040,6 +3116,7 @@ async def test_runtime_repair_runs_only_inside_bundled_runtime(
     assert result["actions"] == [
         "pnpm install --frozen-lockfile",
         "pnpm --filter @understand-anything/core build",
+        "pnpm --filter @understand-anything/assistant build",
         "pnpm build",
     ]
     assert all(str(runtime_root) not in " ".join(command) for command in calls)
@@ -3079,6 +3156,8 @@ def test_web_api_status_summarizes_config_without_provider_secret(
     assert "/astrbot_plugin_UnderstandAnything/runtime/repair" in routes
     assert "/astrbot_plugin_UnderstandAnything/subagents/providers" in routes
     assert "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/confirm" in routes
+    assert "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/retry" in routes
+    assert "/astrbot_plugin_UnderstandAnything/projects/check-updates" in routes
     assert payload["plugin"]["name"] == "astrbot_plugin_UnderstandAnything"
     assert payload["config"]["provider_configured"] is True
     assert "node_bin" not in payload["config"]
@@ -3122,7 +3201,9 @@ def test_web_api_keeps_astrbot_dashboard_regression_routes(tmp_path: Path) -> No
         "/astrbot_plugin_UnderstandAnything/jobs/<job_id>",
         "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/events",
         "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/confirm",
+        "/astrbot_plugin_UnderstandAnything/jobs/<job_id>/retry",
         "/astrbot_plugin_UnderstandAnything/projects/delete",
+        "/astrbot_plugin_UnderstandAnything/projects/check-updates",
         "/astrbot_plugin_UnderstandAnything/projects/ignore",
         "/astrbot_plugin_UnderstandAnything/file-content",
     }.issubset(routes)
@@ -3208,7 +3289,9 @@ def test_web_api_delegates_first_phase_webchat_bridge_calls(tmp_path: Path) -> N
             return stream()
 
         async def stop_session(self, username: str, session_id: str):
-            self.calls.append(("stop", {"username": username, "session_id": session_id}))
+            self.calls.append(
+                ("stop", {"username": username, "session_id": session_id})
+            )
             return {"stopped_count": 1}
 
         async def cancel_send(
@@ -4202,9 +4285,7 @@ def test_build_fingerprints_script_writes_to_graph_root(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "Fingerprints baseline: 1 files" in result.stdout
     assert not (project_root / ".understand-anything" / "fingerprints.json").exists()
-    payload = json.loads(
-        (graph_root / "fingerprints.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((graph_root / "fingerprints.json").read_text(encoding="utf-8"))
     assert payload["gitCommitHash"] == "abc"
     assert "src/index.ts" in payload["files"]
 
@@ -4396,11 +4477,54 @@ def test_dashboard_workspace_exposes_project_center_and_soft_job_refresh() -> No
     ).read_text(encoding="utf-8")
 
     assert "workspace.initialConfiguration" in source
-    assert "order-1 p-4 sm:p-5" in source
+    assert "workspace.projectPortalTitle" in source
+    assert "workspace.projectManagement" in source
     assert "workspace.selectedProject" in source
+    assert "workspace.projectCapabilities" in source
+    assert "openProjectAssistant" in source
+    assert "setAssistantMode" in source
+    assert "h-[100dvh]" in source
+    assert "max-h-[100dvh]" in source
+    assert "lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]" in source
+    assert "grid-rows-[minmax(160px,0.45fr)_minmax(0,1fr)]" in source
+    assert "flex min-h-0 flex-1 flex-col overflow-hidden" in source
+    assert "min-h-screen w-screen" not in source
     assert "projects/ignore" in source
+    assert "projects/check-updates" in source
+    assert "`jobs/${job.job_id}/retry`" in source
+    assert "JobObservationConversation" in source
+    assert "workspace.analysisProcess" in source
+    assert "workspace.analysisTrackingDescription" in source
+    assert "activeCurrentJob" in source
+    assert "visibleProjectError" in source
     assert "workspace.jobRefreshDelayed" in source
+    assert "environmentDetailsOpen" in source
+    assert "workspace.environmentDetailsSummary" in source
+    assert "<details" not in source
     assert 'setError(t("workspace.jobEventInterrupted"' not in source
+
+
+def test_dashboard_job_observations_finish_without_stale_spinners() -> None:
+    source = (
+        PLUGIN_ROOT
+        / "understand-anything"
+        / "packages"
+        / "dashboard"
+        / "src"
+        / "components"
+        / "JobObservationConversation.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "effectiveObservationStatus" in source
+    assert "useI18n" in source
+    assert "workspace.jobConversationTitle" in source
+    assert 'observation.status === "running" && terminalJobStatus(jobStatus)' in source
+    assert 'return "completed";' in source
+    assert "status={observation.status}" not in source
+    assert "任务对话流" not in source
+    assert "暂无过程观察" not in source
+    assert "h-[420px]" not in source
+    assert "[height:clamp(260px,38dvh,420px)]" in source
 
 
 def test_astrbot_internal_access_is_centralized() -> None:
@@ -4423,9 +4547,10 @@ def test_astrbot_internal_access_is_centralized() -> None:
     assert "provider_manager" not in business_sources["web_api.py"]
     assert "provider_manager" not in business_sources["subagent_registry.py"]
     assert "astrbot_config_mgr" not in business_sources["computer_use.py"]
-    assert 'getattr(persona_mgr, "personas"' not in business_sources[
-        "subagent_registry.py"
-    ]
+    assert (
+        'getattr(persona_mgr, "personas"'
+        not in business_sources["subagent_registry.py"]
+    )
 
 
 def test_skill_prompts_require_internal_subagent_tools() -> None:
@@ -4464,7 +4589,10 @@ def test_domain_skill_and_prompt_require_ir_only_output() -> None:
     assert "DomainAnalysisIR" in combined
     assert "$UA_GRAPH_ROOT/intermediate/domain-analysis.json" in skill
     assert "$UA_GRAPH_ROOT/intermediate/domain-analysis.json" in prompt
-    assert 'expected_output_path="$UA_GRAPH_ROOT/intermediate/domain-analysis.json"' in skill
+    assert (
+        'expected_output_path="$UA_GRAPH_ROOT/intermediate/domain-analysis.json"'
+        in skill
+    )
     assert "compile_domain_ir" in skill
     assert "Do not create or edit `domain-graph.json`" in prompt
     assert '"nodes": [' not in prompt
@@ -4485,13 +4613,23 @@ def test_understand_skill_documents_incremental_and_review_fingerprint_flow() ->
     assert "$ANALYSIS_MODE" in understand
     assert "## Phase 1 — SCAN (Full and incremental only)" in understand
     assert "Run Phase 1 when `$ANALYSIS_MODE` is `full` or `incremental`" in understand
-    assert "--changed-files=\"$UA_GRAPH_ROOT/tmp/changed-files.txt\"" in understand
+    assert '--changed-files="$UA_GRAPH_ROOT/tmp/changed-files.txt"' in understand
     assert "Do not recompute batches in Phase 2" in understand
     assert "preserve existing fingerprints" in understand
-    assert "sourceFilePaths` must contain the analyzed project-relative file paths" in understand
-    assert "build a fallback `sourceFilePaths` list from unique `filePath` values" in understand
-    assert "empty baseline, an absolute path, a `..` path, or a missing path" in understand
-    assert "Review-only cannot create fingerprints from the existing graph" in understand
+    assert (
+        "sourceFilePaths` must contain the analyzed project-relative file paths"
+        in understand
+    )
+    assert (
+        "build a fallback `sourceFilePaths` list from unique `filePath` values"
+        in understand
+    )
+    assert (
+        "empty baseline, an absolute path, a `..` path, or a missing path" in understand
+    )
+    assert (
+        "Review-only cannot create fingerprints from the existing graph" in understand
+    )
 
 
 def test_agent_prompts_include_language_directives() -> None:
@@ -4522,8 +4660,14 @@ def test_project_scanner_infers_infrastructure_frameworks_after_scan() -> None:
     assert "`Dockerfile` or `Dockerfile.*` -> `Docker`" in prompt
     assert "`docker-compose.yml` or `docker-compose.yaml` -> `Docker Compose`" in prompt
     assert "any `*.tf` file -> `Terraform`" in prompt
-    assert "`.github/workflows/*.yml` or `.github/workflows/*.yaml` file -> `GitHub Actions`" in prompt
-    assert "Step A manifest frameworks plus Step B file-derived infrastructure frameworks" in prompt
+    assert (
+        "`.github/workflows/*.yml` or `.github/workflows/*.yaml` file -> `GitHub Actions`"
+        in prompt
+    )
+    assert (
+        "Step A manifest frameworks plus Step B file-derived infrastructure frameworks"
+        in prompt
+    )
 
 
 def test_file_analyzer_allows_same_batch_cross_part_targets() -> None:
@@ -4533,8 +4677,13 @@ def test_file_analyzer_allows_same_batch_cross_part_targets() -> None:
 
     assert "allBatchNodeIds = Set(nodes.map(n => n.id))" in prompt
     assert "same-batch cross-part targets" in prompt
-    assert "a node `id` in `allBatchNodeIds` from another part of the same batch" in prompt
-    assert "Cross-batch function/class targets still need `neighborMap` symbol support" in prompt
+    assert (
+        "a node `id` in `allBatchNodeIds` from another part of the same batch" in prompt
+    )
+    assert (
+        "Cross-batch function/class targets still need `neighborMap` symbol support"
+        in prompt
+    )
 
 
 class _NoToolManager:
