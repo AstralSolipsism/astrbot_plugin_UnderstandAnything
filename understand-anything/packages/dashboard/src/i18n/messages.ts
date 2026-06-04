@@ -25,6 +25,8 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             open: "Open",
             close: "Close",
             cancel: "Cancel",
+            default: "Default",
+            none: "None",
             selected: "Selected",
             back: "Back",
             focus: "Focus",
@@ -219,6 +221,7 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             projectManagement: "Project management",
             projectManagementDescription:
               "Add a local path or GitHub repository, then track analysis from the selected project.",
+            addProject: "Add project",
             registeredProjects: "{count} registered",
             noProjectsBadge: "No registered projects yet",
             noProjects:
@@ -730,6 +733,8 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             open: "打开",
             close: "关闭",
             cancel: "取消",
+            default: "默认",
+            none: "无",
             selected: "已选择",
             back: "返回",
             focus: "聚焦",
@@ -919,6 +924,7 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             projectManagement: "项目管理",
             projectManagementDescription:
               "添加本地路径或 GitHub 仓库，然后在当前项目上下文中跟踪分析任务。",
+            addProject: "添加项目",
             registeredProjects: "已注册 {count} 个",
             noProjectsBadge: "还没有注册项目",
             noProjects: "还没有注册项目。请在下方添加本地路径或 GitHub 仓库并开始分析。",
@@ -1419,6 +1425,8 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             open: "Открыть",
             close: "Закрыть",
             cancel: "Отмена",
+            default: "По умолчанию",
+            none: "Нет",
             selected: "Выбрано",
             back: "Назад",
             focus: "Фокус",
@@ -1613,6 +1621,7 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             projectManagement: "Project management",
             projectManagementDescription:
               "Add a local path or GitHub repository, then track analysis from the selected project.",
+            addProject: "Add project",
             registeredProjects: "Зарегистрировано: {count}",
             noProjectsBadge: "No registered projects yet",
             noProjects:

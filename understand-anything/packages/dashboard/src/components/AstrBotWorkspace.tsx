@@ -1029,7 +1029,7 @@ export default function AstrBotWorkspace({
     !starting &&
     analysisTargetReady &&
     analysisBlockerForTarget(projectTarget) === null;
-  const showCreateProjectForm = createProjectOpen || projects.length === 0;
+  const showCreateProjectForm = createProjectOpen;
   const readyRuntimeToolCount = runtimeToolItems.filter(({ tool }) => tool.supported).length;
   const readyRuntimeItemCount = runtimeItems.filter(([, , exists]) => Boolean(exists)).length;
   const enabledComputerUseCount = computerUseConfigs.filter((config) => config.enabled).length;

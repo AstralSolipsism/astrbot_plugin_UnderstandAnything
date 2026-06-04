@@ -162,4 +162,11 @@ describe("dashboard i18n", () => {
       "2 context items added"
     );
   });
+
+  it("localizes workspace action buttons and compact state labels", () => {
+    expect(translateLocal("zh-CN", "workspace.addProject", "")).toBe("添加项目");
+    expect(translateLocal("en-US", "workspace.addProject", "")).toBe("Add project");
+    expect(translateLocal("zh-CN", "common.default", "")).toBe("默认");
+    expect(translateLocal("zh-CN", "common.none", "")).toBe("无");
+  });
 });

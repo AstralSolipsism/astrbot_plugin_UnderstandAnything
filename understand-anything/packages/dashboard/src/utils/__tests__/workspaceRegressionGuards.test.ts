@@ -77,6 +77,16 @@ describe("AstrBot workspace regression guards", () => {
     expect(workspaceSource).not.toContain("runtimeItems.githubArtifactRoot");
   });
 
+  it("keeps the project creation panel controlled by the explicit toggle state", () => {
+    const workspaceSource = readFileSync(
+      new URL("../../components/AstrBotWorkspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(workspaceSource).not.toContain("createProjectOpen || projects.length === 0");
+    expect(workspaceSource).toContain("const showCreateProjectForm = createProjectOpen;");
+  });
+
   it("blocks analysis with the user-facing setup reason before calling jobs/start", () => {
     expect(analyzeStartBlocker({ ...readyInput, target: "" })).toBe(
       "请选择项目路径或 GitHub 仓库。",
