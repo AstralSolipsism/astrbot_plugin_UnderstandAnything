@@ -824,6 +824,7 @@ export default function AstrBotWorkspace({
         }),
       );
       recordStartedJob(job);
+      await loadWorkspace();
       setCreateProjectOpen(false);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : String(startError));

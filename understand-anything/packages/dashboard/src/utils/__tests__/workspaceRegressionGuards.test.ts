@@ -87,6 +87,27 @@ describe("AstrBot workspace regression guards", () => {
     expect(workspaceSource).toContain("const showCreateProjectForm = createProjectOpen;");
   });
 
+  it("refreshes projects after a successful analysis start before closing the creation panel", () => {
+    const workspaceSource = readFileSync(
+      new URL("../../components/AstrBotWorkspace.tsx", import.meta.url),
+      "utf8",
+    );
+    const startIndex = workspaceSource.indexOf("const startAnalysisForTarget = async");
+    const restartIndex = workspaceSource.indexOf("const restartProject = async", startIndex);
+    const startAnalysisSource = workspaceSource.slice(startIndex, restartIndex);
+
+    expect(startIndex).toBeGreaterThanOrEqual(0);
+    expect(restartIndex).toBeGreaterThan(startIndex);
+    expect(startAnalysisSource).toContain("recordStartedJob(job);");
+    expect(startAnalysisSource).toContain("await loadWorkspace();");
+    expect(startAnalysisSource.indexOf("recordStartedJob(job);")).toBeLessThan(
+      startAnalysisSource.indexOf("await loadWorkspace();"),
+    );
+    expect(startAnalysisSource.indexOf("await loadWorkspace();")).toBeLessThan(
+      startAnalysisSource.indexOf("setCreateProjectOpen(false);"),
+    );
+  });
+
   it("blocks analysis with the user-facing setup reason before calling jobs/start", () => {
     expect(analyzeStartBlocker({ ...readyInput, target: "" })).toBe(
       "请选择项目路径或 GitHub 仓库。",
