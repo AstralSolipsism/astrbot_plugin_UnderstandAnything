@@ -302,9 +302,7 @@ class ProjectRegistry:
             record.last_error = None
         if status_value in {ProjectStatus.READY, ProjectStatus.FAILED}:
             record.current_job_id = (
-                None
-                if current_job_id is _UNSET
-                else record.current_job_id
+                None if current_job_id is _UNSET else record.current_job_id
             )
         record.updated_at = time.time()
         self._save()
@@ -541,7 +539,11 @@ def _int_payload_value(value: Any) -> int:
 
 
 def _iso_from_timestamp(value: float) -> str:
-    return datetime.fromtimestamp(value, timezone.utc).isoformat().replace(
-        "+00:00",
-        "Z",
+    return (
+        datetime.fromtimestamp(value, timezone.utc)
+        .isoformat()
+        .replace(
+            "+00:00",
+            "Z",
+        )
     )

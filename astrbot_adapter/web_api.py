@@ -93,6 +93,12 @@ class UnderstandAnythingWebApi:
                 "Delete registered project graph data",
             ),
             (
+                f"{prefix}/projects/check-updates",
+                self.check_project_updates,
+                ["POST"],
+                "Check whether a registered project has upstream updates",
+            ),
+            (
                 f"{prefix}/projects/ignore",
                 self.project_ignore,
                 ["GET", "POST"],
@@ -121,6 +127,7 @@ class UnderstandAnythingWebApi:
             (f"{prefix}/jobs", self.jobs, ["GET"], "List jobs"),
             (f"{prefix}/jobs/start", self.start_job, ["POST"], "Start job"),
             (f"{prefix}/jobs/<job_id>", self.get_job, ["GET"], "Get job"),
+            (f"{prefix}/jobs/<job_id>/retry", self.retry_job, ["POST"], "Retry job"),
             (
                 f"{prefix}/jobs/<job_id>/confirm",
                 self.confirm_job,
@@ -272,6 +279,13 @@ class UnderstandAnythingWebApi:
                     / "dist"
                     / "index.js",
                 ),
+                "assistant_dist": self._path_state(
+                    UNDERSTAND_ANYTHING_ROOT
+                    / "packages"
+                    / "assistant"
+                    / "dist"
+                    / "index.js",
+                ),
                 "dashboard_dist": self._path_state(
                     DASHBOARD_SOURCE_ROOT / "dist" / "index.html",
                 ),
@@ -333,7 +347,8 @@ class UnderstandAnythingWebApi:
                 "status": "ok",
                 "data": {
                     "projects": [
-                        record.to_dict() for record in self.runner.registry.list()
+                        self._project_payload(record)
+                        for record in self.runner.registry.list()
                     ]
                 },
             }
@@ -374,6 +389,20 @@ class UnderstandAnythingWebApi:
                     },
                 }
             )
+        except Exception as exc:
+            return self._error(exc)
+
+    async def check_project_updates(self):
+        try:
+            body = await self._json_body()
+            record = self._project_record_from_ref(
+                self._body_project_ref(body, allow_path_alias=False)
+            )
+            job = await self.runner.start_project_update_check_job(
+                project_id=record.project_id,
+                locale=self._request_locale(body),
+            )
+            return jsonify({"status": "ok", "data": job.to_dict()})
         except Exception as exc:
             return self._error(exc)
 
@@ -537,6 +566,17 @@ class UnderstandAnythingWebApi:
             return jsonify({"status": "error", "message": "Job not found"}), 404
         return jsonify({"status": "ok", "data": job.to_dict()})
 
+    async def retry_job(self, job_id: str):
+        try:
+            body = await self._json_body()
+            job = await self.runner.retry_job(
+                job_id,
+                locale=self._request_locale(body),
+            )
+            return jsonify({"status": "ok", "data": job.to_dict()})
+        except Exception as exc:
+            return self._error(exc)
+
     async def job_events(self, job_id: str):
         job = self.runner.jobs.get(job_id)
         if job is None:
@@ -673,7 +713,9 @@ class UnderstandAnythingWebApi:
                 locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
-            return jsonify({"status": "ok", "data": self._assistant_data(answer, "answer")})
+            return jsonify(
+                {"status": "ok", "data": self._assistant_data(answer, "answer")}
+            )
         except Exception as exc:
             return self._error(exc)
 
@@ -687,7 +729,9 @@ class UnderstandAnythingWebApi:
                 locale=self._request_locale(body),
                 **self._body_project_ref(body, allow_path_alias=False),
             )
-            return jsonify({"status": "ok", "data": self._assistant_data(answer, "answer")})
+            return jsonify(
+                {"status": "ok", "data": self._assistant_data(answer, "answer")}
+            )
         except Exception as exc:
             return self._error(exc)
 
@@ -701,7 +745,9 @@ class UnderstandAnythingWebApi:
                 locale=self._request_locale(body),
                 **self._body_project_ref(body),
             )
-            return jsonify({"status": "ok", "data": self._assistant_data(answer, "answer")})
+            return jsonify(
+                {"status": "ok", "data": self._assistant_data(answer, "answer")}
+            )
         except Exception as exc:
             return self._error(exc)
 
@@ -848,6 +894,28 @@ class UnderstandAnythingWebApi:
             "is_dir": path.is_dir(),
         }
 
+    def _project_payload(self, record) -> dict[str, Any]:
+        payload = record.to_dict()
+        current_job = self._active_project_job(record.project_id)
+        recent_job = self._recent_project_job(record.project_id)
+        current_payload = current_job.to_dict() if current_job is not None else None
+        recent_payload = recent_job.to_dict() if recent_job is not None else None
+        graph_ready = self._project_graph_ready(record)
+        can_retry = bool(recent_payload and recent_payload.get("canRetry"))
+        payload.update(
+            {
+                "graph_ready": graph_ready,
+                "graphReady": graph_ready,
+                "current_job": current_payload,
+                "currentJob": current_payload,
+                "recent_job": recent_payload,
+                "recentJob": recent_payload,
+                "can_retry": can_retry,
+                "canRetry": can_retry,
+            }
+        )
+        return payload
+
     def _active_project_job(self, project_id: str):
         for job in self.runner.jobs.list():
             if str(job.args.get("project_id") or "") != project_id:
@@ -859,6 +927,17 @@ class UnderstandAnythingWebApi:
             }:
                 return job
         return None
+
+    def _recent_project_job(self, project_id: str):
+        for job in self.runner.jobs.list():
+            if str(job.args.get("project_id") or "") == project_id:
+                return job
+        return None
+
+    @staticmethod
+    def _project_graph_ready(record) -> bool:
+        graph_root = Path(str(record.graph_root or "")).resolve(strict=False)
+        return (graph_root / "knowledge-graph.json").is_file()
 
     def _project_record_from_ref(self, ref: dict[str, Any]):
         record = self.runner.registry.get(
@@ -1021,5 +1100,7 @@ class UnderstandAnythingWebApi:
         if isinstance(exc, PermissionError):
             status_code = 403
         else:
-            status_code = 400 if isinstance(exc, (ValueError, PathSecurityError)) else 500
+            status_code = (
+                400 if isinstance(exc, (ValueError, PathSecurityError)) else 500
+            )
         return jsonify({"status": "error", "message": str(exc)}), status_code

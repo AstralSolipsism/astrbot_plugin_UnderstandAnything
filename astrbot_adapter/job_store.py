@@ -165,6 +165,8 @@ class JobSnapshot:
             "result": self.result,
             "summary": self._summary(),
             "error": self.error,
+            "can_retry": self._can_retry(),
+            "canRetry": self._can_retry(),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "startedAt": _iso_from_timestamp(self.created_at),
@@ -177,6 +179,9 @@ class JobSnapshot:
             return None
         message = self.result.get("message")
         return str(message) if message is not None else None
+
+    def _can_retry(self) -> bool:
+        return self.status in {JobStatus.FAILED, JobStatus.CANCELLED}
 
 
 class JobStore:
@@ -213,9 +218,7 @@ class JobStore:
         job_id: str,
         confirmation: dict[str, Any],
     ) -> None:
-        self.set_progress(
-            job_id, "confirmation", "Preparing scan rules.", 20
-        )
+        self.set_progress(job_id, "confirmation", "Preparing scan rules.", 20)
         self._update(
             job_id,
             status=JobStatus.WAITING_CONFIRMATION,
@@ -239,9 +242,9 @@ class JobStore:
         )
 
     def mark_failed(self, job_id: str, error: str) -> None:
-        failed_stage = self._last_observation_stage(job_id) or self._require(
-            job_id
-        ).progress.phase
+        failed_stage = (
+            self._last_observation_stage(job_id) or self._require(job_id).progress.phase
+        )
         self.set_progress(job_id, "failed", "Analysis failed.", 100)
         self._update(job_id, status=JobStatus.FAILED, error=error)
         self.append_observation(
@@ -255,9 +258,9 @@ class JobStore:
         )
 
     def mark_cancelled(self, job_id: str, error: str = "Job cancelled.") -> None:
-        cancelled_stage = self._last_observation_stage(job_id) or self._require(
-            job_id
-        ).progress.phase
+        cancelled_stage = (
+            self._last_observation_stage(job_id) or self._require(job_id).progress.phase
+        )
         self.set_progress(job_id, "cancelled", "Analysis cancelled.", 100)
         self._update(job_id, status=JobStatus.CANCELLED, error=error)
         self.append_observation(
@@ -313,9 +316,7 @@ class JobStore:
             else None
         )
         existing = (
-            job.observations[existing_index]
-            if existing_index is not None
-            else None
+            job.observations[existing_index] if existing_index is not None else None
         )
         observation = JobObservation.create(
             kind=kind,
@@ -410,7 +411,11 @@ def _now_iso() -> str:
 
 
 def _iso_from_timestamp(value: float) -> str:
-    return datetime.fromtimestamp(value, timezone.utc).isoformat().replace(
-        "+00:00",
-        "Z",
+    return (
+        datetime.fromtimestamp(value, timezone.utc)
+        .isoformat()
+        .replace(
+            "+00:00",
+            "Z",
+        )
     )

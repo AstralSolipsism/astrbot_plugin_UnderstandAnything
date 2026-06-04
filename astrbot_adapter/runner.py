@@ -348,9 +348,7 @@ class UnderstandAnythingRunner:
             graph_root=graph_root,
             source=source_payload,
             status=(
-                ProjectStatus.CLONING
-                if github_checkout
-                else ProjectStatus.ANALYZING
+                ProjectStatus.CLONING if github_checkout else ProjectStatus.ANALYZING
             ),
         )
         if start_task:
@@ -363,6 +361,85 @@ class UnderstandAnythingRunner:
             task = asyncio.create_task(self._run_skill_job(job, event))
             self._tasks[job.job_id] = task
         return job
+
+    async def start_project_update_check_job(
+        self,
+        *,
+        project_id: str,
+        locale: str | None = None,
+        start_task: bool = True,
+    ) -> JobSnapshot:
+        record = self.registry.resolve_record(project_id=project_id)
+        project_root = Path(record.path)
+        job = self.jobs.create(
+            "check-updates",
+            project_root,
+            {
+                "raw_args": "",
+                "project_path": str(project_root),
+                "project_display_name": record.name,
+                "status_ref": record.name,
+                "status_aliases": record.aliases,
+                "project_id": record.project_id,
+                "graph_root": record.graph_root,
+                "flags": [],
+                "auto_update": record.auto_update,
+                "locale": self._resolve_output_locale(locale, None),
+                "source": record.source,
+                "job_label": "check-updates",
+                "started_notification_sent": False,
+            },
+        )
+        self.jobs.append_log(job.job_id, "Checking project updates.")
+        self.registry.update_status(
+            record.project_id,
+            record.status,
+            current_job_id=job.job_id,
+            last_job_id=job.job_id,
+            last_analyzed_at=record.last_analyzed_at,
+            node_count=record.node_count,
+            edge_count=record.edge_count,
+        )
+        if start_task:
+            self._tasks[job.job_id] = asyncio.create_task(
+                self._run_project_update_check_job(job)
+            )
+        return job
+
+    async def retry_job(
+        self,
+        job_id: str,
+        *,
+        locale: str | None = None,
+    ) -> JobSnapshot:
+        original = self.jobs.get(job_id)
+        if original is None:
+            raise ValueError("Job not found.")
+        if not original._can_retry():
+            raise ValueError("Only failed or cancelled jobs can be retried.")
+        project_id = self._job_project_id(original)
+        retry_locale = locale or self._string_arg(original.args.get("locale"))
+        if original.kind == "check-updates":
+            if not project_id:
+                raise ValueError("Cannot retry update check without project_id.")
+            return await self.start_project_update_check_job(
+                project_id=project_id,
+                locale=retry_locale,
+            )
+        if original.kind not in SKILL_COMMANDS:
+            raise ValueError(f"Unsupported retry job kind: {original.kind}")
+        flags = original.args.get("flags")
+        selected_flags = (
+            [str(flag) for flag in flags] if isinstance(flags, list) else []
+        )
+        return await self.start_skill_job(
+            skill_name=original.kind,
+            job_label=str(original.args.get("job_label") or "analysis"),
+            project_id=project_id or None,
+            project_path=None if project_id else original.project_root,
+            flags=selected_flags,
+            locale=retry_locale,
+        )
 
     async def chat(
         self,
@@ -759,9 +836,7 @@ class UnderstandAnythingRunner:
                 self._localized(
                     locale,
                     zh="范围规则：已生成，可在 Dashboard 查看或调整。",
-                    en=(
-                        "Scan rules: generated and available in the Dashboard."
-                    ),
+                    en=("Scan rules: generated and available in the Dashboard."),
                     ru="Правила сканирования созданы и доступны в Dashboard.",
                 )
             )
@@ -986,6 +1061,101 @@ class UnderstandAnythingRunner:
         finally:
             self._cleanup_github_cache_after_job(job)
 
+    async def _run_project_update_check_job(self, job: JobSnapshot) -> None:
+        project_id = self._job_project_id(job)
+        try:
+            self.jobs.mark_running(job.job_id)
+            await self._set_job_progress(
+                job,
+                None,
+                job.job_id,
+                "source",
+                "Checking project source.",
+                20,
+            )
+            await self._prepare_job_source(job, None)
+            project_id = self._job_project_id(job)
+            await self._set_job_progress(
+                job,
+                None,
+                job.job_id,
+                "validate",
+                "Comparing git commits.",
+                70,
+            )
+            graph_root = self._job_graph_root(job)
+            previous_commit = self._graph_meta_commit(graph_root)
+            current_commit = self._git_head(job.project_root)
+            if current_commit is None:
+                raise RuntimeError(
+                    "Cannot check updates because the project Git HEAD is unavailable."
+                )
+            graph_ready = (graph_root / "knowledge-graph.json").is_file()
+            if previous_commit:
+                update_available = previous_commit != current_commit
+                next_status = (
+                    ProjectStatus.STALE
+                    if update_available
+                    else (ProjectStatus.READY if graph_ready else ProjectStatus.EMPTY)
+                )
+                message = (
+                    "New commits are available."
+                    if update_available
+                    else "Project graph is already up to date."
+                )
+            else:
+                update_available = False
+                next_status = (
+                    ProjectStatus.READY if graph_ready else ProjectStatus.EMPTY
+                )
+                message = (
+                    "No previous analysis baseline was found. Run analysis before "
+                    "checking for update freshness."
+                )
+            self.jobs.append_log(job.job_id, message)
+            self.jobs.append_observation(
+                job.job_id,
+                kind="result",
+                level="warning" if update_available else "success",
+                title=message,
+                message=message,
+                stage="validate",
+                status="completed",
+                details={
+                    "previousCommit": previous_commit,
+                    "currentCommit": current_commit,
+                    "updateAvailable": update_available,
+                },
+            )
+            self._update_project_status_after_update_check(
+                project_id,
+                next_status,
+                job.job_id,
+            )
+            self.jobs.mark_finished(
+                job.job_id,
+                {
+                    "message": message,
+                    "update_available": update_available,
+                    "updateAvailable": update_available,
+                    "previousCommit": previous_commit,
+                    "currentCommit": current_commit,
+                },
+            )
+        except asyncio.CancelledError:
+            self.jobs.mark_cancelled(job.job_id)
+            raise
+        except Exception as exc:
+            logger.error("Understand Anything update check failed: %s", exc)
+            self.jobs.mark_failed(job.job_id, str(exc))
+            if project_id:
+                self._update_project_status_after_update_check(
+                    project_id,
+                    ProjectStatus.FAILED,
+                    job.job_id,
+                    last_error=str(exc),
+                )
+
     async def _set_job_progress(
         self,
         job: JobSnapshot,
@@ -1097,8 +1267,7 @@ class UnderstandAnythingRunner:
         return self._localized(
             locale,
             zh=(
-                f"分析完成：{name}\n"
-                f"可以继续使用 /understand 询问 {project_ref} 的问题"
+                f"分析完成：{name}\n可以继续使用 /understand 询问 {project_ref} 的问题"
             ),
             en=(
                 f"Analysis finished: {name}\n"
@@ -1767,6 +1936,56 @@ class UnderstandAnythingRunner:
     def _job_graph_root(job: JobSnapshot) -> Path:
         value = job.args.get("graph_root")
         return Path(str(value)) if value else job.project_root / ".understand-anything"
+
+    @staticmethod
+    def _job_project_id(job: JobSnapshot) -> str | None:
+        value = job.args.get("project_id")
+        text = str(value or "").strip()
+        return text or None
+
+    @staticmethod
+    def _string_arg(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    @staticmethod
+    def _graph_meta_commit(graph_root: Path) -> str | None:
+        meta_path = graph_root / "meta.json"
+        if not meta_path.is_file():
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(meta, dict):
+            return None
+        commit = meta.get("gitCommitHash")
+        text = str(commit or "").strip()
+        return text or None
+
+    def _update_project_status_after_update_check(
+        self,
+        project_id: str | None,
+        status: ProjectStatus,
+        job_id: str,
+        *,
+        last_error: str | None = None,
+    ) -> None:
+        if not project_id:
+            return
+        record = self.registry.get(project_id=project_id)
+        if record is None:
+            return
+        self.registry.update_status(
+            project_id,
+            status,
+            current_job_id=None,
+            last_job_id=job_id,
+            last_error=last_error,
+            last_analyzed_at=record.last_analyzed_at,
+            node_count=record.node_count,
+            edge_count=record.edge_count,
+        )
 
     @staticmethod
     def _coerce_positive_int(value: Any, default: int) -> int:
