@@ -272,6 +272,22 @@ def test_dashboard_page_bundle_is_plugin_page_safe() -> None:
         assert "file://" not in content
 
 
+def test_assistant_dist_is_distributable() -> None:
+    expected_files = [
+        PLUGIN_ROOT / "understand-anything" / "packages" / "assistant" / "dist" / name
+        for name in ("index.js", "index.d.ts", "index.d.ts.map")
+    ]
+
+    for file_path in expected_files:
+        assert file_path.is_file(), f"Missing bundled assistant dist: {file_path}"
+        check = subprocess.run(
+            ["git", "check-ignore", "-q", str(file_path.relative_to(PLUGIN_ROOT))],
+            cwd=PLUGIN_ROOT,
+            check=False,
+        )
+        assert check.returncode == 1, f"Assistant dist is ignored: {file_path}"
+
+
 def test_path_security_allows_paths_inside_allowed_root(tmp_path: Path) -> None:
     allowed_root = tmp_path / "workspace"
     allowed_root.mkdir()

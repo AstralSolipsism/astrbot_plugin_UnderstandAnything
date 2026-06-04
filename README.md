@@ -129,5 +129,6 @@ GitHub source metadata 重新 clone/fetch。
 
 独立分发时需要提交 `understand-anything/dist/`、
 `understand-anything/packages/core/dist/`、
+`understand-anything/packages/assistant/dist/`、
 `understand-anything/packages/dashboard/dist/` 和 `pages/dashboard/`，但不要提交
 `node_modules/`、缓存或本地插件数据。

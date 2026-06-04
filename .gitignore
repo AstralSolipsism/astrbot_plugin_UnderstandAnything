@@ -9,6 +9,12 @@ understand-anything/packages/*/node_modules/
 .plugin_data/
 data/
 
+# GitNexus / local agent side effects
+.gitnexus/
+.claude/
+AGENTS.md
+CLAUDE.md
+
 # C extensions
 *.so
 
@@ -37,6 +43,8 @@ MANIFEST
 !understand-anything/dist/**
 !understand-anything/packages/core/dist/
 !understand-anything/packages/core/dist/**
+!understand-anything/packages/assistant/dist/
+!understand-anything/packages/assistant/dist/**
 !understand-anything/packages/dashboard/dist/
 !understand-anything/packages/dashboard/dist/**
 !pages/

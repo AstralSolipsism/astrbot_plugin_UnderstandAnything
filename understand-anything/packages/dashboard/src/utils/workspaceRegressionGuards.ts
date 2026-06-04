@@ -22,6 +22,15 @@ export const ASTRBOT_WORKSPACE_REQUIRED_ACTIONS = [
   "projects/ignore",
 ] as const;
 
+export const ASTRBOT_RUNTIME_DEPENDENCY_ITEMS = [
+  { key: "runtimeItems.runtimeDist", fallback: "Runtime dist", statusKey: "runtime_dist" },
+  { key: "runtimeItems.coreDist", fallback: "Core dist", statusKey: "core_dist" },
+  { key: "runtimeItems.assistantDist", fallback: "Assistant dist", statusKey: "assistant_dist" },
+  { key: "runtimeItems.dashboardDist", fallback: "Dashboard dist", statusKey: "dashboard_dist" },
+  { key: "runtimeItems.dashboardPage", fallback: "Dashboard page", statusKey: "dashboard_page" },
+  { key: "runtimeItems.nodeModules", fallback: "Node modules", statusKey: "node_modules" },
+] as const;
+
 export interface AnalyzeStartBlockerInput {
   target: string;
   subagentError: string | null;

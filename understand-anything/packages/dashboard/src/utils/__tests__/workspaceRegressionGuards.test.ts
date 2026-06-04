@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
+  ASTRBOT_RUNTIME_DEPENDENCY_ITEMS,
   ASTRBOT_WORKSPACE_READ_ENDPOINTS,
   ASTRBOT_WORKSPACE_REQUIRED_ACTIONS,
   analyzeStartBlocker,
@@ -50,6 +53,28 @@ describe("AstrBot workspace regression guards", () => {
         "projects/ignore",
       ]),
     );
+  });
+
+  it("keeps project-scoped GitHub storage out of the runtime dependency checklist", () => {
+    const statusKeys = ASTRBOT_RUNTIME_DEPENDENCY_ITEMS.map((item) => item.statusKey);
+    const workspaceSource = readFileSync(
+      new URL("../../components/AstrBotWorkspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(statusKeys).toEqual([
+      "runtime_dist",
+      "core_dist",
+      "assistant_dist",
+      "dashboard_dist",
+      "dashboard_page",
+      "node_modules",
+    ]);
+    expect(statusKeys).not.toContain("github_cache_root");
+    expect(statusKeys).not.toContain("github_artifact_root");
+    expect(workspaceSource).toContain("ASTRBOT_RUNTIME_DEPENDENCY_ITEMS");
+    expect(workspaceSource).not.toContain("runtimeItems.githubCacheRoot");
+    expect(workspaceSource).not.toContain("runtimeItems.githubArtifactRoot");
   });
 
   it("blocks analysis with the user-facing setup reason before calling jobs/start", () => {

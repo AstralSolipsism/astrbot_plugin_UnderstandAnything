@@ -394,11 +394,10 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
           runtimeItems: {
             runtimeDist: "Runtime dist",
             coreDist: "Core dist",
+            assistantDist: "Assistant dist",
             dashboardDist: "Dashboard dist",
             dashboardPage: "Dashboard page",
-            nodeModules: "Node modules",
-            githubCacheRoot: "GitHub cache",
-            githubArtifactRoot: "GitHub artifacts"
+            nodeModules: "Node modules"
           },
           shortcut: {
             showHelp: "Show keyboard shortcuts help",
@@ -1087,11 +1086,10 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
           runtimeItems: {
             runtimeDist: "Runtime dist",
             coreDist: "Core dist",
+            assistantDist: "Assistant dist",
             dashboardDist: "Dashboard dist",
             dashboardPage: "Dashboard 页面",
-            nodeModules: "Node modules",
-            githubCacheRoot: "GitHub 缓存",
-            githubArtifactRoot: "GitHub 产物"
+            nodeModules: "Node modules"
           },
           shortcut: {
             showHelp: "显示快捷键帮助",
@@ -1772,11 +1770,10 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
           runtimeItems: {
             runtimeDist: "Runtime dist",
             coreDist: "Core dist",
+            assistantDist: "Assistant dist",
             dashboardDist: "Dashboard dist",
             dashboardPage: "Страница Dashboard",
-            nodeModules: "Node modules",
-            githubCacheRoot: "Кэш GitHub",
-            githubArtifactRoot: "Артефакты GitHub"
+            nodeModules: "Node modules"
           },
           shortcut: {
             showHelp: "Показать справку по клавишам",

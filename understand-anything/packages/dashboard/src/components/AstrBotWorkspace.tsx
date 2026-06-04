@@ -37,7 +37,10 @@ import {
   visibleProjectError,
 } from "../utils/jobTracking";
 import { getStorageItem, removeStorageItem, setStorageItem } from "../utils/safeBrowser";
-import { analyzeStartBlocker } from "../utils/workspaceRegressionGuards";
+import {
+  ASTRBOT_RUNTIME_DEPENDENCY_ITEMS,
+  analyzeStartBlocker,
+} from "../utils/workspaceRegressionGuards";
 import { type AssistantMode, useDashboardStore } from "../store";
 
 interface AstrBotWorkspaceProps {
@@ -585,16 +588,11 @@ export default function AstrBotWorkspace({
 
   const runtimeItems = useMemo(() => {
     if (!status) return [];
-    return [
-      ["runtimeItems.runtimeDist", "Runtime dist", status.runtime.runtime_dist?.exists],
-      ["runtimeItems.coreDist", "Core dist", status.runtime.core_dist?.exists],
-      ["runtimeItems.assistantDist", "Assistant dist", status.runtime.assistant_dist?.exists],
-      ["runtimeItems.dashboardDist", "Dashboard dist", status.runtime.dashboard_dist?.exists],
-      ["runtimeItems.dashboardPage", "Dashboard page", status.runtime.dashboard_page?.exists],
-      ["runtimeItems.nodeModules", "Node modules", status.runtime.node_modules?.exists],
-      ["runtimeItems.githubCacheRoot", "GitHub cache", status.runtime.github_cache_root?.exists],
-      ["runtimeItems.githubArtifactRoot", "GitHub artifacts", status.runtime.github_artifact_root?.exists],
-    ] as const;
+    return ASTRBOT_RUNTIME_DEPENDENCY_ITEMS.map(({ key, fallback, statusKey }) => [
+      key,
+      fallback,
+      status.runtime[statusKey]?.exists,
+    ] as const);
   }, [status]);
   const runtimeToolItems = useMemo(() => {
     if (!status) return [];
