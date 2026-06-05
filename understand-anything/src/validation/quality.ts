@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import type { Dirent } from "node:fs";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { createIgnoreFilter } from "@understand-anything/core";
+import { createIgnoreFilter } from "@understand-anything/core/ignore-filter";
 import type { GraphNode, KnowledgeGraph } from "@understand-anything/core/types";
 
 export type SourceInventoryKind = "file" | "directory";

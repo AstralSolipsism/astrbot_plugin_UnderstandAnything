@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { buildFingerprintStore, PluginRegistry, registerAllParsers, validateGraph, } from "@understand-anything/core";
+import { buildFingerprintStore } from "@understand-anything/core/fingerprint";
+import { PluginRegistry } from "@understand-anything/core/plugins/registry";
+import { registerAllParsers } from "@understand-anything/core/plugins/parsers";
+import { validateGraph } from "@understand-anything/core/schema";
 import { compileDomainGraph, normalizeDomainAnalysisIR } from "./domain-analysis-ir.js";
 import { buildQualityReport, buildSourceInventory, collectFingerprintCandidatePaths, repairAndAssessGraphQuality, validateChineseVisibleContent, } from "./quality.js";
 const KNOWLEDGE_GRAPH_FILE = "knowledge-graph.json";

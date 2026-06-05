@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync, } from "node:fs";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { createIgnoreFilter } from "@understand-anything/core";
+import { createIgnoreFilter } from "@understand-anything/core/ignore-filter";
 const SOURCE_INVENTORY_FILE = "source-inventory.json";
 const QUALITY_REPORT_FILE = "quality-report.json";
 const TEXT_PLACEHOLDER_PATTERNS = [

@@ -21,6 +21,22 @@
       "types": "./dist/schema.d.ts",
       "default": "./dist/schema.js"
     },
+    "./fingerprint": {
+      "types": "./dist/fingerprint.d.ts",
+      "default": "./dist/fingerprint.js"
+    },
+    "./ignore-filter": {
+      "types": "./dist/ignore-filter.d.ts",
+      "default": "./dist/ignore-filter.js"
+    },
+    "./plugins/registry": {
+      "types": "./dist/plugins/registry.d.ts",
+      "default": "./dist/plugins/registry.js"
+    },
+    "./plugins/parsers": {
+      "types": "./dist/plugins/parsers/index.d.ts",
+      "default": "./dist/plugins/parsers/index.js"
+    },
     "./languages": {
       "types": "./dist/languages/index.d.ts",
       "default": "./dist/languages/index.js"
