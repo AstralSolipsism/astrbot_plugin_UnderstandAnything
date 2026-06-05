@@ -22,12 +22,15 @@ ACTIVE_JOB_STATUSES = {
     JobStatus.WAITING_CONFIRMATION,
 }
 CONTENT_INTENTS = {"ask", "explain", "diff", "onboard", "domain"}
+DOMAIN_JOB_INTENTS: set[str] = set()
 START_INTENTS = {"start_analysis", "rerun_analysis"}
+JOB_START_INTENTS = START_INTENTS | DOMAIN_JOB_INTENTS
 TOOL_ACTION_INTENTS = {
     "status",
     "start_analysis",
     "rerun_analysis",
     "stop_job",
+    "select_project",
     "open_dashboard",
     "diagnose",
     "repair_runtime",
@@ -36,8 +39,6 @@ LEGACY_SUBCOMMANDS = {
     "analyze",
     "status",
     "chat",
-    "diff",
-    "domain",
     "explain",
     "knowledge",
     "onboard",
@@ -93,8 +94,15 @@ class ChatCommandParser:
             return ChatIntent(intent="legacy_removed", target=legacy)
         if not normalized:
             return ChatIntent(intent="status")
-        if normalized in {"状态", "进度", "看状态", "查看状态", "现在状态"}:
-            return ChatIntent(intent="status")
+        status_match = re.match(
+            r"^(?:状态|进度|看状态|查看状态|现在状态)(?:\s+(.+))?$",
+            raw,
+        )
+        if status_match:
+            return ChatIntent(
+                intent="status",
+                project_hint=_text_without_options(status_match.group(1) or ""),
+            )
         if normalized in {"停止", "取消", "停止分析", "取消分析"}:
             return ChatIntent(intent="stop_job")
         if normalized in {"打开面板", "打开 dashboard", "打开 Dashboard", "面板"}:
@@ -104,7 +112,28 @@ class ChatCommandParser:
         if normalized in {"修复", "修复运行环境", "修复插件运行依赖"}:
             return ChatIntent(intent="repair_runtime")
 
-        switch_match = re.match(r"^(?:切换到|切换项目到|使用项目)\s+(.+)$", raw)
+        if normalized in {"项目", "项目列表", "当前项目"}:
+            return ChatIntent(intent="project_context")
+
+        project_match = re.match(r"^项目\s+(.+)$", raw)
+        if project_match:
+            return ChatIntent(
+                intent="select_project",
+                project_hint=project_match.group(1).strip(),
+            )
+
+        domain_generate_hint = _domain_generation_project_hint(raw)
+        if domain_generate_hint is not None:
+            return ChatIntent(
+                intent="rerun_analysis",
+                project_hint=domain_generate_hint,
+                mode="domain",
+            )
+
+        switch_match = re.match(
+            r"^(?:切换到|切换项目到|切到|使用项目|之后都看)\s+(.+)$",
+            raw,
+        )
         if switch_match:
             return ChatIntent(
                 intent="select_project",
@@ -133,7 +162,7 @@ class ChatCommandParser:
         explain_target = _source_after_prefix(raw, ("解释", "说明"))
         if explain_target:
             return ChatIntent(
-                intent="explain",
+                intent="content_requires_llm",
                 target=explain_target,
                 query=raw,
                 mode="explain",
@@ -142,21 +171,20 @@ class ChatCommandParser:
             keyword in normalized
             for keyword in ("当前改动", "现在改动", "diff", "变更")
         ):
-            return ChatIntent(intent="diff", query=raw, mode="diff")
+            return ChatIntent(intent="content_requires_llm", query=raw, mode="diff")
         if any(
             keyword in normalized
             for keyword in ("项目导览", "导览", "onboarding", "新手指南")
         ):
-            return ChatIntent(intent="onboard", query=raw, mode="onboard")
+            return ChatIntent(intent="content_requires_llm", query=raw, mode="onboard")
         if any(keyword in normalized for keyword in ("领域", "domain", "业务图谱")):
-            return ChatIntent(intent="domain", query=raw, mode="domain")
+            return ChatIntent(intent="content_requires_llm", query=raw, mode="domain")
         if raw.startswith(("问", "请问")):
-            return ChatIntent(intent="ask", query=raw, mode="ask")
+            return ChatIntent(intent="content_requires_llm", query=raw, mode="ask")
 
         return ChatIntent(
-            intent="unknown",
+            intent="content_requires_llm",
             query=raw,
-            requires_lightweight_llm=True,
         )
 
 
@@ -324,29 +352,36 @@ class ChatStateMachine:
                 "；".join(item for item in state.blockers if item) or "当前环境未就绪"
             )
             return ChatValidation(False, reason)
-        if state.name == "analysis_running" and intent.intent in START_INTENTS:
+        if state.name == "analysis_running" and intent.intent in JOB_START_INTENTS:
             return ChatValidation(
                 False, "已经有分析任务在运行，请先查看状态或停止当前任务。"
             )
-        if state.name == "source_preparing" and intent.intent in START_INTENTS:
+        if state.name == "source_preparing" and intent.intent in JOB_START_INTENTS:
             return ChatValidation(
                 False, "项目源码正在准备中，请先查看状态或停止当前任务。"
             )
-        if state.name == "no_project" and intent.intent in CONTENT_INTENTS:
+        if state.name == "no_project" and (
+            intent.intent in CONTENT_INTENTS or intent.intent in DOMAIN_JOB_INTENTS
+        ):
             return ChatValidation(
                 False,
                 "还没有可用项目，请先发送 `/understand 分析 <项目路径或 GitHub 地址>`。",
             )
-        if state.name == "ambiguous_project" and intent.intent in CONTENT_INTENTS:
+        if state.name == "ambiguous_project" and (
+            intent.intent in CONTENT_INTENTS or intent.intent in DOMAIN_JOB_INTENTS
+        ):
             return ChatValidation(False, "当前匹配到多个项目，请先说明要使用哪个项目。")
-        if state.name != "graph_ready" and intent.intent in CONTENT_INTENTS:
+        if state.name != "graph_ready" and (
+            intent.intent in CONTENT_INTENTS or intent.intent in DOMAIN_JOB_INTENTS
+        ):
             return ChatValidation(False, "当前项目图谱还未就绪，请先完成项目分析。")
         return ChatValidation(True)
 
 
 class ChatActionExecutor:
-    def __init__(self, runner: Any) -> None:
+    def __init__(self, runner: Any, *, context_store: Any = None) -> None:
         self.runner = runner
+        self.context_store = context_store
 
     async def execute(
         self,
@@ -377,56 +412,25 @@ class ChatActionExecutor:
             await self._apply_ignore_options(intent, project_kwargs)
             job = await self._start_analysis(intent, event, project_kwargs)
             return self.runner.format_job_source_started_message(job)
-        if intent.intent == "ask":
-            return str(
-                await self.runner.chat(
-                    query=intent.query,
-                    **_content_project_kwargs(project_kwargs, intent),
-                    event=event,
-                )
-            )
-        if intent.intent == "explain":
-            return str(
-                await self.runner.explain(
-                    target=intent.target or intent.query,
-                    **_content_project_kwargs(project_kwargs, intent),
-                    event=event,
-                )
-            )
-        if intent.intent == "diff":
-            return str(
-                await self.runner.diff(
-                    **_content_project_kwargs(project_kwargs, intent),
-                    event=event,
-                )
-            )
-        if intent.intent == "onboard":
-            return str(
-                await self.runner.onboard(
-                    **_content_project_kwargs(project_kwargs, intent),
-                    event=event,
-                )
-            )
-        if intent.intent == "domain":
-            job = await self.runner.start_skill_job(
-                skill_name="understand-domain",
-                job_label="domain analysis",
-                event=event,
-                project_ref=intent.project_hint
-                or _project_ref_from_kwargs(project_kwargs),
-            )
-            return self.runner.format_job_source_started_message(
-                job,
-                job_label="domain analysis",
-            )
+        if intent.intent == "project_context":
+            return self._project_context_message(event)
         if intent.intent == "select_project":
-            return f"已切换项目上下文：{intent.project_hint}"
+            return self._select_project_context(intent, event)
+        if intent.intent in {
+            "content_requires_llm",
+            "ask",
+            "explain",
+            "diff",
+            "onboard",
+            "domain",
+        }:
+            return _content_requires_llm_message()
         if intent.intent == "legacy_removed":
             return (
                 "旧子指令入口已移除。请直接用自然语言描述任务，例如："
                 "`/understand 状态`、`/understand 分析 <项目路径或 GitHub 地址>`。"
             )
-        return "我没有识别这个操作。你可以说：状态、分析项目、停止、打开面板、诊断、修复、解释文件或查看当前改动。"
+        return "我没有识别这个管理操作。你可以说：状态、项目、分析、停止、面板、诊断或修复。"
 
     async def _start_analysis(
         self,
@@ -469,10 +473,93 @@ class ChatActionExecutor:
         self.runner.jobs.mark_cancelled(job.job_id, "User stopped the job from chat.")
         return "已停止当前分析任务。"
 
+    def _select_project_context(self, intent: ChatIntent, event: Any) -> str:
+        return self.select_project_context(intent, event)["message"]
+
+    def select_project_context(
+        self,
+        intent: ChatIntent,
+        event: Any,
+    ) -> dict[str, Any]:
+        project = _select_project(_project_records(self.runner), intent.project_hint)
+        if project == "ambiguous":
+            return {
+                "status": "blocked",
+                "message": "匹配到多个项目，请把项目名称、路径或 GitHub 仓库名说完整。",
+                "project": None,
+            }
+        if project is None:
+            return {
+                "status": "error",
+                "message": f"没有找到项目：{intent.project_hint}",
+                "project": None,
+            }
+        project_ref = _project_ref_payload(project)
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        update_for_umo = getattr(self.context_store, "update_for_umo", None)
+        if not callable(update_for_umo) or not umo:
+            return {
+                "status": "blocked",
+                "message": (
+                    f"已找到项目：{project_ref.get('project_name') or intent.project_hint}，"
+                    "但当前入口无法写入 WebChat 会话上下文。"
+                ),
+                "project": project_ref,
+            }
+        updated = update_for_umo(umo, project_ref=project_ref)
+        if not updated:
+            return {
+                "status": "blocked",
+                "message": (
+                    f"已找到项目：{project_ref.get('project_name') or intent.project_hint}，"
+                    "但当前会话不是可接管的 AstrBot WebChat 会话。"
+                ),
+                "project": project_ref,
+            }
+        return {
+            "status": "ok",
+            "message": f"已切换项目上下文：{project_ref.get('project_name') or intent.project_hint}",
+            "project": project_ref,
+        }
+
+    def _project_context_message(self, event: Any) -> str:
+        projects = _project_records(self.runner)
+        current_ref = self._current_project_ref(event)
+        current_name = _project_ref_display_name(current_ref) if current_ref else "未选择"
+        if not projects:
+            return "当前项目：未选择。还没有可用项目，请先发送 `/understand 分析 <项目路径或 GitHub 地址>`。"
+        lines = [f"当前项目：{current_name}", "可用项目："]
+        for project in projects:
+            ref = _project_ref_payload(project)
+            name = ref.get("project_name") or ref.get("project_ref") or ref.get("project_id")
+            lines.append(f"- {name}")
+        first = _project_ref_payload(projects[0])
+        example = first.get("project_name") or first.get("project_ref") or first.get("project_id")
+        if example:
+            lines.append(f"切换示例：/understand 项目 {example}")
+        return "\n".join(lines)
+
+    def _current_project_ref(self, event: Any) -> dict[str, Any] | None:
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        context_for_umo = getattr(self.context_store, "context_for_umo", None)
+        if callable(context_for_umo):
+            context = context_for_umo(umo)
+            if isinstance(context, dict):
+                project_ref = context.get("project_ref")
+                if isinstance(project_ref, dict):
+                    return project_ref
+        project_ref_for_umo = getattr(self.context_store, "project_ref_for_umo", None)
+        if callable(project_ref_for_umo):
+            project_ref = project_ref_for_umo(umo)
+            if isinstance(project_ref, dict):
+                return project_ref
+        return None
+
 
 class ToolResultPresenter:
-    def __init__(self, runner: Any) -> None:
+    def __init__(self, runner: Any, *, context_store: Any = None) -> None:
         self.runner = runner
+        self.context_store = context_store
         self.state_resolver = ChatStateResolver(runner)
 
     def project_state(self, project_hint: str = "") -> str:
@@ -502,14 +589,23 @@ class ToolResultPresenter:
     ) -> str:
         normalized_action = _normalize_tool_action(action)
         if normalized_action not in TOOL_ACTION_INTENTS:
+            if normalized_action in CONTENT_INTENTS:
+                return _json(
+                    {
+                        "status": "error",
+                        "action": str(action or "").strip(),
+                        "message": (
+                            "内容类请求不能通过 ua_project_action 执行；"
+                            "请先调用 ua_retrieve_project_context 获取上下文。"
+                        ),
+                        "llm_used": False,
+                    }
+                )
             return _json(
                 {
                     "status": "error",
                     "action": str(action or "").strip(),
-                    "message": (
-                        "内容类请求不能通过 ua_project_action 执行；"
-                        "请先调用 ua_retrieve_project_context 获取上下文。"
-                    ),
+                    "message": "不支持这个项目管理 action。请改用 status、start_analysis、rerun_analysis、stop_job、select_project、diagnose、repair_runtime 或 open_dashboard。",
                     "llm_used": False,
                 }
             )
@@ -519,6 +615,25 @@ class ToolResultPresenter:
             source=source,
             options=_options_from_text(options),
         )
+        executor = ChatActionExecutor(
+            self.runner,
+            context_store=self.context_store,
+        )
+        if intent.intent == "select_project":
+            result = executor.select_project_context(intent, event)
+            state_after = ChatStateResolver(self.runner).resolve(project_hint)
+            return _json(
+                {
+                    "status": result["status"],
+                    "action": intent.intent,
+                    "message": result["message"],
+                    "job": state_after.running_job,
+                    "project": result.get("project") or state_after.project,
+                    "next_actions": state_after.available_actions,
+                    "dashboard_url": _dashboard_url(),
+                    "llm_used": False,
+                }
+            )
         state_before = ChatStateResolver(self.runner).resolve(
             project_hint,
             intent=intent,
@@ -541,7 +656,7 @@ class ToolResultPresenter:
                     "llm_used": False,
                 }
             )
-        message = await ChatActionExecutor(self.runner).execute(
+        message = await executor.execute(
             intent,
             event=event,
             project_kwargs=project_kwargs or {},
@@ -574,13 +689,52 @@ class ToolResultPresenter:
         )
         if project_hint:
             kwargs["project_ref"] = project_hint
+        context_kind = (
+            "domain" if _wants_domain_context(mode=mode, query=query, target=target)
+            else "knowledge"
+        )
+        graph_file = (
+            "domain-graph.json" if context_kind == "domain" else "knowledge-graph.json"
+        )
         try:
-            store = self.runner.project_store(**kwargs)
-            graph = store.read_json("knowledge-graph.json")
+            store = self.runner.project_store(**_project_store_kwargs(kwargs))
+            graph = store.read_json(graph_file)
+        except FileNotFoundError as exc:
+            if context_kind == "domain":
+                return _json(
+                    {
+                        "status": "analysis_incomplete",
+                        "mode": mode or "domain",
+                        "context_kind": "domain",
+                        "query": query,
+                        "target": target,
+                        "refs": [],
+                        "references": [],
+                        "nodes": [],
+                        "files": [],
+                        "snippets": [],
+                        "graph_summary": {
+                            "node_count": 0,
+                            "edge_count": 0,
+                        },
+                        "graph": {"node_count": 0, "edge_count": 0},
+                        "domain_graph_ready": False,
+                        "next_actions": ["rerun_analysis", "open_dashboard"],
+                        "message": (
+                            "当前项目缺少领域视图，项目分析不完整；"
+                            "请重新分析项目后再检索领域上下文。"
+                        ),
+                        "error": str(exc),
+                        "llm_used": False,
+                    }
+                )
+            return _json({"status": "error", "error": str(exc), "llm_used": False})
         except Exception as exc:
             return _json({"status": "error", "error": str(exc), "llm_used": False})
         nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
         refs = _matching_graph_refs(nodes, query=query, target=target)
+        if context_kind == "domain" and not refs and isinstance(nodes, list):
+            refs = _matching_graph_refs(nodes, query="", target="", limit=12)
         files = sorted(
             {
                 str(ref.get("filePath") or "")
@@ -605,6 +759,7 @@ class ToolResultPresenter:
             {
                 "status": "ok",
                 "mode": mode or "ask",
+                "context_kind": context_kind,
                 "query": query,
                 "target": target,
                 "refs": refs,
@@ -614,6 +769,7 @@ class ToolResultPresenter:
                 "snippets": snippets,
                 "graph_summary": graph_summary,
                 "graph": graph_summary,
+                "domain_graph_ready": context_kind == "domain",
                 "confidence": min(1.0, len(refs) / 3) if refs else 0.0,
                 "llm_used": False,
             }
@@ -621,14 +777,14 @@ class ToolResultPresenter:
 
 
 class UnderstandAnythingChatEntry:
-    def __init__(self, runner: Any) -> None:
+    def __init__(self, runner: Any, *, context_store: Any = None) -> None:
         self.runner = runner
         self.parser = ChatCommandParser()
         self.state_resolver = ChatStateResolver(runner)
         self.state_machine = ChatStateMachine()
         self.lightweight_parser = LightweightIntentParser(runner)
-        self.executor = ChatActionExecutor(runner)
-        self.tools = ToolResultPresenter(runner)
+        self.executor = ChatActionExecutor(runner, context_store=context_store)
+        self.tools = ToolResultPresenter(runner, context_store=context_store)
 
     async def execute_text(
         self,
@@ -722,6 +878,21 @@ def _text_without_options(text: str) -> str:
     if not raw:
         return ""
     return re.split(r"[，,\s]*(?:忽略|排除)\s+", raw, maxsplit=1)[0].strip(" ，,\t")
+
+
+def _domain_generation_project_hint(text: str) -> str | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    patterns = (
+        r"^(?:生成|刷新|重新生成)\s*领域(?:视图|图谱)?(?:[，,\s]*(.*))?$",
+        r"^领域\s*(?:生成|刷新|重新生成)(?:视图|图谱)?(?:[，,\s]*(.*))?$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, raw, flags=re.IGNORECASE)
+        if match:
+            return _text_without_options(match.group(1) or "")
+    return None
 
 
 def _latest_active_job(runner: Any) -> JobSnapshot | None:
@@ -915,6 +1086,70 @@ def _content_project_kwargs(
     return kwargs
 
 
+def _domain_graph_ready(
+    runner: Any,
+    project_kwargs: dict[str, Any],
+    intent: ChatIntent,
+) -> bool:
+    kwargs = _content_project_kwargs(project_kwargs, intent)
+    try:
+        store = runner.project_store(**_project_store_kwargs(kwargs))
+        graph = store.read_json("domain-graph.json")
+    except Exception:
+        return False
+    return isinstance(graph, dict)
+
+
+def _project_store_kwargs(project_kwargs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key in ("project_path", "project_id", "project_name", "project_ref")
+        if (value := project_kwargs.get(key)) is not None
+    }
+
+
+def _project_ref_payload(project: Any) -> dict[str, Any]:
+    if hasattr(project, "to_dict"):
+        payload = project.to_dict()
+    elif isinstance(project, dict):
+        payload = project
+    else:
+        payload = {
+            "project_id": getattr(project, "project_id", ""),
+            "name": getattr(project, "name", ""),
+            "path": getattr(project, "path", ""),
+        }
+    project_id = str(payload.get("project_id") or payload.get("id") or "").strip()
+    project_name = str(payload.get("name") or payload.get("project_name") or "").strip()
+    project_path = str(payload.get("path") or payload.get("localPath") or "").strip()
+    project_ref = project_name or project_id or project_path
+    result: dict[str, Any] = {}
+    if project_id:
+        result["project_id"] = project_id
+    if project_name:
+        result["project_name"] = project_name
+    if project_path:
+        result["project_path"] = project_path
+    if project_ref:
+        result["project_ref"] = project_ref
+    return result
+
+
+def _project_ref_display_name(project_ref: dict[str, Any]) -> str:
+    for key in ("project_name", "project_ref", "project", "project_id", "project_path"):
+        value = project_ref.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "未选择"
+
+
+def _content_requires_llm_message() -> str:
+    return (
+        "这类内容问题请直接用普通聊天提问，不需要加 `/understand`。"
+        "我会通过 Understand Anything 工具按项目检索图谱后回答。"
+    )
+
+
 def _normalize_tool_action(action: str) -> str:
     normalized = str(action or "").strip()
     return {
@@ -928,6 +1163,7 @@ def _normalize_tool_action(action: str) -> str:
         "stop": "stop_job",
         "stop_job": "stop_job",
         "select_project": "select_project",
+        "project": "select_project",
         "open_dashboard": "open_dashboard",
         "diagnose": "diagnose",
         "repair": "repair_runtime",
@@ -954,6 +1190,11 @@ def _graph_root_for_options(
         if graph_root:
             return Path(str(graph_root))
     return None
+
+
+def _wants_domain_context(*, mode: str, query: str, target: str) -> bool:
+    text = f"{mode} {query} {target}".casefold()
+    return any(keyword in text for keyword in ("domain", "领域", "业务流程", "业务图谱"))
 
 
 def _matching_graph_refs(

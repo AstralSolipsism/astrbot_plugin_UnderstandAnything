@@ -25,8 +25,11 @@ from astrbot_adapter.chat_entry import (
     ChatStateMachine,
     LightweightIntentParser,
     ToolResultPresenter,
+    UnderstandAnythingChatEntry,
 )
 from astrbot_adapter.job_store import JobStatus, JobStore
+from astrbot_adapter.project_registry import ProjectStatus
+from astrbot_adapter.webchat_proxy import WebChatSessionContextStore
 
 
 class _DummyRunner:
@@ -77,6 +80,43 @@ class _DummyRunner:
         return "项目导览"
 
 
+class _Project:
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        project_id: str = "p1",
+        name: str = "Demo",
+        status: ProjectStatus = ProjectStatus.READY,
+    ) -> None:
+        self.project_id = project_id
+        self.name = name
+        self.aliases = [name]
+        self.path = str(tmp_path / name)
+        self.graph_root = str(tmp_path / name / ".understand-anything")
+        self.status = status
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "name": self.name,
+            "aliases": self.aliases,
+            "path": self.path,
+            "graph_root": self.graph_root,
+            "status": self.status.value,
+        }
+
+
+class _GraphStore:
+    def __init__(self, graphs: dict[str, dict[str, object]]) -> None:
+        self.graphs = graphs
+
+    def read_json(self, name: str):
+        if name not in self.graphs:
+            raise FileNotFoundError(name)
+        return self.graphs[name]
+
+
 def test_chat_command_parser_handles_operations_without_lightweight_llm() -> None:
     parser = ChatCommandParser()
 
@@ -114,11 +154,57 @@ def test_chat_command_parser_handles_operations_without_lightweight_llm() -> Non
     assert local_with_ignore.options["ignore"] == ["tests", "dist"]
 
 
+def test_chat_command_parser_handles_command_group_payloads() -> None:
+    parser = ChatCommandParser()
+
+    status = parser.parse("状态 Demo")
+    assert status.intent == "status"
+    assert status.project_hint == "Demo"
+
+    project_list = parser.parse("项目")
+    assert project_list.intent == "project_context"
+
+    select_project = parser.parse("项目 Demo")
+    assert select_project.intent == "select_project"
+    assert select_project.project_hint == "Demo"
+
+    generate_domain = parser.parse("生成领域视图 Demo")
+    assert generate_domain.intent == "rerun_analysis"
+    assert generate_domain.project_hint == "Demo"
+
+    refresh_domain = parser.parse("领域 刷新 Demo")
+    assert refresh_domain.intent == "rerun_analysis"
+    assert refresh_domain.project_hint == "Demo"
+
+    panel = parser.parse("面板")
+    assert panel.intent == "open_dashboard"
+
+
+@pytest.mark.parametrize(
+    "content_text",
+    [
+        "解释 webchat_proxy.py",
+        "diff 当前改动",
+        "onboarding Demo",
+        "领域 订单流程怎么串起来",
+        "这个 WebChat 代理怎么接上的？",
+    ],
+)
+def test_chat_command_parser_routes_content_to_normal_llm_chat(
+    content_text: str,
+) -> None:
+    parsed = ChatCommandParser().parse(content_text)
+
+    assert parsed.intent == "content_requires_llm"
+    assert parsed.query == content_text
+    assert parsed.requires_lightweight_llm is False
+
+
 def test_chat_command_parser_marks_ambiguous_content_for_lightweight_llm() -> None:
     parsed = ChatCommandParser().parse("这个 WebChat 代理怎么接上的？")
 
-    assert parsed.intent == "unknown"
-    assert parsed.requires_lightweight_llm is True
+    assert parsed.intent == "content_requires_llm"
+    assert parsed.requires_lightweight_llm is False
     assert parsed.query == "这个 WebChat 代理怎么接上的？"
 
 
@@ -129,8 +215,6 @@ def test_chat_command_parser_marks_ambiguous_content_for_lightweight_llm() -> No
         "status Demo",
         "chat Demo 怎么接入的",
         "dashboard",
-        "diff",
-        "domain",
         "explain webchat_proxy.py",
         "knowledge docs",
         "onboard Demo",
@@ -184,6 +268,9 @@ def test_lightweight_parser_uses_single_stateless_structured_prompt() -> None:
     prompt = str(calls[0]["prompt"])
     assert "user_text" in prompt
     assert "available_intents" in prompt
+    assert "generate_domain" not in prompt
+    assert "generate_domain_view" not in prompt
+    assert "refresh_domain" not in prompt
     assert "history" not in prompt.casefold()
     assert "persona" not in prompt.casefold()
     assert "knowledge-graph" not in prompt.casefold()
@@ -363,6 +450,101 @@ def test_command_executor_stops_latest_active_job(tmp_path: Path) -> None:
     assert "已停止" in message
 
 
+@pytest.mark.parametrize(
+    "intent",
+    [
+        ChatIntent(intent="content_requires_llm", query="解释 webchat_proxy.py"),
+        ChatIntent(intent="domain", query="订单流程怎么串起来", mode="domain"),
+        ChatIntent(intent="explain", query="解释 webchat_proxy.py", target="webchat_proxy.py"),
+        ChatIntent(intent="diff", query="当前改动"),
+        ChatIntent(intent="onboard", query="项目导览"),
+    ],
+)
+def test_command_executor_does_not_answer_content_requests_from_commands(
+    tmp_path: Path,
+    intent: ChatIntent,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    executor = ChatActionExecutor(runner)
+
+    message = asyncio.run(
+        executor.execute(
+            intent,
+            event=SimpleNamespace(),
+            project_kwargs={"project_ref": "Demo"},
+        )
+    )
+
+    assert "请直接用普通聊天提问" in message
+    assert runner.calls == []
+
+
+def test_command_executor_refreshes_domain_graph_by_rerunning_full_analysis(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    executor = ChatActionExecutor(runner)
+
+    message = asyncio.run(
+        executor.execute(
+            ChatIntent(intent="rerun_analysis", project_hint="Demo"),
+            event=SimpleNamespace(),
+        )
+    )
+
+    assert runner.calls[-1]["method"] == "start_skill_job"
+    assert runner.calls[-1]["skill_name"] == "understand"
+    assert runner.calls[-1]["project_ref"] == "Demo"
+    assert "已开始分析" in message
+
+
+def test_chat_entry_select_project_writes_webchat_context(tmp_path: Path) -> None:
+    runner = _DummyRunner(tmp_path)
+    project = _Project(tmp_path)
+    runner.registry = SimpleNamespace(list=lambda: [project])
+    context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    entry = UnderstandAnythingChatEntry(runner, context_store=context_store)
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:webchat!alice!s1",
+    )
+
+    message = asyncio.run(entry.execute_text("使用项目 Demo", event=event))
+
+    context = context_store.context_for_session("s1")
+    assert "已切换项目上下文：Demo" in message
+    assert context is not None
+    assert context["username"] == "alice"
+    assert context["project_ref"]["project_id"] == "p1"
+    assert context["project_ref"]["project_name"] == "Demo"
+    assert context["project_ref"]["project_path"] == project.path
+
+
+def test_chat_entry_project_command_lists_current_and_available_projects(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project_a = _Project(tmp_path, project_id="p1", name="Demo")
+    project_b = _Project(tmp_path, project_id="p2", name="AstrBot")
+    runner.registry = SimpleNamespace(list=lambda: [project_a, project_b])
+    context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    context_store.update(
+        session_id="s1",
+        username="alice",
+        project_ref={"project_id": "p2", "project_name": "AstrBot"},
+    )
+    entry = UnderstandAnythingChatEntry(runner, context_store=context_store)
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:webchat!alice!s1",
+    )
+
+    message = asyncio.run(entry.execute_text("项目", event=event))
+
+    assert "当前项目：AstrBot" in message
+    assert "Demo" in message
+    assert "AstrBot" in message
+    assert "/understand 项目 Demo" in message
+
+
 def test_tool_result_presenter_returns_structured_state_without_llm(
     tmp_path: Path,
 ) -> None:
@@ -405,16 +587,79 @@ def test_tool_project_action_returns_structured_action_contract(
     assert payload["llm_used"] is False
 
 
-def test_tool_project_action_rejects_content_actions_without_final_llm(
+def test_tool_project_action_select_project_writes_webchat_context(
     tmp_path: Path,
 ) -> None:
     runner = _DummyRunner(tmp_path)
-    runner.calls.clear()
+    project = _Project(tmp_path)
+    runner.registry = SimpleNamespace(list=lambda: [project])
+    context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    presenter = ToolResultPresenter(runner, context_store=context_store)
+    event = SimpleNamespace(
+        unified_msg_origin="webchat:FriendMessage:webchat!alice!s1",
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            presenter.project_action(
+                "select_project",
+                event=event,
+                project_hint="Demo",
+            )
+        )
+    )
+
+    context = context_store.context_for_session("s1")
+    assert payload["status"] == "ok"
+    assert payload["action"] == "select_project"
+    assert payload["project"]["project_id"] == "p1"
+    assert context is not None
+    assert context["project_ref"]["project_name"] == "Demo"
+    assert payload["llm_used"] is False
+
+
+def test_tool_project_action_blocks_select_project_outside_webchat(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project = _Project(tmp_path)
+    runner.registry = SimpleNamespace(list=lambda: [project])
+    presenter = ToolResultPresenter(
+        runner,
+        context_store=WebChatSessionContextStore(tmp_path / "contexts.json"),
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            presenter.project_action(
+                "select_project",
+                event=SimpleNamespace(unified_msg_origin="telegram:FriendMessage:s1"),
+                project_hint="Demo",
+            )
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["action"] == "select_project"
+    assert "WebChat" in payload["message"]
+    assert payload["llm_used"] is False
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["generate_domain", "generate_domain_view", "refresh_domain"],
+)
+def test_tool_project_action_does_not_expose_domain_generation_aliases(
+    tmp_path: Path,
+    action: str,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(list=lambda: [_Project(tmp_path)])
 
     payload = json.loads(
         asyncio.run(
             ToolResultPresenter(runner).project_action(
-                "ask",
+                action,
                 event=SimpleNamespace(),
                 project_hint="Demo",
             )
@@ -422,7 +667,34 @@ def test_tool_project_action_rejects_content_actions_without_final_llm(
     )
 
     assert payload["status"] == "error"
-    assert payload["action"] == "ask"
+    assert payload["action"] == action
+    assert "不支持" in payload["message"]
+    assert "重新分析" not in payload["message"]
+    assert "next_actions" not in payload
+    assert runner.calls == []
+    assert payload["llm_used"] is False
+
+
+@pytest.mark.parametrize("action", ["ask", "explain", "diff", "onboard", "domain"])
+def test_tool_project_action_rejects_content_actions_without_final_llm(
+    tmp_path: Path,
+    action: str,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.calls.clear()
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                action,
+                event=SimpleNamespace(),
+                project_hint="Demo",
+            )
+        )
+    )
+
+    assert payload["status"] == "error"
+    assert payload["action"] == action
     assert "ua_retrieve_project_context" in payload["message"]
     assert runner.calls == []
     assert payload["llm_used"] is False
@@ -465,4 +737,135 @@ def test_tool_retrieve_context_returns_retrieval_contract_without_llm(
     assert payload["snippets"][0]["summary"]
     assert payload["graph_summary"]["node_count"] == 1
     assert payload["confidence"] > 0
+    assert payload["llm_used"] is False
+
+
+def test_tool_retrieve_context_uses_project_hint_without_switching_default(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    context_store.update(
+        session_id="s1",
+        username="alice",
+        project_ref={"project_id": "p1", "project_name": "ProjectA"},
+    )
+
+    def project_store(**kwargs):
+        project_ref = kwargs.get("project_ref")
+        return _GraphStore(
+            {
+                "knowledge-graph.json": {
+                    "project": {"name": project_ref},
+                    "nodes": [
+                        {
+                            "id": f"file:{project_ref}",
+                            "name": f"{project_ref} WebChat",
+                            "type": "module",
+                            "filePath": f"{project_ref}/webchat.py",
+                            "summary": f"{project_ref} 的 WebChat 入口。",
+                        }
+                    ],
+                    "edges": [],
+                }
+            }
+        )
+
+    runner.project_store = project_store
+
+    payload = json.loads(
+        ToolResultPresenter(
+            runner,
+            context_store=context_store,
+        ).retrieve_project_context(
+            "WebChat",
+            project_hint="ProjectB",
+        )
+    )
+
+    context = context_store.context_for_session("s1")
+    assert payload["status"] == "ok"
+    assert payload["graph_summary"]["project"]["name"] == "ProjectB"
+    assert payload["refs"][0]["filePath"] == "ProjectB/webchat.py"
+    assert context is not None
+    assert context["project_ref"]["project_name"] == "ProjectA"
+
+
+def test_tool_retrieve_context_reads_domain_graph_for_domain_mode(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.project_store = lambda **_kwargs: _GraphStore(
+        {
+            "domain-graph.json": {
+                "project": {"name": "Demo"},
+                "nodes": [
+                    {
+                        "id": "domain:orders",
+                        "name": "订单领域",
+                        "type": "domain",
+                        "summary": "处理订单创建、支付和履约。",
+                    },
+                    {
+                        "id": "flow:checkout",
+                        "name": "结算流程",
+                        "type": "flow",
+                        "summary": "从购物车到支付成功的流程。",
+                    },
+                ],
+                "edges": [
+                    {
+                        "source": "domain:orders",
+                        "target": "flow:checkout",
+                        "type": "contains_flow",
+                    }
+                ],
+            }
+        }
+    )
+
+    payload = json.loads(
+        ToolResultPresenter(runner).retrieve_project_context(
+            "订单流程",
+            project_hint="Demo",
+            mode="domain",
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["mode"] == "domain"
+    assert payload["context_kind"] == "domain"
+    assert payload["domain_graph_ready"] is True
+    assert payload["refs"][0]["id"] == "domain:orders"
+    assert payload["graph_summary"]["edge_count"] == 1
+    assert payload["llm_used"] is False
+
+
+def test_tool_retrieve_context_reports_missing_domain_graph(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.project_store = lambda **_kwargs: _GraphStore(
+        {
+            "knowledge-graph.json": {
+                "project": {"name": "Demo"},
+                "nodes": [{"id": "file:main.py", "name": "main.py"}],
+                "edges": [],
+            }
+        }
+    )
+
+    payload = json.loads(
+        ToolResultPresenter(runner).retrieve_project_context(
+            "订单流程",
+            project_hint="Demo",
+            mode="domain",
+        )
+    )
+
+    assert payload["status"] == "analysis_incomplete"
+    assert payload["mode"] == "domain"
+    assert payload["domain_graph_ready"] is False
+    assert "rerun_analysis" in payload["next_actions"]
+    assert "generate_domain" not in payload["next_actions"]
     assert payload["llm_used"] is False

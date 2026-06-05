@@ -14,6 +14,18 @@ from .astrbot_adapter.runner import UnderstandAnythingRunner
 from .astrbot_adapter.web_api import UnderstandAnythingWebApi
 
 
+UNDERSTAND_GROUP_SUBCOMMANDS = (
+    "状态",
+    "项目",
+    "分析",
+    "重新分析",
+    "停止",
+    "诊断",
+    "修复",
+    "面板",
+)
+
+
 class UnderstandAnythingPlugin(Star):
     def __init__(
         self,
@@ -23,9 +35,12 @@ class UnderstandAnythingPlugin(Star):
         super().__init__(context)
         self.config = dict(config or {})
         self.runner = UnderstandAnythingRunner(context, self.config)
-        self.chat_entry = UnderstandAnythingChatEntry(self.runner)
         self.web_api = UnderstandAnythingWebApi(context, self.runner)
         self.webchat_context_store = self.web_api.webchat_proxy.context_store
+        self.chat_entry = UnderstandAnythingChatEntry(
+            self.runner,
+            context_store=self.webchat_context_store,
+        )
         self.web_api.register()
 
     async def initialize(self) -> None:
@@ -36,16 +51,59 @@ class UnderstandAnythingPlugin(Star):
         await self.runner.terminate()
         logger.info("Understand Anything plugin terminated.")
 
+    @filter.command_group("understand")
+    def understand_commands(self):
+        """Understand Anything 指令组。"""
+        pass
+
+    @understand_commands.command("状态")
+    async def understand_status(self, event: AstrMessageEvent, project: GreedyStr = ""):
+        """查看分析状态。"""
+        yield await self._run_understand_text(event, self._command_text("状态", project))
+
+    @understand_commands.command("项目")
+    async def understand_project(self, event: AstrMessageEvent, project: GreedyStr = ""):
+        """查看或切换当前项目。"""
+        yield await self._run_understand_text(event, self._command_text("项目", project))
+
+    @understand_commands.command("停止")
+    async def understand_stop(self, event: AstrMessageEvent):
+        """停止当前分析任务。"""
+        yield await self._run_understand_text(event, "停止")
+
+    @understand_commands.command("诊断")
+    async def understand_diagnose(self, event: AstrMessageEvent):
+        """检查插件运行环境。"""
+        yield await self._run_understand_text(event, "诊断")
+
+    @understand_commands.command("修复")
+    async def understand_repair(self, event: AstrMessageEvent):
+        """修复插件运行依赖。"""
+        yield await self._run_understand_text(event, "修复")
+
+    @understand_commands.command("分析")
+    async def understand_analyze(self, event: AstrMessageEvent, source: GreedyStr = ""):
+        """分析本地项目或 GitHub 仓库。"""
+        yield await self._run_understand_text(event, self._command_text("分析", source))
+
+    @understand_commands.command("重新分析")
+    async def understand_rerun(self, event: AstrMessageEvent, project: GreedyStr = ""):
+        """重新分析已有项目。"""
+        yield await self._run_understand_text(
+            event,
+            self._command_text("重新分析", project),
+        )
+
+    @understand_commands.command("面板")
+    async def understand_panel(self, event: AstrMessageEvent):
+        """打开 Dashboard。"""
+        yield await self._run_understand_text(event, "面板")
+
     @filter.command("understand")
     async def understand(self, event: AstrMessageEvent, task: GreedyStr = ""):
         """Understand Anything natural language entry."""
         text = str(task or "").strip() or self._args(event, "understand")
-        message = await self.chat_entry.execute_text(
-            text,
-            event=event,
-            project_kwargs=self._effective_project_kwargs(event),
-        )
-        yield event.plain_result(message)
+        yield await self._run_understand_text(event, text)
 
     @filter.llm_tool(name="ua_get_project_state")
     async def ua_get_project_state(
@@ -74,7 +132,7 @@ class UnderstandAnythingPlugin(Star):
 
         Args:
             action(string): One of status, start_analysis, start_github_analysis,
-                stop, rerun, diagnose, repair, open_dashboard.
+                stop, rerun, select_project, diagnose, repair, open_dashboard.
             project_hint(string): Optional project name, id, alias, or path.
             source(string): Optional local project path or GitHub URL.
             options(string): Optional action options such as ignored paths.
@@ -123,6 +181,20 @@ class UnderstandAnythingPlugin(Star):
                 if message.startswith(f"{prefix} "):
                     return message[len(prefix) :].strip()
         return event.message_str.strip()
+
+    async def _run_understand_text(self, event: AstrMessageEvent, text: str):
+        message = await self.chat_entry.execute_text(
+            str(text or "").strip(),
+            event=event,
+            project_kwargs=self._effective_project_kwargs(event),
+        )
+        event.stop_event()
+        return event.plain_result(message)
+
+    @staticmethod
+    def _command_text(command: str, payload: str = "") -> str:
+        payload_text = str(payload or "").strip()
+        return f"{command} {payload_text}".strip()
 
     def _first_path_arg(
         self, event: AstrMessageEvent, *command_names: str

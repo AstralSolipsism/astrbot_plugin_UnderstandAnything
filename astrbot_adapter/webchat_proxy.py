@@ -47,6 +47,19 @@ def session_id_from_webchat_umo(umo: str) -> str | None:
     return session_id
 
 
+def username_from_webchat_umo(umo: str) -> str | None:
+    if not umo.startswith(f"{WEBCHAT_PLATFORM_ID}:"):
+        return None
+    try:
+        _platform, _message_type, session = umo.split(":", 2)
+        platform_id, username, _session_id = session.split("!", 2)
+    except ValueError:
+        return None
+    if platform_id != WEBCHAT_PLATFORM_ID or not username:
+        return None
+    return username
+
+
 class WebChatSessionContextStore:
     """Stores UA routing context for native AstrBot WebChat sessions.
 
@@ -101,6 +114,24 @@ class WebChatSessionContextStore:
         if not session_id:
             return None
         return self.project_ref_for_session(session_id)
+
+    def update_for_umo(
+        self,
+        umo: str,
+        *,
+        project_ref: dict[str, Any] | None = None,
+        context_items: list[Any] | None = None,
+    ) -> dict[str, Any] | None:
+        session_id = session_id_from_webchat_umo(umo)
+        username = username_from_webchat_umo(umo)
+        if not session_id or not username:
+            return None
+        return self.update(
+            session_id=session_id,
+            username=username,
+            project_ref=project_ref,
+            context_items=context_items,
+        )
 
     def context_for_umo(self, umo: str) -> dict[str, Any] | None:
         session_id = session_id_from_webchat_umo(umo)
