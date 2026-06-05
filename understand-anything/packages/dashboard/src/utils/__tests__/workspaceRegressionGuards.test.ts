@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +9,16 @@ import {
   analyzeStartBlocker,
   shouldUseJobEventPollingFallback,
 } from "../workspaceRegressionGuards";
+
+function collectDashboardSourceFiles(root: URL): URL[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const child = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, root);
+    if (entry.isDirectory()) {
+      return collectDashboardSourceFiles(child);
+    }
+    return /\.(?:ts|tsx)$/.test(entry.name) && statSync(child).isFile() ? [child] : [];
+  });
+}
 
 const readyInput = {
   target: "D:/demo",
@@ -108,6 +118,21 @@ describe("AstrBot workspace regression guards", () => {
     );
   });
 
+  it("keeps domain view opening visible and routes missing-domain recovery through full analysis", () => {
+    const workspaceSource = readFileSync(
+      new URL("../../components/AstrBotWorkspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(workspaceSource).toContain("function domainGraphReady(project: ProjectSummary)");
+    expect(workspaceSource).toContain("const startDomainAnalysis = async");
+    expect(workspaceSource).toContain('action: "understand"');
+    expect(workspaceSource).not.toContain('action: "understand-domain"');
+    expect(workspaceSource).toContain('openProjectGraph(selectedProject, "domain")');
+    expect(workspaceSource).toContain("workspace.capabilityDomain");
+    expect(workspaceSource).not.toContain(["fetch(\"", "api", ""].join("/"));
+  });
+
   it("blocks analysis with the user-facing setup reason before calling jobs/start", () => {
     expect(analyzeStartBlocker({ ...readyInput, target: "" })).toBe(
       "请选择项目路径或 GitHub 仓库。",
@@ -146,5 +171,19 @@ describe("AstrBot workspace regression guards", () => {
     expect(shouldUseJobEventPollingFallback({ hasSubscribeSSE: false })).toBe(true);
     expect(shouldUseJobEventPollingFallback({ hasSubscribeSSE: true, subscribeFailed: true })).toBe(true);
     expect(shouldUseJobEventPollingFallback({ hasSubscribeSSE: true, subscribeFailed: false })).toBe(false);
+  });
+
+  it("keeps dashboard source free of raw server route literals", () => {
+    const forbiddenNeedle = ["/", "api", "/"].join("");
+    const sourceRoot = new URL("../../", import.meta.url);
+    const violations = collectDashboardSourceFiles(sourceRoot)
+      .map((file) => ({
+        file: file.pathname,
+        source: readFileSync(file, "utf8"),
+      }))
+      .filter((entry) => entry.source.includes(forbiddenNeedle))
+      .map((entry) => entry.file);
+
+    expect(violations).toEqual([]);
   });
 });

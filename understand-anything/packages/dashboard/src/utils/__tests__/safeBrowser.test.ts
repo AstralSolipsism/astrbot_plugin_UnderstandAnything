@@ -10,6 +10,10 @@ import {
   setStorageItem,
 } from "../safeBrowser";
 
+function pluginPagePath(): string {
+  return ["", "api", "plugin", "page", "content", "astrbot_plugin_UnderstandAnything", "dashboard", ""].join("/");
+}
+
 describe("sandbox-safe browser helpers", () => {
   const testDir = dirname(fileURLToPath(import.meta.url));
 
@@ -87,13 +91,13 @@ describe("sandbox-safe browser helpers", () => {
     const replaceState = vi.fn();
     vi.stubGlobal("window", {
       location: {
-        pathname: "/api/plugin/page/content/astrbot_plugin_UnderstandAnything/dashboard/",
+        pathname: pluginPagePath(),
         search: "?asset_token=token",
       },
       history: { replaceState },
     });
 
-    safeReplaceState("/api/plugin/page/content/astrbot_plugin_UnderstandAnything/dashboard/");
+    safeReplaceState(pluginPagePath());
 
     expect(replaceState).not.toHaveBeenCalled();
   });

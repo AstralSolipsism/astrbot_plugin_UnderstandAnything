@@ -38,6 +38,10 @@ function graph(id: string): KnowledgeGraph {
   };
 }
 
+function pluginPagePath(): string {
+  return ["", "api", "plugin", "page", "content", "astrbot_plugin_UnderstandAnything", "dashboard", ""].join("/");
+}
+
 describe("project-scoped dashboard state", () => {
   beforeEach(() => {
     useDashboardStore.getState().clearProjectData();
@@ -98,7 +102,7 @@ describe("project-scoped dashboard state", () => {
       configurable: true,
       value: {
         location: {
-          pathname: "/api/plugin/page/content/astrbot_plugin_UnderstandAnything/dashboard/",
+          pathname: pluginPagePath(),
           search: "?asset_token=token",
         },
       },

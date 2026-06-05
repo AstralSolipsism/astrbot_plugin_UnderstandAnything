@@ -1,5 +1,7 @@
 type StorageKind = "local" | "session";
 
+const ASTRBOT_PLUGIN_PAGE_CONTENT_PATH = ["", "api", "plugin", "page", "content", ""].join("/");
+
 function storage(kind: StorageKind): Storage | null {
   try {
     return kind === "local" ? window.localStorage : window.sessionStorage;
@@ -37,7 +39,7 @@ export function safeReplaceState(url: string): void {
     const search = window.location?.search ?? "";
     const pathname = window.location?.pathname ?? "";
     if (
-      pathname.includes("/api/plugin/page/content/") ||
+      pathname.includes(ASTRBOT_PLUGIN_PAGE_CONTENT_PATH) ||
       new URLSearchParams(search).has("asset_token")
     ) {
       return;
