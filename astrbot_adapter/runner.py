@@ -5,7 +5,9 @@ import contextlib
 import hashlib
 import json
 import re
+import shlex
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +28,12 @@ from .constants import (
     PLUGIN_NAME,
     PLUGIN_SKILLS_ROOT,
     SKILL_COMMANDS,
+)
+from .execution_workspace import (
+    AstrBotSandboxTransport,
+    ExecutionWorkspace,
+    ExecutionWorkspaceTransport,
+    execution_workspace_from_job,
 )
 from .github_repo import (
     DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS,
@@ -885,6 +893,8 @@ class UnderstandAnythingRunner:
         event: AstrMessageEvent | None,
     ) -> None:
         agent_event = event or self._synthetic_event(job)
+        workspace: ExecutionWorkspace | None = None
+        workspace_transport: ExecutionWorkspaceTransport | None = None
         try:
             self.jobs.mark_running(job.job_id)
             await self._set_job_progress(
@@ -923,10 +933,38 @@ class UnderstandAnythingRunner:
                     30,
                 )
                 await self.runtime.ensure_ready()
+                workspace = self._execution_workspace_for_job(
+                    job,
+                    event,
+                )
+                job.args["execution_workspace"] = workspace.to_payload()
+                workspace_transport = await self._execution_workspace_transport(
+                    agent_event,
+                    workspace,
+                )
+                if workspace.is_sandbox:
+                    await self._set_job_progress(
+                        job,
+                        event,
+                        job.job_id,
+                        "bundle",
+                        "Preparing UA sandbox bundle.",
+                        34,
+                    )
+                    await self._set_job_progress(
+                        job,
+                        event,
+                        job.job_id,
+                        "staging",
+                        "Uploading project snapshot to sandbox.",
+                        38,
+                    )
+                await workspace.prepare(workspace_transport)
                 if job.kind in RUNTIME_VALIDATED_JOB_KINDS:
                     await self._run_runtime_validation_action(
                         job,
                         "preflight_inventory",
+                        workspace_transport=workspace_transport,
                     )
                 prompt = self._build_skill_execution_prompt(job)
                 subagent_dispatcher = UnderstandAnythingSubAgentDispatcher(
@@ -963,26 +1001,14 @@ class UnderstandAnythingRunner:
                     job,
                     event,
                     job.job_id,
-                    "agent",
+                    "analysis",
                     "Running Understand Anything agent workflow.",
                     55,
                 )
                 result = await self.dispatcher.run_with_local_tools(
                     event=agent_event,
                     prompt=prompt,
-                    system_prompt=(
-                        "You are the AstrBot host adapter for Understand Anything. "
-                        "Execute the bundled Understand Anything skill faithfully "
-                        "with local tools. "
-                        "When a workflow needs a project-scanner, file-analyzer, "
-                        "assemble-reviewer, architecture-analyzer, tour-builder, "
-                        "graph-reviewer, domain-analyzer, or article-analyzer role, "
-                        "you MUST call the internal UA SubAgent tools instead of "
-                        "performing that worker role yourself. "
-                        "Do not modify AstrBot source files or plugin runtime source. "
-                        "Only write analysis outputs under the UA graph output root "
-                        "provided in the execution prompt."
-                    ),
+                    system_prompt=self._skill_system_prompt(),
                     max_steps=120,
                     extra_tools=subagent_dispatcher.tool_set(),
                 )
@@ -999,8 +1025,32 @@ class UnderstandAnythingRunner:
                     await self._run_runtime_validation_action(
                         job,
                         self._runtime_output_action(job),
+                        workspace_transport=workspace_transport,
                     )
-                self._validate_required_outputs(job)
+                if not workspace.is_sandbox:
+                    self._validate_required_outputs(job)
+                if self._should_run_domain_by_default(job):
+                    domain_result = await self._run_default_domain_phase(
+                        job,
+                        event,
+                        agent_event,
+                        subagent_dispatcher,
+                        workspace_transport,
+                    )
+                    if domain_result:
+                        result = f"{result}\n\n{domain_result}"
+                if workspace.is_sandbox:
+                    await self._finalize_execution_workspace(
+                        job,
+                        workspace,
+                        workspace_transport,
+                    )
+                    self._validate_required_outputs(job)
+                    if job.kind == "understand":
+                        self._validate_required_outputs(
+                            job,
+                            job_kind="understand-domain",
+                        )
                 self.jobs.mark_finished(job.job_id, {"message": result})
                 self.registry.register(
                     job.project_root,
@@ -1060,6 +1110,9 @@ class UnderstandAnythingRunner:
                     key="failed",
                 )
         finally:
+            if workspace is not None and workspace_transport is not None:
+                with contextlib.suppress(Exception):
+                    await workspace.cleanup(workspace_transport)
             self._cleanup_github_cache_after_job(job)
 
     async def _run_project_update_check_job(self, job: JobSnapshot) -> None:
@@ -1248,7 +1301,7 @@ class UnderstandAnythingRunner:
                 ru=f"Правила сканирования созданы: {name}\nПроверьте их в Dashboard.",
             )
             return "progress:confirmation", message
-        if phase == "agent":
+        if phase in {"agent", "analysis"}:
             message = self._localized(
                 locale,
                 zh=f"开始生成图谱：{name}\n这一步可能需要较长时间。",
@@ -1258,7 +1311,7 @@ class UnderstandAnythingRunner:
                     "Этот этап может занять продолжительное время."
                 ),
             )
-            return "progress:agent", message
+            return f"progress:{phase}", message
         return None
 
     def _format_job_finished_message(self, job: JobSnapshot) -> str:
@@ -1356,8 +1409,14 @@ class UnderstandAnythingRunner:
             ),
         )
 
-    def _build_skill_execution_prompt(self, job: JobSnapshot) -> str:
-        skill_dir = PLUGIN_SKILLS_ROOT / job.kind
+    def _build_skill_execution_prompt(
+        self,
+        job: JobSnapshot,
+        *,
+        skill_kind: str | None = None,
+    ) -> str:
+        resolved_kind = skill_kind or job.kind
+        skill_dir = PLUGIN_SKILLS_ROOT / resolved_kind
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.is_file():
             raise FileNotFoundError(
@@ -1365,14 +1424,34 @@ class UnderstandAnythingRunner:
             )
 
         agent_files = sorted(AGENT_PROMPTS_ROOT.glob("*.md"))
-        agent_index = "\n".join(f"- {path.name}: {path}" for path in agent_files)
-        command_name = SKILL_COMMANDS.get(job.kind, job.kind)
+        workspace = self._execution_workspace_from_job_args(job)
+        agent_index = workspace.runtime_agent_index(agent_files)
+        command_name = SKILL_COMMANDS.get(resolved_kind, resolved_kind)
         language_directive = self._language_directive_for_job(job)
+        runtime_args = workspace.runtime_raw_args(str(job.args.get("raw_args") or ""))
+        if workspace.is_sandbox:
+            path_rules = (
+                "- Sandbox execution is active. Use only the sandbox runtime paths "
+                "shown in this prompt for shell, Python, file, grep, and SubAgent "
+                "work; do not use host paths as executable paths.\n"
+                "- Host project and graph paths are retained only by the AstrBot "
+                "plugin for registry, Dashboard display, and artifact sync after "
+                "the sandbox run finishes.\n"
+                f"- The sandbox UA bundle root is `{workspace.runtime_plugin_root}`; "
+                f"skills live in `{workspace.runtime_skills_root}`, and prompts "
+                f"live in `{workspace.runtime_agent_prompts_root}`.\n"
+            )
+        else:
+            path_rules = (
+                "- Use absolute paths shown above. The plugin runtime root is "
+                "`understand-anything/`, skills live in root `skills/`, and prompts "
+                "live in `astrbot_adapter/prompts/agents/`.\n"
+            )
         return (
             f"Execute Understand Anything command `/{command_name}` with arguments:\n"
-            f"{job.args.get('raw_args', '')}\n\n"
-            f"Target project root (source files):\n{job.project_root}\n\n"
-            f"UA graph output root:\n{job.args.get('graph_root', job.project_root / '.understand-anything')}\n\n"
+            f"{runtime_args}\n\n"
+            f"Target project root (source files):\n{workspace.runtime_project_root}\n\n"
+            f"UA graph output root:\n{workspace.runtime_graph_root}\n\n"
             "Bundled Understand Anything skill instructions:\n"
             "```markdown\n"
             f"{read_prompt_file(skill_md)}\n"
@@ -1388,9 +1467,7 @@ class UnderstandAnythingRunner:
             f"`max_concurrency={self.max_parallel_file_agents}`.\n"
             "- Use `ua_run_subagent_batches` for article-analyzer batches with "
             f"`max_concurrency={self.max_parallel_article_agents}`.\n"
-            "- Use absolute paths shown above. The plugin runtime root is "
-            "`understand-anything/`, skills live in root `skills/`, and prompts "
-            "live in `astrbot_adapter/prompts/agents/`.\n"
+            f"{path_rules}"
             "- Set `PROJECT_ROOT` to the target project root above.\n"
             "- Set `UA_GRAPH_ROOT` to the UA graph output root above.\n"
             "- Treat every `$PROJECT_ROOT/.understand-anything` path in bundled "
@@ -1403,6 +1480,61 @@ class UnderstandAnythingRunner:
             "`.understandignore` files if present; otherwise continue with the "
             "bundled default ignore rules.\n"
             "- Preserve Understand Anything JSON schema and Dashboard compatibility.\n"
+        )
+
+    async def _run_default_domain_phase(
+        self,
+        job: JobSnapshot,
+        event: AstrMessageEvent | None,
+        agent_event: AstrMessageEvent,
+        subagent_dispatcher: UnderstandAnythingSubAgentDispatcher,
+        workspace_transport: ExecutionWorkspaceTransport | None = None,
+    ) -> str:
+        self.jobs.append_log(job.job_id, "Default domain analysis phase started.")
+        await self._set_job_progress(
+            job,
+            event,
+            job.job_id,
+            "domain",
+            "Generating domain view.",
+            75,
+        )
+        prompt = self._build_skill_execution_prompt(job, skill_kind="understand-domain")
+        result = await self.dispatcher.run_with_local_tools(
+            event=agent_event,
+            prompt=prompt,
+            system_prompt=self._skill_system_prompt(),
+            max_steps=120,
+            extra_tools=subagent_dispatcher.tool_set(),
+        )
+        self.jobs.append_log(job.job_id, "Default domain analysis phase finished.")
+        await self._run_runtime_validation_action(
+            job,
+            "compile_domain_ir",
+            job_kind="understand-domain",
+            workspace_transport=workspace_transport,
+        )
+        if not self._execution_workspace_from_job_args(job).is_sandbox:
+            self._validate_required_outputs(job, job_kind="understand-domain")
+        return str(result or "")
+
+    def _should_run_domain_by_default(self, job: JobSnapshot) -> bool:
+        return job.kind == "understand"
+
+    @staticmethod
+    def _skill_system_prompt() -> str:
+        return (
+            "You are the AstrBot host adapter for Understand Anything. "
+            "Execute the bundled Understand Anything skill faithfully "
+            "with local tools. "
+            "When a workflow needs a project-scanner, file-analyzer, "
+            "assemble-reviewer, architecture-analyzer, tour-builder, "
+            "graph-reviewer, domain-analyzer, or article-analyzer role, "
+            "you MUST call the internal UA SubAgent tools instead of "
+            "performing that worker role yourself. "
+            "Do not modify AstrBot source files or plugin runtime source. "
+            "Only write analysis outputs under the UA graph output root "
+            "provided in the execution prompt."
         )
 
     @classmethod
@@ -1754,11 +1886,22 @@ class UnderstandAnythingRunner:
         self,
         job: JobSnapshot,
         action: str,
+        *,
+        job_kind: str | None = None,
+        workspace_transport: ExecutionWorkspaceTransport | None = None,
     ) -> dict[str, Any]:
-        result = await self.runtime.run_action(
-            action,
-            self._runtime_validation_payload(job),
-        )
+        payload = self._runtime_validation_payload(job, job_kind=job_kind)
+        workspace = self._execution_workspace_from_job_args(job)
+        if workspace.is_sandbox:
+            result = await self._run_sandbox_runtime_action(
+                job,
+                workspace,
+                workspace_transport,
+                action,
+                payload,
+            )
+        else:
+            result = await self.runtime.run_action(action, payload)
         self._append_runtime_observations(job, action, result)
         if result.get("ok") is False:
             fatal = result.get("fatal") or result.get("error")
@@ -1769,12 +1912,98 @@ class UnderstandAnythingRunner:
             )
         return result
 
-    def _runtime_validation_payload(self, job: JobSnapshot) -> dict[str, Any]:
+    async def _run_sandbox_runtime_action(
+        self,
+        job: JobSnapshot,
+        workspace: ExecutionWorkspace,
+        transport: ExecutionWorkspaceTransport | None,
+        action: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if transport is None:
+            raise RuntimeError("Sandbox runtime action transport is unavailable.")
+        runtime_action_root = workspace.runtime_project_root.rsplit("/", 1)[0]
+        remote_payload = (
+            f"{runtime_action_root}/runtime-actions/{action}-{job.job_id}.json"
+        )
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            suffix=".json",
+            delete=False,
+            dir=Path(tempfile.gettempdir()),
+        ) as f:
+            json.dump(payload, f, ensure_ascii=False)
+            payload_path = Path(f.name)
+        try:
+            await transport.shell_exec(
+                f"mkdir -p {shlex.quote(runtime_action_root + '/runtime-actions')}"
+            )
+            await transport.upload_file(str(payload_path), remote_payload)
+            command = " ".join(
+                [
+                    "node",
+                    shlex.quote(
+                        f"{workspace.runtime_plugin_root}/astrbot_adapter/node/bridge.mjs"
+                    ),
+                    shlex.quote(
+                        f"{workspace.runtime_plugin_root}/understand-anything"
+                    ),
+                    shlex.quote(action),
+                    shlex.quote(remote_payload),
+                ]
+            )
+            result = await transport.shell_exec(command)
+        finally:
+            with contextlib.suppress(OSError):
+                payload_path.unlink(missing_ok=True)
+        if not self._sandbox_shell_succeeded(result):
+            detail = str(result.get("stderr") or result.get("stdout") or result)
+            raise RuntimeError(
+                f"Sandbox runtime action failed: {action}\n{detail.strip()}"
+            )
+        stdout = str(result.get("stdout") or "")
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Sandbox runtime action returned invalid JSON: {action}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Sandbox runtime action returned non-object JSON: {action}"
+            )
+        return data
+
+    @staticmethod
+    def _sandbox_shell_succeeded(result: dict[str, Any]) -> bool:
+        if result.get("success") is True:
+            return True
+        if result.get("success") is False:
+            return False
+        for key in ("returncode", "return_code", "exit_code", "code"):
+            if key in result:
+                try:
+                    return int(result[key]) == 0
+                except (TypeError, ValueError):
+                    return False
+        return not str(result.get("stderr") or "").strip()
+
+    def _runtime_validation_payload(
+        self,
+        job: JobSnapshot,
+        *,
+        job_kind: str | None = None,
+    ) -> dict[str, Any]:
+        workspace = self._execution_workspace_from_job_args(job)
         payload: dict[str, Any] = {
-            "projectRoot": str(job.project_root),
-            "graphRoot": str(self._job_graph_root(job)),
+            "projectRoot": workspace.runtime_project_root,
+            "graphRoot": workspace.runtime_graph_root,
+            "hostProjectRoot": str(workspace.host_project_root),
+            "hostGraphRoot": str(workspace.host_graph_root),
+            "executionRuntime": workspace.runtime_kind,
             "jobId": job.job_id,
-            "jobKind": job.kind,
+            "jobKind": job_kind or job.kind,
             "strictVisibleLanguage": "auto",
         }
         locale = job.args.get("locale")
@@ -1783,7 +2012,110 @@ class UnderstandAnythingRunner:
         expected_commit = self._expected_git_commit_hash(job)
         if expected_commit:
             payload["expectedGitCommitHash"] = expected_commit
+        payload["hostGit"] = self._host_git_snapshot(job)
         return payload
+
+    def _execution_workspace_for_job(
+        self,
+        job: JobSnapshot,
+        event: AstrMessageEvent | None = None,
+    ) -> ExecutionWorkspace:
+        return execution_workspace_from_job(
+            job_id=job.job_id,
+            runtime_kind=self._computer_use_runtime(event),
+            host_project_root=job.project_root,
+            host_graph_root=self._job_graph_root(job),
+        )
+
+    async def _execution_workspace_transport(
+        self,
+        event: AstrMessageEvent,
+        workspace: ExecutionWorkspace,
+    ) -> ExecutionWorkspaceTransport | None:
+        if not workspace.is_sandbox:
+            return None
+        session_id = getattr(event, "unified_msg_origin", None) or getattr(
+            event,
+            "session_id",
+            None,
+        )
+        if not session_id:
+            raise RuntimeError("Sandbox session id is unavailable.")
+        return await AstrBotSandboxTransport.create(
+            self.context,
+            str(session_id),
+        )
+
+    def _execution_workspace_from_job_args(self, job: JobSnapshot) -> ExecutionWorkspace:
+        payload = job.args.get("execution_workspace")
+        if isinstance(payload, dict):
+            return ExecutionWorkspace.from_payload(payload)
+        return self._execution_workspace_for_job(job)
+
+    async def _finalize_execution_workspace(
+        self,
+        job: JobSnapshot,
+        workspace: ExecutionWorkspace,
+        transport: ExecutionWorkspaceTransport | None,
+    ) -> None:
+        if not workspace.is_sandbox:
+            return
+        if transport is None:
+            raise RuntimeError("Sandbox artifact sync is unavailable.")
+        await self._set_job_progress(
+            job,
+            None,
+            job.job_id,
+            "artifact-sync",
+            "Syncing sandbox graph artifacts.",
+            90,
+        )
+        await workspace.finalize(
+            transport,
+            required_files=self._required_execution_workspace_artifacts(job),
+            optional_files=("diff-overlay.json",),
+        )
+
+    def _required_execution_workspace_artifacts(self, job: JobSnapshot) -> tuple[str, ...]:
+        required = list(REQUIRED_GRAPH_OUTPUTS_BY_JOB.get(job.kind, ()))
+        if job.kind == "understand":
+            for file_name in REQUIRED_GRAPH_OUTPUTS_BY_JOB["understand-domain"]:
+                if file_name not in required:
+                    required.append(file_name)
+        return tuple(required)
+
+    def _host_git_snapshot(self, job: JobSnapshot) -> dict[str, Any]:
+        cached = job.args.get("host_git_snapshot")
+        if isinstance(cached, dict):
+            return cached
+        configured = job.args.get("expected_git_commit_hash")
+        head = str(configured) if configured else self._git_head(job.project_root)
+        previous = self._graph_meta_commit(self._job_graph_root(job))
+        changed_files = self._git_changed_files(job.project_root)
+        snapshot = {
+            "headCommit": head,
+            "previousGraphCommit": previous,
+            "changedFiles": changed_files,
+            "diffAvailable": bool(changed_files),
+            "stale": bool(previous and head and previous != head),
+        }
+        job.args["host_git_snapshot"] = snapshot
+        return snapshot
+
+    def _computer_use_runtime(self, event: AstrMessageEvent | None = None) -> str:
+        try:
+            config = self.context.get_config(
+                umo=getattr(event, "unified_msg_origin", None) if event else None,
+            )
+        except Exception:
+            config = self.context.get_config() if hasattr(self.context, "get_config") else {}
+        provider_settings = (
+            config.get("provider_settings", {})
+            if hasattr(config, "get")
+            else {}
+        )
+        runtime = str(provider_settings.get("computer_use_runtime") or "none")
+        return "sandbox" if runtime == "sandbox" else "local"
 
     @staticmethod
     def _runtime_output_action(job: JobSnapshot) -> str:
@@ -1843,8 +2175,14 @@ class UnderstandAnythingRunner:
             return str(configured)
         return self._git_head(job.project_root)
 
-    def _validate_required_outputs(self, job: JobSnapshot) -> None:
-        required = REQUIRED_GRAPH_OUTPUTS_BY_JOB.get(job.kind, ())
+    def _validate_required_outputs(
+        self,
+        job: JobSnapshot,
+        *,
+        job_kind: str | None = None,
+    ) -> None:
+        resolved_kind = job_kind or job.kind
+        required = REQUIRED_GRAPH_OUTPUTS_BY_JOB.get(resolved_kind, ())
         if not required:
             return
         graph_root = self._job_graph_root(job)
@@ -1862,7 +2200,7 @@ class UnderstandAnythingRunner:
         payloads: dict[str, dict[str, Any]] = {}
         for file_name in required:
             payloads[file_name] = self._read_graph_json(graph_root, file_name)
-        if job.kind in {"understand", "understand-knowledge"}:
+        if resolved_kind in {"understand", "understand-knowledge"}:
             self._validate_understand_fingerprints(payloads)
 
     @staticmethod
@@ -2337,11 +2675,41 @@ class UnderstandAnythingRunner:
                 en="preparing runtime",
                 ru="подготовка среды выполнения",
             ),
+            "bundle": self._localized(
+                locale,
+                zh="准备沙盒包",
+                en="preparing sandbox bundle",
+                ru="подготовка пакета sandbox",
+            ),
+            "staging": self._localized(
+                locale,
+                zh="上传项目快照",
+                en="staging project",
+                ru="подготовка проекта",
+            ),
             "agent": self._localized(
                 locale,
                 zh="生成图谱",
                 en="generating graph",
                 ru="построение графа",
+            ),
+            "analysis": self._localized(
+                locale,
+                zh="生成图谱",
+                en="generating graph",
+                ru="построение графа",
+            ),
+            "artifact-sync": self._localized(
+                locale,
+                zh="同步图谱产物",
+                en="syncing artifacts",
+                ru="синхронизация артефактов",
+            ),
+            "domain": self._localized(
+                locale,
+                zh="生成领域视图",
+                en="generating domain view",
+                ru="построение доменного представления",
             ),
             "validate": self._localized(
                 locale,

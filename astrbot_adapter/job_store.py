@@ -24,8 +24,13 @@ PROGRESS_PHASES: tuple[tuple[str, str, int], ...] = (
     ("source", "Preparing source", 15),
     ("confirmation", "Prepare scan rules", 20),
     ("runtime", "Preparing runtime", 30),
+    ("bundle", "Preparing sandbox bundle", 34),
+    ("staging", "Staging project", 38),
     ("agent", "Running analysis", 55),
+    ("analysis", "Running analysis", 55),
+    ("domain", "Generating domain view", 75),
     ("validate", "Validating outputs", 85),
+    ("artifact-sync", "Syncing graph artifacts", 90),
     ("complete", "Complete", 100),
 )
 

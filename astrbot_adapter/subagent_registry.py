@@ -29,6 +29,17 @@ UA_AGENT_TOOLS = (
     "astrbot_grep_tool",
 )
 
+UA_SANDBOX_AGENT_TOOLS = (
+    "astrbot_execute_shell",
+    "astrbot_execute_ipython",
+    "astrbot_upload_file",
+    "astrbot_download_file",
+    "astrbot_file_read_tool",
+    "astrbot_file_write_tool",
+    "astrbot_file_edit_tool",
+    "astrbot_grep_tool",
+)
+
 UA_ROLE_SKILLS: dict[str, tuple[str, ...]] = {
     "project-scanner": ("understand",),
     "file-analyzer": ("understand",),
@@ -285,6 +296,7 @@ class UnderstandAnythingSubAgentRegistry:
         spec: UASubAgentSpec,
         provider_id: str | None,
     ) -> dict[str, Any]:
+        tools = self._agent_tools()
         return {
             "name": spec.agent_name,
             "enabled": True,
@@ -292,12 +304,13 @@ class UnderstandAnythingSubAgentRegistry:
             "provider_id": provider_id,
             "public_description": (f"Understand Anything worker role: {spec.role}."),
             "system_prompt": spec.prompt,
-            "tools": list(UA_AGENT_TOOLS),
+            "tools": list(tools),
             "metadata": {
                 "owner": PLUGIN_NAME,
                 "ua_role": spec.role,
                 "persona_id": spec.persona_id,
                 "prompt_sha256": spec.prompt_sha256,
+                "computer_use_runtime": self._computer_use_runtime(),
             },
         }
 
@@ -320,7 +333,7 @@ class UnderstandAnythingSubAgentRegistry:
             f"Understand Anything worker role: {spec.role}."
         ):
             reasons.append("description")
-        if existing.get("tools") != list(UA_AGENT_TOOLS):
+        if existing.get("tools") != list(self._agent_tools()):
             reasons.append("tools")
         existing_provider = existing.get("provider_id")
         existing_provider = (
@@ -332,6 +345,25 @@ class UnderstandAnythingSubAgentRegistry:
             self._persona_stale_reasons(persona_mgr, spec, persona_folder_id)
         )
         return reasons
+
+    def _agent_tools(self) -> tuple[str, ...]:
+        if self._computer_use_runtime() == "sandbox":
+            return UA_SANDBOX_AGENT_TOOLS
+        return UA_AGENT_TOOLS
+
+    def _computer_use_runtime(self) -> str:
+        if self.context is None:
+            return "local"
+        try:
+            config = self.context.get_config()
+        except Exception:
+            config = {}
+        provider_settings = (
+            config.get("provider_settings", {})
+            if hasattr(config, "get")
+            else {}
+        )
+        return str(provider_settings.get("computer_use_runtime") or "none")
 
     async def _upsert_personas(
         self,
@@ -355,7 +387,7 @@ class UnderstandAnythingSubAgentRegistry:
                     persona_id=spec.persona_id,
                     system_prompt=spec.prompt,
                     begin_dialogs=[],
-                    tools=list(UA_AGENT_TOOLS),
+                    tools=list(self._agent_tools()),
                     skills=list(spec.skills),
                     custom_error_message=None,
                 )
@@ -374,7 +406,7 @@ class UnderstandAnythingSubAgentRegistry:
                     persona_id=spec.persona_id,
                     system_prompt=spec.prompt,
                     begin_dialogs=[],
-                    tools=list(UA_AGENT_TOOLS),
+                    tools=list(self._agent_tools()),
                     skills=list(spec.skills),
                     custom_error_message=None,
                     folder_id=folder_id,
@@ -418,7 +450,7 @@ class UnderstandAnythingSubAgentRegistry:
         if str(prompt or "") != spec.prompt:
             reasons.append("persona_prompt")
         tools = self._persona_get(persona, "tools")
-        if tools != list(UA_AGENT_TOOLS):
+        if tools != list(self._agent_tools()):
             reasons.append("persona_tools")
         skills = self._persona_get(persona, "skills")
         if skills != list(spec.skills):

@@ -16,13 +16,22 @@ from astrbot.core.utils.llm_metadata import LLM_METADATAS
 from .astrbot_host import AstrBotHostAdapter
 from .computer_use import computer_use_status
 from .constants import (
+    AGENT_PROMPTS_ROOT,
     DASHBOARD_PAGE_ROOT,
     DASHBOARD_SOURCE_ROOT,
     GRAPH_DIR_NAME,
     GRAPH_FILES,
     PLUGIN_DISPLAY_NAME,
     PLUGIN_NAME,
+    PLUGIN_ROOT,
+    PLUGIN_SKILLS_ROOT,
     UNDERSTAND_ANYTHING_ROOT,
+)
+from .execution_workspace import (
+    ExecutionWorkspace,
+    SANDBOX_BUNDLE_ROOT,
+    SANDBOX_EXCLUDED_DIRS,
+    SANDBOX_EXCLUDED_FILES,
 )
 from .github_repo import DEFAULT_GIT_COMMAND_TIMEOUT_SECONDS, GITHUB_PROXY_PRESETS
 from .ignore_review import (
@@ -213,6 +222,7 @@ class UnderstandAnythingWebApi:
 
     def status_payload(self) -> dict[str, Any]:
         config = getattr(self.runner, "config", {}) or {}
+        computer_use = computer_use_status(self.context)
         runtime = getattr(self.runner, "runtime", None)
         tools = (
             runtime.tools()
@@ -226,7 +236,7 @@ class UnderstandAnythingWebApi:
                 "display_name": PLUGIN_DISPLAY_NAME,
             },
             "astrbot": {
-                "computer_use": computer_use_status(self.context),
+                "computer_use": computer_use,
             },
             "config": {
                 "provider_configured": bool(config.get("provider_id")),
@@ -307,6 +317,7 @@ class UnderstandAnythingWebApi:
                     tools,
                     auto_repair_enabled=auto_repair_enabled,
                 ),
+                "sandbox": self._sandbox_status_payload(computer_use),
             },
             "subagents": self.subagent_registry.status_payload(),
             "subagent_provider_options": self._provider_options_payload(),
@@ -521,7 +532,6 @@ class UnderstandAnythingWebApi:
                 "understand",
                 "understand-dashboard",
                 "understand-diff",
-                "understand-domain",
                 "understand-knowledge",
                 "understand-onboard",
             }:
@@ -839,7 +849,7 @@ class UnderstandAnythingWebApi:
     def _route_action() -> str:
         path = request.path.rstrip("/").split("/")[-1]
         return {
-            "domain": "understand-domain",
+            "domain": "understand",
             "knowledge": "understand-knowledge",
         }.get(path, "understand")
 
@@ -894,6 +904,96 @@ class UnderstandAnythingWebApi:
             "is_dir": path.is_dir(),
         }
 
+    def _sandbox_status_payload(self, computer_use: dict[str, Any]) -> dict[str, Any]:
+        runtime = str(computer_use.get("runtime") or "none")
+        enabled = bool(computer_use.get("enabled")) and runtime == "sandbox"
+        bundle_sources = {
+            "skills": self._path_state(PLUGIN_SKILLS_ROOT),
+            "agent_prompts": self._path_state(AGENT_PROMPTS_ROOT),
+            "node_bridge": self._path_state(PLUGIN_ROOT / "astrbot_adapter" / "node"),
+            "runtime_dist": self._path_state(UNDERSTAND_ANYTHING_ROOT / "dist"),
+            "runtime_src": self._path_state(UNDERSTAND_ANYTHING_ROOT / "src"),
+            "package_json": self._path_state(
+                UNDERSTAND_ANYTHING_ROOT / "package.json",
+            ),
+        }
+        required_sources_ready = all(
+            bool(bundle_sources[key]["exists"])
+            for key in ("skills", "agent_prompts", "node_bridge", "runtime_dist")
+        )
+        node_dependencies = self._sandbox_node_dependencies_payload()
+        required_node_dependencies_ready = all(
+            bool(dependency["exists"]) for dependency in node_dependencies.values()
+        )
+        ready = enabled and required_sources_ready and required_node_dependencies_ready
+        blocking_reasons: list[str] = []
+        if runtime != "sandbox":
+            blocking_reasons.append("Computer Use runtime is not sandbox.")
+        elif not bool(computer_use.get("enabled")):
+            reason = str(computer_use.get("blocking_reason") or "").strip()
+            blocking_reasons.append(reason or "Computer Use sandbox is not enabled.")
+        if not required_sources_ready:
+            blocking_reasons.append("UA sandbox bundle source files are incomplete.")
+        if not required_node_dependencies_ready:
+            blocking_reasons.append(
+                "UA sandbox runtime node dependencies are incomplete."
+            )
+        return {
+            "runtime": runtime,
+            "enabled": enabled,
+            "ready": ready,
+            "blocking_reasons": blocking_reasons,
+            "connection": {
+                "booter": str(computer_use.get("sandbox_booter") or ""),
+                "active_session_check": "lazy_on_job_start",
+            },
+            "project_staging": {
+                "archive": True,
+                "graph_ignore_upload": True,
+                "host_git_snapshot": True,
+                "excluded_dirs": sorted(SANDBOX_EXCLUDED_DIRS),
+                "excluded_files": sorted(SANDBOX_EXCLUDED_FILES),
+            },
+            "bundle": {
+                "remote_root": SANDBOX_BUNDLE_ROOT,
+                "archive": f"{SANDBOX_BUNDLE_ROOT}.zip",
+                "sources": bundle_sources,
+                "node_dependencies": node_dependencies,
+                "ready": required_sources_ready and required_node_dependencies_ready,
+            },
+            "artifact_sync": {
+                "atomic_replace": True,
+                "preserve_host_graph_on_failure": True,
+                "optional_files": ["diff-overlay.json"],
+                "managed_files": [
+                    "knowledge-graph.json",
+                    "meta.json",
+                    "source-inventory.json",
+                    "fingerprints.json",
+                    "quality-report.json",
+                    "intermediate/domain-analysis.json",
+                    "domain-graph.json",
+                ],
+            },
+        }
+
+    @staticmethod
+    def _sandbox_node_dependencies_payload() -> dict[str, dict[str, Any]]:
+        source_by_name: dict[str, Path] = {}
+        marker = "understand-anything/node_modules/"
+        for source, prefix in ExecutionWorkspace._runtime_node_module_sources():
+            normalized_prefix = str(prefix).replace("\\", "/")
+            if not normalized_prefix.startswith(marker):
+                continue
+            name = normalized_prefix[len(marker) :]
+            if name:
+                source_by_name[name] = Path(source)
+        names = set(source_by_name) | set(ExecutionWorkspace._runtime_node_module_seed_names())
+        return {
+            name: UnderstandAnythingWebApi._path_state(source_by_name.get(name))
+            for name in sorted(names, key=str.casefold)
+        }
+
     def _project_payload(self, record) -> dict[str, Any]:
         payload = record.to_dict()
         current_job = self._active_project_job(record.project_id)
@@ -901,11 +1001,14 @@ class UnderstandAnythingWebApi:
         current_payload = current_job.to_dict() if current_job is not None else None
         recent_payload = recent_job.to_dict() if recent_job is not None else None
         graph_ready = self._project_graph_ready(record)
+        domain_graph_ready = self._project_domain_graph_ready(record)
         can_retry = bool(recent_payload and recent_payload.get("canRetry"))
         payload.update(
             {
                 "graph_ready": graph_ready,
                 "graphReady": graph_ready,
+                "domain_graph_ready": domain_graph_ready,
+                "domainGraphReady": domain_graph_ready,
                 "current_job": current_payload,
                 "currentJob": current_payload,
                 "recent_job": recent_payload,
@@ -938,6 +1041,11 @@ class UnderstandAnythingWebApi:
     def _project_graph_ready(record) -> bool:
         graph_root = Path(str(record.graph_root or "")).resolve(strict=False)
         return (graph_root / "knowledge-graph.json").is_file()
+
+    @staticmethod
+    def _project_domain_graph_ready(record) -> bool:
+        graph_root = Path(str(record.graph_root or "")).resolve(strict=False)
+        return (graph_root / "domain-graph.json").is_file()
 
     def _project_record_from_ref(self, ref: dict[str, Any]):
         record = self.runner.registry.get(

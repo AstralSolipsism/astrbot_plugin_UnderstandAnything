@@ -8,11 +8,14 @@ from astrbot.core.agent.tool import ToolSet
 from astrbot.core.star import Context
 from astrbot.core.tools.computer_tools import (
     ExecuteShellTool,
+    FileDownloadTool,
     FileEditTool,
     FileReadTool,
+    FileUploadTool,
     FileWriteTool,
     GrepTool,
     LocalPythonTool,
+    PythonTool,
 )
 
 from .constants import UA_TOOL_CALL_TIMEOUT_SECONDS
@@ -53,7 +56,7 @@ class LLMDispatcher:
             chat_provider_id=provider_id,
             prompt=prompt,
             system_prompt=system_prompt,
-            tools=self._local_tool_set(extra_tools),
+            tools=self.tool_set_for_event(event, extra_tools),
             max_steps=max_steps,
             tool_call_timeout=UA_TOOL_CALL_TIMEOUT_SECONDS,
         )
@@ -74,23 +77,58 @@ class LLMDispatcher:
             return provider.meta().id
         raise RuntimeError("No AstrBot chat provider is available.")
 
-    def _local_tool_set(self, extra_tools: ToolSet | None = None) -> ToolSet:
+    def tool_set_for_event(
+        self,
+        event: AstrMessageEvent,
+        extra_tools: ToolSet | None = None,
+    ) -> ToolSet:
         tool_set = ToolSet()
         tool_mgr = self.context.get_llm_tool_manager()
-        for tool_cls in (
-            ExecuteShellTool,
-            LocalPythonTool,
-            FileReadTool,
-            FileWriteTool,
-            FileEditTool,
-            GrepTool,
-        ):
+        for tool_cls in self._computer_tool_classes(event):
             tool = tool_mgr.get_builtin_tool(tool_cls)
             if tool is not None:
                 tool_set.add_tool(tool)
         if extra_tools is not None:
             tool_set.merge(extra_tools)
         return tool_set
+
+    def _computer_tool_classes(self, event: AstrMessageEvent) -> tuple[type, ...]:
+        if self._computer_use_runtime(event) == "sandbox":
+            return (
+                ExecuteShellTool,
+                PythonTool,
+                FileUploadTool,
+                FileDownloadTool,
+                FileReadTool,
+                FileWriteTool,
+                FileEditTool,
+                GrepTool,
+            )
+        return (
+            ExecuteShellTool,
+            LocalPythonTool,
+            FileReadTool,
+            FileWriteTool,
+            FileEditTool,
+            GrepTool,
+        )
+
+    def _computer_use_runtime(self, event: AstrMessageEvent) -> str:
+        try:
+            config = self.context.get_config(
+                umo=getattr(event, "unified_msg_origin", None),
+            )
+        except Exception:
+            try:
+                config = self.context.get_config()
+            except Exception:
+                config = {}
+        provider_settings = (
+            config.get("provider_settings", {})
+            if hasattr(config, "get")
+            else {}
+        )
+        return str(provider_settings.get("computer_use_runtime") or "none")
 
 
 def read_prompt_file(path: Path) -> str:
