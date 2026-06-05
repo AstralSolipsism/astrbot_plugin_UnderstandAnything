@@ -9,6 +9,7 @@ import {
   listWebChatSessions,
   renameWebChatSession,
   sessionDisplayName,
+  selectDashboardWebChatSession,
   startWebChatSend,
   stopWebChatSession,
   subscribeWebChatSendEvents,
@@ -154,6 +155,26 @@ describe("webchat client helpers", () => {
   it("uses display names before generated session labels", () => {
     expect(sessionDisplayName({ session_id: "abcdef123", display_name: "Demo" })).toBe("Demo");
     expect(sessionDisplayName({ session_id: "abcdef123" })).toBe("WebChat abcdef12");
+  });
+
+  it("keeps the project assistant on a blank new session by default", () => {
+    const sessions = [{ session_id: "old-1" }, { session_id: "old-2" }];
+
+    expect(selectDashboardWebChatSession({ sessions })).toBeNull();
+    expect(selectDashboardWebChatSession({ sessions, currentSessionId: "old-1" })).toBeNull();
+    expect(
+      selectDashboardWebChatSession({
+        sessions,
+        currentSessionId: "old-1",
+        preserveCurrent: true,
+      }),
+    ).toBe("old-1");
+    expect(
+      selectDashboardWebChatSession({
+        sessions,
+        preferredSessionId: "newly-created",
+      }),
+    ).toBe("newly-created");
   });
 
   it("drives AssistantWorkbench through WebChat sessions instead of private assistant endpoints", () => {

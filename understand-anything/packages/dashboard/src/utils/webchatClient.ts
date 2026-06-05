@@ -81,6 +81,27 @@ export function sessionDisplayName(session: WebChatSessionSummary): string {
   return session.display_name?.trim() || `WebChat ${session.session_id.slice(0, 8)}`;
 }
 
+export function selectDashboardWebChatSession(input: {
+  sessions: WebChatSessionSummary[];
+  preferredSessionId?: string | null;
+  currentSessionId?: string | null;
+  preserveCurrent?: boolean;
+}): string | null {
+  const preferredSessionId = input.preferredSessionId?.trim();
+  if (preferredSessionId) return preferredSessionId;
+
+  const currentSessionId = input.currentSessionId?.trim();
+  if (
+    input.preserveCurrent &&
+    currentSessionId &&
+    input.sessions.some((session) => session.session_id === currentSessionId)
+  ) {
+    return currentSessionId;
+  }
+
+  return null;
+}
+
 export async function listWebChatSessions(
   bridge: AstrBotPluginPageBridge,
 ): Promise<{ sessions: WebChatSessionSummary[]; total?: number }> {

@@ -33,6 +33,7 @@ import {
   listWebChatSessions,
   renameWebChatSession,
   sessionDisplayName,
+  selectDashboardWebChatSession,
   startWebChatSend,
   stopWebChatSession,
   subscribeWebChatSendEvents,
@@ -494,29 +495,41 @@ export default function AssistantWorkbench({
   }, [pending, setStreaming]);
 
   useEffect(() => {
+    resetToNewSession();
     void loadSessions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, projectParams?.project_id, projectParams?.project_path, projectParams?.project_name, projectParams?.project]);
 
-  async function loadSessions(preferredSessionId?: string | null) {
+  function resetToNewSession() {
+    setCurrentSessionId(null);
+    setAssistantSessionId(null);
+    setRenameValue("");
+    setRenaming(false);
+    setMessages([]);
+  }
+
+  async function loadSessions(
+    preferredSessionId?: string | null,
+    options: { preserveCurrent?: boolean } = {},
+  ) {
     const bridge = currentBridge();
     if (!bridge || !isAstrBotPluginPageContext()) return;
     setLoadingSessions(true);
     try {
       const payload = await listWebChatSessions(bridge);
       setSessions(payload.sessions);
-      const nextSessionId =
-        preferredSessionId && payload.sessions.some((session) => session.session_id === preferredSessionId)
-          ? preferredSessionId
-          : currentSessionId && payload.sessions.some((session) => session.session_id === currentSessionId)
-            ? currentSessionId
-            : payload.sessions[0]?.session_id ?? null;
+      const nextSessionId = selectDashboardWebChatSession({
+        sessions: payload.sessions,
+        preferredSessionId,
+        currentSessionId,
+        preserveCurrent: options.preserveCurrent,
+      });
       setCurrentSessionId(nextSessionId);
       setAssistantSessionId(nextSessionId);
       if (nextSessionId) {
         await loadSessionHistory(nextSessionId);
       } else {
-        setMessages([]);
+        resetToNewSession();
       }
     } catch (err) {
       setError(toUserErrorMessage(err, t("assistant.errorLoadSessions", "读取 WebChat 会话失败。")));
@@ -691,7 +704,7 @@ export default function AssistantWorkbench({
           .catch(finish);
       });
       shouldCleanupStartedSend = false;
-      await loadSessions(sessionId);
+      await loadSessions(sessionId, { preserveCurrent: true });
     } catch (err) {
       if (started && shouldCleanupStartedSend) {
         await cancelWebChatSend(bridge, started.request_id, started.session_id).catch(() => undefined);
@@ -760,7 +773,11 @@ export default function AssistantWorkbench({
             value={currentSessionId ?? ""}
             onChange={(event) => {
               const nextSessionId = event.target.value;
-              if (nextSessionId) void loadSessionHistory(nextSessionId);
+              if (nextSessionId) {
+                void loadSessionHistory(nextSessionId);
+              } else {
+                resetToNewSession();
+              }
             }}
             disabled={loadingSessions || pending}
             className="w-full rounded-md border border-border-subtle bg-root px-2 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent disabled:opacity-60"
