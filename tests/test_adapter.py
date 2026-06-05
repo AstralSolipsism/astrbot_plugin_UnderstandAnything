@@ -7,6 +7,7 @@ import importlib
 import json
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,12 +25,17 @@ from astrbot_adapter.github_repo import (
     GitHubRepoError,
     GitHubRepoManager,
 )
+from astrbot_adapter.execution_workspace import (
+    ExecutionWorkspace,
+    execution_workspace_from_job,
+)
 from astrbot_adapter.ignore_review import (
     append_ignore_patterns,
     build_ignore_confirmation,
 )
 from astrbot_adapter.job_request import format_job_args, parse_job_args
 from astrbot_adapter.job_store import JobStatus, JobStore
+from astrbot_adapter.llm_dispatcher import LLMDispatcher
 from astrbot_adapter.path_security import PathSecurity, PathSecurityError
 from astrbot_adapter.project_registry import (
     ProjectRegistry,
@@ -94,22 +100,40 @@ def test_plugin_main_uses_package_relative_adapter_imports() -> None:
     assert "from .astrbot_adapter" in source
 
 
-def test_main_plugin_exposes_single_natural_understand_command() -> None:
+def test_main_plugin_exposes_understand_command_group_without_legacy_commands() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
+    assert '@filter.command_group("understand")' in source
     assert '@filter.command("understand")' in source
-    assert '@filter.command_group("understand")' not in source
     assert '@filter.command("understand-' not in source
     assert 'alias={"understand_' not in source
     assert 'self._args(event, "understand-' not in source
-    assert "UNDERSTAND_GROUP_SUBCOMMANDS" not in source
-    assert "_is_understand_group_subcommand" not in source
+    assert "UNDERSTAND_GROUP_SUBCOMMANDS" in source
+    for subcommand in (
+        "状态",
+        "项目",
+        "分析",
+        "重新分析",
+        "停止",
+        "诊断",
+        "修复",
+        "面板",
+    ):
+        assert f'"{subcommand}"' in source
+        assert f'.command("{subcommand}")' in source
+    for content_subcommand in (
+        "解释",
+        "diff",
+        "onboarding",
+        "领域",
+    ):
+        assert f'.command("{content_subcommand}")' not in source
+    assert "async def _run_understand_text(" in source
     for legacy in (
         "analyze",
         "status",
         "dashboard",
         "chat",
-        "diff",
         "domain",
         "explain",
         "knowledge",
@@ -490,6 +514,29 @@ def test_job_store_tracks_structured_progress_and_cancellation() -> None:
     assert snapshot is not None
     assert snapshot.status is JobStatus.CANCELLED
     assert snapshot.progress.phase == "cancelled"
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["bundle", "staging", "analysis", "domain", "artifact-sync"],
+)
+def test_job_store_knows_runner_progress_phases(phase: str) -> None:
+    jobs = JobStore()
+    job = jobs.create("understand", Path("D:/project"), {"project_id": "p1"})
+
+    jobs.set_progress(job.job_id, phase, None, None)
+
+    snapshot = jobs.get(job.job_id)
+    assert snapshot is not None
+    active_steps = [
+        step
+        for step in snapshot.progress.steps
+        if step["phase"] == phase and step["status"] == "active"
+    ]
+    assert active_steps == [
+        {"phase": phase, "label": snapshot.progress.label, "status": "active"}
+    ]
+    assert snapshot.progress.percent > 0
 
 
 def test_job_store_serializes_structured_observations() -> None:
@@ -1909,6 +1956,14 @@ async def test_runner_github_notifications_start_agent_without_scope_confirmatio
             prompt = str(kwargs["prompt"])
             graph_root = Path(prompt.split(marker, 1)[1].split("\n\n", 1)[0])
             graph_root.mkdir(parents=True, exist_ok=True)
+            if "`/understand-domain`" in prompt:
+                intermediate = graph_root / "intermediate"
+                intermediate.mkdir(parents=True, exist_ok=True)
+                (intermediate / "domain-analysis.json").write_text(
+                    json.dumps({"version": "1.0.0", "domains": []}),
+                    encoding="utf-8",
+                )
+                return "domain complete"
             (graph_root / "knowledge-graph.json").write_text(
                 json.dumps({"project": {"name": "AstrBot"}, "nodes": [], "edges": []}),
                 encoding="utf-8",
@@ -1940,6 +1995,25 @@ async def test_runner_github_notifications_start_agent_without_scope_confirmatio
                         "meta.json",
                         "source-inventory.json",
                         "fingerprints.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            if action == "compile_domain_ir":
+                (graph_root / "domain-graph.json").write_text(
+                    json.dumps({"nodes": [], "edges": []}),
+                    encoding="utf-8",
+                )
+                (graph_root / "quality-report.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                return {
+                    "ok": True,
+                    "artifacts": [
+                        "intermediate/domain-analysis.json",
+                        "domain-graph.json",
                         "quality-report.json",
                     ],
                     "observations": [],
@@ -1985,7 +2059,7 @@ async def test_runner_github_notifications_start_agent_without_scope_confirmatio
     context.send_message = send_message  # type: ignore[method-assign]
     runner = UnderstandAnythingRunner(
         context=context,  # type: ignore[arg-type]
-        config={},
+        config={"run_domain_by_default": False, "runDomainByDefault": False},
         registry_path=tmp_path / "projects.json",
     )
     runner.github = _FakeGitHubRepoManager(tmp_path / "github-cache")
@@ -2603,6 +2677,10 @@ async def test_web_api_projects_include_dashboard_status_fields(
         json.dumps({"nodes": [{"id": "file:a.py"}], "edges": []}),
         encoding="utf-8",
     )
+    (graph_root / "domain-graph.json").write_text(
+        json.dumps({"nodes": [{"id": "domain:core"}], "edges": []}),
+        encoding="utf-8",
+    )
     registry = ProjectRegistry(tmp_path / "projects.json")
     record = registry.register(project)
     jobs = JobStore()
@@ -2638,6 +2716,8 @@ async def test_web_api_projects_include_dashboard_status_fields(
     assert project_payload["edge_count"] == 3
     assert project_payload["graph_ready"] is True
     assert project_payload["graphReady"] is True
+    assert project_payload["domain_graph_ready"] is True
+    assert project_payload["domainGraphReady"] is True
     assert project_payload["current_job"] is None
     assert project_payload["recent_job"]["job_id"] == failed_job.job_id
     assert project_payload["can_retry"] is True
@@ -3489,6 +3569,92 @@ def test_web_api_status_reports_astrbot_computer_use_runtime(
             assert computer_use["blocking_reason"] == ""
 
 
+def test_web_api_status_reports_ua_sandbox_diagnostics(
+    tmp_path: Path,
+) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    context = _RegistryContext(
+        _DummyConfig(
+            {
+                "provider_settings": {
+                    "computer_use_runtime": "sandbox",
+                    "computer_use_require_admin": False,
+                    "sandbox": {"booter": "shipyard_neo"},
+                }
+            }
+        )
+    )
+    api = UnderstandAnythingWebApi(context=context, runner=DummyRunner())  # type: ignore[arg-type]
+
+    sandbox = api.status_payload()["runtime"]["sandbox"]
+
+    assert sandbox["runtime"] == "sandbox"
+    assert sandbox["enabled"] is True
+    assert sandbox["ready"] is True
+    assert sandbox["connection"]["booter"] == "shipyard_neo"
+    assert sandbox["bundle"]["remote_root"] == "ua-bundles/current"
+    assert sandbox["bundle"]["sources"]["runtime_dist"]["exists"] is True
+    assert sandbox["bundle"]["node_dependencies"]["web-tree-sitter"]["exists"] is True
+    assert (
+        sandbox["bundle"]["node_dependencies"]["tree-sitter-javascript"]["exists"]
+        is True
+    )
+    assert sandbox["bundle"]["node_dependencies"]["graphology"]["exists"] is True
+    assert sandbox["project_staging"]["graph_ignore_upload"] is True
+    assert ".gitnexus" in sandbox["project_staging"]["excluded_dirs"]
+    assert ".claude" in sandbox["project_staging"]["excluded_dirs"]
+    assert "AGENTS.md" in sandbox["project_staging"]["excluded_files"]
+    assert "domain-graph.json" in sandbox["artifact_sync"]["managed_files"]
+    assert sandbox["artifact_sync"]["atomic_replace"] is True
+
+
+def test_web_api_status_blocks_sandbox_when_node_dependencies_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyRunner:
+        config: dict[str, object] = {}
+        security = PathSecurity([tmp_path])
+        registry = SimpleNamespace(list=lambda: [])
+
+    monkeypatch.setattr(
+        ExecutionWorkspace,
+        "_runtime_node_module_seed_names",
+        staticmethod(lambda: ["web-tree-sitter"]),
+    )
+    monkeypatch.setattr(
+        ExecutionWorkspace,
+        "_runtime_node_module_sources",
+        staticmethod(lambda: []),
+    )
+
+    context = _RegistryContext(
+        _DummyConfig(
+            {
+                "provider_settings": {
+                    "computer_use_runtime": "sandbox",
+                    "computer_use_require_admin": False,
+                    "sandbox": {"booter": "shipyard_neo"},
+                }
+            }
+        )
+    )
+    api = UnderstandAnythingWebApi(context=context, runner=DummyRunner())  # type: ignore[arg-type]
+
+    sandbox = api.status_payload()["runtime"]["sandbox"]
+
+    assert sandbox["ready"] is False
+    assert sandbox["bundle"]["ready"] is False
+    assert sandbox["bundle"]["node_dependencies"]["web-tree-sitter"]["exists"] is False
+    assert "UA sandbox runtime node dependencies are incomplete." in sandbox[
+        "blocking_reasons"
+    ]
+
+
 def test_web_api_status_reports_all_astrbot_computer_use_configs(
     tmp_path: Path,
 ) -> None:
@@ -3582,6 +3748,1315 @@ def test_web_api_status_keeps_dashboard_available_when_only_session_config_disab
     assert computer_use["disabled_count"] == 1
     configs_by_id = {item["id"]: item for item in computer_use["configs"]}
     assert configs_by_id["disabled-config"]["enabled"] is False
+
+
+def test_runner_sandbox_prompt_uses_runtime_paths_not_host_paths(
+    tmp_path: Path,
+) -> None:
+    host_project = tmp_path / "host project"
+    host_graph = host_project / ".understand-anything"
+    host_project.mkdir()
+    host_graph.mkdir()
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "sandbox"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    job = runner.jobs.create(
+        "understand",
+        host_project,
+        {
+            "raw_args": str(host_project),
+            "project_path": str(host_project),
+            "graph_root": str(host_graph),
+            "source": {"type": "local"},
+        },
+    )
+
+    prompt = runner._build_skill_execution_prompt(job)
+
+    assert str(host_project) not in prompt
+    assert str(host_graph) not in prompt
+    assert "PROJECT_ROOT" in prompt
+    assert "UA_GRAPH_ROOT" in prompt
+    assert "sandbox" in prompt.lower()
+    assert "host path" in prompt.lower()
+    assert "Use absolute paths shown above" not in prompt
+
+
+def test_runner_sandbox_runtime_payload_includes_host_git_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_project = tmp_path / "project"
+    host_graph = host_project / ".understand-anything"
+    host_project.mkdir()
+    host_graph.mkdir()
+    (host_graph / "meta.json").write_text(
+        json.dumps({"gitCommitHash": "old"}),
+        encoding="utf-8",
+    )
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "sandbox"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    monkeypatch.setattr(
+        UnderstandAnythingRunner,
+        "_git_head",
+        staticmethod(lambda _project_root: "new"),
+    )
+    monkeypatch.setattr(
+        UnderstandAnythingRunner,
+        "_git_changed_files",
+        staticmethod(lambda _project_root: ["src/app.py"]),
+    )
+    job = runner.jobs.create(
+        "understand",
+        host_project,
+        {
+            "raw_args": str(host_project),
+            "project_path": str(host_project),
+            "graph_root": str(host_graph),
+            "source": {"type": "local"},
+        },
+    )
+
+    payload = runner._runtime_validation_payload(job)
+
+    assert payload["expectedGitCommitHash"] == "new"
+    assert payload["hostGit"] == {
+        "headCommit": "new",
+        "previousGraphCommit": "old",
+        "changedFiles": ["src/app.py"],
+        "diffAvailable": True,
+        "stale": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_sandbox_execution_workspace_finalizes_graph_artifacts_to_host(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    host_project = tmp_path / "project"
+    host_graph = tmp_path / "host-graph"
+    host_project.mkdir()
+    host_graph.mkdir()
+    (host_graph / "knowledge-graph.json").write_text(
+        json.dumps({"project": {"name": "old"}, "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    workspace = execution_workspace_from_job(
+        job_id="job-sync",
+        runtime_kind="sandbox",
+        host_project_root=host_project,
+        host_graph_root=host_graph,
+    )
+    runtime_graph = sandbox_root / workspace.runtime_graph_root
+    runtime_graph.mkdir(parents=True)
+    artifacts = {
+        "knowledge-graph.json": {
+            "project": {"name": "new"},
+            "nodes": [],
+            "edges": [],
+        },
+        "meta.json": {"gitCommitHash": "abc"},
+        "source-inventory.json": {},
+        "fingerprints.json": _sample_fingerprints("abc"),
+        "quality-report.json": {},
+        "domain-graph.json": {"nodes": [], "edges": []},
+    }
+    for name, payload in artifacts.items():
+        (runtime_graph / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.downloaded: list[str] = []
+
+        async def download_file(self, remote_path: str, local_path: str) -> None:
+            self.downloaded.append(remote_path)
+            source = sandbox_root / remote_path
+            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(local_path).write_bytes(source.read_bytes())
+
+    transport = FakeTransport()
+
+    await workspace.finalize(
+        transport,
+        required_files=artifacts.keys(),
+    )
+
+    assert json.loads((host_graph / "knowledge-graph.json").read_text())["project"][
+        "name"
+    ] == "new"
+    assert (host_graph / "domain-graph.json").is_file()
+    assert transport.downloaded == [
+        f"{workspace.runtime_graph_root}/{name}" for name in artifacts
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_execution_workspace_removes_stale_optional_artifacts(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    host_project = tmp_path / "project"
+    host_graph = tmp_path / "host-graph"
+    host_project.mkdir()
+    host_graph.mkdir()
+    (host_graph / "diff-overlay.json").write_text(
+        json.dumps({"changedNodeIds": ["old-node"]}),
+        encoding="utf-8",
+    )
+    workspace = execution_workspace_from_job(
+        job_id="job-stale-overlay",
+        runtime_kind="sandbox",
+        host_project_root=host_project,
+        host_graph_root=host_graph,
+    )
+    runtime_graph = sandbox_root / workspace.runtime_graph_root
+    runtime_graph.mkdir(parents=True)
+    artifacts = {
+        "knowledge-graph.json": {
+            "project": {"name": "new"},
+            "nodes": [],
+            "edges": [],
+        },
+        "meta.json": {"gitCommitHash": "abc"},
+        "source-inventory.json": {},
+        "fingerprints.json": _sample_fingerprints("abc"),
+        "quality-report.json": {},
+        "domain-graph.json": {"nodes": [], "edges": []},
+    }
+    for name, payload in artifacts.items():
+        (runtime_graph / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    class FakeTransport:
+        async def download_file(self, remote_path: str, local_path: str) -> None:
+            source = sandbox_root / remote_path
+            if not source.exists():
+                raise FileNotFoundError(remote_path)
+            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(local_path).write_bytes(source.read_bytes())
+
+    await workspace.finalize(
+        FakeTransport(),
+        required_files=artifacts.keys(),
+        optional_files=("diff-overlay.json",),
+    )
+
+    assert not (host_graph / "diff-overlay.json").exists()
+    assert json.loads((host_graph / "knowledge-graph.json").read_text())["project"][
+        "name"
+    ] == "new"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_execution_workspace_requires_domain_graph_before_host_replace(
+    tmp_path: Path,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    host_project = tmp_path / "project"
+    host_graph = tmp_path / "host-graph"
+    host_project.mkdir()
+    host_graph.mkdir()
+    (host_graph / "knowledge-graph.json").write_text(
+        json.dumps({"project": {"name": "old"}, "nodes": [], "edges": []}),
+        encoding="utf-8",
+    )
+    workspace = execution_workspace_from_job(
+        job_id="job-missing-domain",
+        runtime_kind="sandbox",
+        host_project_root=host_project,
+        host_graph_root=host_graph,
+    )
+    runtime_graph = sandbox_root / workspace.runtime_graph_root
+    runtime_graph.mkdir(parents=True)
+    for name, payload in {
+        "knowledge-graph.json": {"project": {"name": "new"}, "nodes": [], "edges": []},
+        "meta.json": {"gitCommitHash": "abc"},
+        "source-inventory.json": {},
+        "fingerprints.json": _sample_fingerprints("abc"),
+        "quality-report.json": {},
+    }.items():
+        (runtime_graph / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    class FakeTransport:
+        async def download_file(self, remote_path: str, local_path: str) -> None:
+            source = sandbox_root / remote_path
+            if not source.exists():
+                raise FileNotFoundError(remote_path)
+            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(local_path).write_bytes(source.read_bytes())
+
+    with pytest.raises(RuntimeError, match="domain-graph.json"):
+        await workspace.finalize(
+            FakeTransport(),
+            required_files=[
+                "knowledge-graph.json",
+                "meta.json",
+                "source-inventory.json",
+                "fingerprints.json",
+                "quality-report.json",
+                "domain-graph.json",
+            ],
+        )
+
+    assert json.loads((host_graph / "knowledge-graph.json").read_text())["project"][
+        "name"
+    ] == "old"
+    assert not (host_graph / "domain-graph.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_execution_workspace_prepare_uploads_project_and_ua_bundle(
+    tmp_path: Path,
+) -> None:
+    host_project = tmp_path / "project"
+    host_graph = tmp_path / "graph"
+    host_project.mkdir()
+    host_graph.mkdir()
+    (host_project / "src").mkdir()
+    (host_project / "src" / "app.py").write_text("print('ok')", encoding="utf-8")
+    (host_project / "src" / "token.secret").write_text("secret", encoding="utf-8")
+    (host_project / "src" / "keep.secret").write_text("public", encoding="utf-8")
+    (host_project / "docs").mkdir()
+    (host_project / "docs" / "notes.md").write_text("ignored", encoding="utf-8")
+    (host_project / "ignored-from-graph").mkdir()
+    (host_project / "ignored-from-graph" / "hidden.py").write_text(
+        "ignored",
+        encoding="utf-8",
+    )
+    (host_graph / ".understandignore").write_text(
+        "ignored-from-graph/\n*.secret\n!src/keep.secret\n",
+        encoding="utf-8",
+    )
+    (host_project / ".understandignore").write_text("docs/\n", encoding="utf-8")
+    for path in (
+        host_project / ".git" / "config",
+        host_project / "node_modules" / "cache.txt",
+        host_project / ".gitnexus" / "report.md",
+        host_project / ".claude" / "settings.json",
+        host_project / ".understand-anything" / "knowledge-graph.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("excluded", encoding="utf-8")
+    (host_project / "AGENTS.md").write_text("excluded", encoding="utf-8")
+    (host_project / "CLAUDE.md").write_text("excluded", encoding="utf-8")
+    skills = tmp_path / "bundle" / "skills"
+    prompts = tmp_path / "bundle" / "astrbot_adapter" / "prompts" / "agents"
+    skills.mkdir(parents=True)
+    prompts.mkdir(parents=True)
+    (skills / "understand" / "SKILL.md").parent.mkdir()
+    (skills / "understand" / "SKILL.md").write_text("skill", encoding="utf-8")
+    (prompts / "file-analyzer.md").write_text("prompt", encoding="utf-8")
+    (skills / ".gitnexus").mkdir()
+    (skills / ".gitnexus" / "report.md").write_text("excluded", encoding="utf-8")
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.uploaded: dict[str, list[str]] = {}
+            self.uploaded_files: list[str] = []
+            self.events: list[tuple[str, str]] = []
+            self.commands: list[str] = []
+
+        async def upload_file(self, local_path: str, remote_path: str) -> None:
+            import zipfile
+
+            self.events.append(("upload", remote_path))
+            if not remote_path.endswith(".zip"):
+                self.uploaded_files.append(remote_path)
+                return
+            with zipfile.ZipFile(local_path) as zf:
+                self.uploaded[remote_path] = sorted(zf.namelist())
+
+        async def shell_exec(self, command: str):
+            self.events.append(("shell", command))
+            self.commands.append(command)
+            return {"success": True, "stdout": "", "stderr": ""}
+
+    workspace = execution_workspace_from_job(
+        job_id="job-stage",
+        runtime_kind="sandbox",
+        host_project_root=host_project,
+        host_graph_root=host_graph,
+    )
+    transport = FakeTransport()
+
+    await workspace.prepare(
+        transport,
+        bundle_sources=[
+            (skills, "skills"),
+            (prompts, "astrbot_adapter/prompts/agents"),
+        ],
+    )
+
+    project_upload = transport.uploaded[
+        f"{workspace.runtime_project_root}.zip"
+    ]
+    bundle_upload = transport.uploaded[
+        f"{workspace.runtime_plugin_root}.zip"
+    ]
+    assert "src/app.py" in project_upload
+    assert "src/keep.secret" in project_upload
+    assert "src/token.secret" not in project_upload
+    assert "docs/notes.md" not in project_upload
+    assert "ignored-from-graph/hidden.py" not in project_upload
+    assert f"{workspace.runtime_graph_root}/.understandignore" in transport.uploaded_files
+    first_upload = next(
+        index for index, event in enumerate(transport.events) if event[0] == "upload"
+    )
+    mkdir_events = [
+        (index, event)
+        for index, event in enumerate(transport.events)
+        if event[0] == "shell" and "mkdir -p" in event[1]
+    ]
+    assert mkdir_events
+    assert mkdir_events[0][0] < first_upload
+    assert "ua-workspaces/job-stage" in mkdir_events[0][1][1]
+    assert "ua-bundles" in mkdir_events[0][1][1]
+    assert "skills/understand/SKILL.md" in bundle_upload
+    assert "astrbot_adapter/prompts/agents/file-analyzer.md" in bundle_upload
+    joined = "\n".join(project_upload + bundle_upload)
+    assert ".git/" not in joined
+    assert "node_modules/" not in joined
+    assert ".gitnexus/" not in joined
+    assert ".claude/" not in joined
+    assert ".understand-anything/" not in joined
+    assert "AGENTS.md" not in joined
+    assert "CLAUDE.md" not in joined
+    assert any("zipfile.ZipFile" in command for command in transport.commands)
+    assert not any("unzip " in command for command in transport.commands)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_execution_workspace_prepare_uploads_graph_ignore_rules(
+    tmp_path: Path,
+) -> None:
+    host_project = tmp_path / "project"
+    host_graph = tmp_path / "graph"
+    host_project.mkdir()
+    host_graph.mkdir()
+    (host_project / "src.py").write_text("print('source')", encoding="utf-8")
+    (host_graph / ".understandignore").write_text("tmp/\n", encoding="utf-8")
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.uploaded: list[tuple[str, str]] = []
+
+        async def upload_file(self, local_path: str, remote_path: str) -> None:
+            self.uploaded.append((Path(local_path).name, remote_path))
+
+        async def shell_exec(self, _command: str):
+            return {"success": True, "stdout": "", "stderr": ""}
+
+    workspace = execution_workspace_from_job(
+        job_id="job-ignore",
+        runtime_kind="sandbox",
+        host_project_root=host_project,
+        host_graph_root=host_graph,
+    )
+    transport = FakeTransport()
+
+    await workspace.prepare(transport, bundle_sources=[])
+
+    assert (
+        ".understandignore",
+        f"{workspace.runtime_graph_root}/.understandignore",
+    ) in transport.uploaded
+
+
+@pytest.mark.asyncio
+async def test_runner_sandbox_github_job_stages_prepared_checkout_snapshot(
+    tmp_path: Path,
+) -> None:
+    manager = _FakeGitHubRepoManager(
+        tmp_path / "github-cache",
+        create_subpath="packages/app",
+        create_files={
+            "README.md": "# demo\n",
+            "packages/app/src/app.py": "print('sandbox github')\n",
+        },
+    )
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "sandbox"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.github = manager
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstralSolipsism/demo/tree/main/packages/app",
+        start_task=False,
+    )
+
+    await runner._prepare_job_source(job, event=None)
+    workspace = runner._execution_workspace_for_job(job)
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.uploaded: dict[str, list[str]] = {}
+
+        async def upload_file(self, local_path: str, remote_path: str) -> None:
+            import zipfile
+
+            if remote_path.endswith(".zip"):
+                with zipfile.ZipFile(local_path) as zf:
+                    self.uploaded[remote_path] = sorted(zf.namelist())
+
+        async def shell_exec(self, _command: str):
+            return {"success": True, "stdout": "", "stderr": ""}
+
+    transport = FakeTransport()
+
+    await workspace.prepare(transport, bundle_sources=[])
+
+    project_upload = transport.uploaded[f"{workspace.runtime_project_root}.zip"]
+    assert job.args["source"]["type"] == "github"  # type: ignore[index]
+    assert job.project_root == manager.resolve(
+        "https://github.com/AstralSolipsism/demo/tree/main/packages/app",
+    ).analysis_root
+    assert workspace.host_project_root == job.project_root
+    assert workspace.host_graph_root == Path(job.args["graph_root"])
+    assert "src/app.py" in project_upload
+    assert "README.md" not in project_upload
+
+
+def test_sandbox_execution_workspace_default_bundle_includes_runtime_dist() -> None:
+    workspace = execution_workspace_from_job(
+        job_id="job-bundle",
+        runtime_kind="sandbox",
+        host_project_root=PLUGIN_ROOT,
+        host_graph_root=PLUGIN_ROOT / ".understand-anything",
+    )
+
+    sources = {prefix for _source, prefix in workspace._default_bundle_sources()}
+
+    assert "understand-anything/dist" in sources
+
+
+def test_sandbox_execution_workspace_default_bundle_includes_runtime_packages() -> None:
+    workspace = execution_workspace_from_job(
+        job_id="job-runtime-packages",
+        runtime_kind="sandbox",
+        host_project_root=PLUGIN_ROOT,
+        host_graph_root=PLUGIN_ROOT / ".understand-anything",
+    )
+
+    sources = {prefix for _source, prefix in workspace._default_bundle_sources()}
+
+    assert "understand-anything/node_modules/@understand-anything/core/dist" in sources
+    assert "understand-anything/node_modules/@understand-anything/core" in sources
+    assert (
+        "understand-anything/node_modules/@understand-anything/assistant/dist"
+        in sources
+    )
+    assert "understand-anything/node_modules/fuse.js" in sources
+    assert "understand-anything/node_modules/ignore" in sources
+    assert "understand-anything/node_modules/yaml" in sources
+    assert "understand-anything/node_modules/zod" in sources
+    assert "understand-anything/node_modules/web-tree-sitter" in sources
+    assert "understand-anything/node_modules/tree-sitter-javascript" in sources
+    assert "understand-anything/node_modules/tree-sitter-typescript" in sources
+    assert "understand-anything/node_modules/graphology" in sources
+    assert "understand-anything/node_modules/graphology-communities-louvain" in sources
+
+
+def test_sandbox_bundle_keeps_runtime_dependency_dist_files(tmp_path: Path) -> None:
+    workspace = execution_workspace_from_job(
+        job_id="job-runtime-deps",
+        runtime_kind="sandbox",
+        host_project_root=PLUGIN_ROOT,
+        host_graph_root=PLUGIN_ROOT / ".understand-anything",
+    )
+    bundle_zip = tmp_path / "bundle.zip"
+
+    workspace._write_zip_from_sources(
+        bundle_zip,
+        workspace._default_bundle_sources(),
+        source_kind="bundle",
+    )
+
+    with zipfile.ZipFile(bundle_zip) as zf:
+        names = set(zf.namelist())
+    assert "understand-anything/node_modules/fuse.js/dist/fuse.mjs" in names
+    assert any(
+        name.startswith("understand-anything/node_modules/zod/v4/")
+        for name in names
+    )
+    assert "understand-anything/node_modules/web-tree-sitter/web-tree-sitter.wasm" in names
+    assert (
+        "understand-anything/node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm"
+        in names
+    )
+    assert (
+        "understand-anything/node_modules/graphology/dist/graphology.cjs.js"
+        in names
+    )
+
+
+def test_sandbox_bundle_runs_bundled_structure_extractor(tmp_path: Path) -> None:
+    workspace = execution_workspace_from_job(
+        job_id="job-bundle-skill-runtime",
+        runtime_kind="sandbox",
+        host_project_root=tmp_path / "project",
+        host_graph_root=tmp_path / "graph",
+    )
+    bundle_zip = tmp_path / "bundle.zip"
+    workspace._write_zip_from_sources(
+        bundle_zip,
+        workspace._default_bundle_sources(),
+        source_kind="bundle",
+        extra_json={".ua-bundle-manifest.json": workspace.bundle_manifest()},
+    )
+    sandbox_root = tmp_path / "sandbox"
+    with zipfile.ZipFile(bundle_zip) as zf:
+        zf.extractall(sandbox_root / workspace.runtime_plugin_root)
+    project_root = sandbox_root / workspace.runtime_project_root
+    source_dir = project_root / "src"
+    source_dir.mkdir(parents=True)
+    (source_dir / "app.js").write_text(
+        "export function answer() { return 42; }\n",
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "extract-input.json"
+    output_path = tmp_path / "extract-output.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "projectRoot": str(project_root),
+                "batchFiles": [
+                    {
+                        "path": "src/app.js",
+                        "language": "javascript",
+                        "sizeLines": 1,
+                        "fileCategory": "code",
+                    },
+                ],
+                "batchImportData": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            "node",
+            str(
+                sandbox_root
+                / workspace.runtime_skills_root
+                / "understand"
+                / "extract-structure.mjs"
+            ),
+            str(input_path),
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["scriptCompleted"] is True
+    assert payload["filesAnalyzed"] == 1
+
+
+def test_sandbox_bundle_runs_bundled_batch_computation(tmp_path: Path) -> None:
+    workspace = execution_workspace_from_job(
+        job_id="job-bundle-batches-runtime",
+        runtime_kind="sandbox",
+        host_project_root=tmp_path / "project",
+        host_graph_root=tmp_path / "graph",
+    )
+    bundle_zip = tmp_path / "bundle.zip"
+    workspace._write_zip_from_sources(
+        bundle_zip,
+        workspace._default_bundle_sources(),
+        source_kind="bundle",
+        extra_json={".ua-bundle-manifest.json": workspace.bundle_manifest()},
+    )
+    sandbox_root = tmp_path / "sandbox"
+    with zipfile.ZipFile(bundle_zip) as zf:
+        zf.extractall(sandbox_root / workspace.runtime_plugin_root)
+    project_root = sandbox_root / workspace.runtime_project_root
+    graph_root = sandbox_root / workspace.runtime_graph_root
+    (project_root / "src").mkdir(parents=True)
+    (graph_root / "intermediate").mkdir(parents=True)
+    (project_root / "src" / "a.js").write_text(
+        "import { b } from './b.js'; export const a = b;\n",
+        encoding="utf-8",
+    )
+    (project_root / "src" / "b.js").write_text(
+        "export const b = 42;\n",
+        encoding="utf-8",
+    )
+    (graph_root / "intermediate" / "scan-result.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "path": "src/a.js",
+                        "language": "javascript",
+                        "sizeLines": 1,
+                        "fileCategory": "code",
+                    },
+                    {
+                        "path": "src/b.js",
+                        "language": "javascript",
+                        "sizeLines": 1,
+                        "fileCategory": "code",
+                    },
+                ],
+                "importMap": {"src/a.js": ["src/b.js"], "src/b.js": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            "node",
+            str(
+                sandbox_root
+                / workspace.runtime_skills_root
+                / "understand"
+                / "compute-batches.mjs"
+            ),
+            str(project_root),
+            f"--graph-root={graph_root}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(
+        (graph_root / "intermediate" / "batches.json").read_text(encoding="utf-8")
+    )
+    assert payload["algorithm"] == "louvain"
+    assert payload["totalFiles"] == 2
+    assert payload["totalBatches"] >= 1
+
+
+def test_runtime_validation_dist_avoids_core_barrel_imports() -> None:
+    output_pipeline = (
+        PLUGIN_ROOT / "understand-anything" / "dist" / "validation" / "output-pipeline.js"
+    ).read_text(encoding="utf-8")
+    quality = (
+        PLUGIN_ROOT / "understand-anything" / "dist" / "validation" / "quality.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'from "@understand-anything/core";' not in output_pipeline
+    assert 'from "@understand-anything/core";' not in quality
+    assert 'from "@understand-anything/core/schema";' in output_pipeline
+    assert 'from "@understand-anything/core/ignore-filter";' in quality
+
+
+def test_sandbox_execution_workspace_payload_declares_path_and_sync_manifest(
+    tmp_path: Path,
+) -> None:
+    host_project = tmp_path / "project"
+    host_graph = host_project / ".understand-anything"
+    workspace = execution_workspace_from_job(
+        job_id="job-manifest",
+        runtime_kind="sandbox",
+        host_project_root=host_project,
+        host_graph_root=host_graph,
+    )
+
+    payload = workspace.to_payload()
+
+    assert payload["path_mapper"] == {
+        str(host_project): workspace.runtime_project_root,
+        str(host_graph): workspace.runtime_graph_root,
+    }
+    assert payload["sync_manifest"]["bundle"]["remote_root"] == "ua-bundles/current"
+    assert ".gitnexus" in payload["sync_manifest"]["project"]["excluded_dirs"]
+    assert "AGENTS.md" in payload["sync_manifest"]["project"]["excluded_files"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_execution_workspace_reuses_matching_bundle_manifest(
+    tmp_path: Path,
+) -> None:
+    host_project = tmp_path / "project"
+    host_project.mkdir()
+    (host_project / "main.py").write_text("print('project')", encoding="utf-8")
+    host_graph = host_project / ".understand-anything"
+    host_graph.mkdir()
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    (bundle_root / "runtime.js").write_text("export {}", encoding="utf-8")
+    workspace = execution_workspace_from_job(
+        job_id="job-reuse-bundle",
+        runtime_kind="sandbox",
+        host_project_root=host_project,
+        host_graph_root=host_graph,
+    )
+    manifest = workspace.bundle_manifest([(bundle_root, "bundle")])
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.uploaded: list[str] = []
+            self.commands: list[str] = []
+
+        async def upload_file(self, _local_path: str, remote_path: str) -> None:
+            self.uploaded.append(remote_path)
+
+        async def shell_exec(self, command: str):
+            self.commands.append(command)
+            if ".ua-bundle-manifest.json" in command and "cat " in command:
+                return {
+                    "success": True,
+                    "stdout": json.dumps(manifest),
+                    "stderr": "",
+                }
+            return {"success": True, "stdout": "", "stderr": ""}
+
+    transport = FakeTransport()
+
+    await workspace.prepare(transport, bundle_sources=[(bundle_root, "bundle")])
+
+    assert f"{workspace.runtime_project_root}.zip" in transport.uploaded
+    assert f"{workspace.runtime_plugin_root}.zip" not in transport.uploaded
+    assert not any(
+        f"rm -rf {workspace.runtime_plugin_root}" in command
+        for command in transport.commands
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_sandbox_job_syncs_runtime_graph_to_host_before_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    events: list[str] = []
+    runtime_paths: list[tuple[str, str]] = []
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        async def upload_file(self, local_path: str, remote_path: str) -> None:
+            events.append(f"upload:{remote_path}")
+            assert Path(local_path).is_file()
+            if remote_path.endswith(".json"):
+                self.payloads.append(
+                    json.loads(Path(local_path).read_text(encoding="utf-8"))
+                )
+
+        async def download_file(self, remote_path: str, local_path: str) -> None:
+            events.append(f"download:{remote_path}")
+            source = sandbox_root / remote_path
+            if not source.exists():
+                raise FileNotFoundError(remote_path)
+            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(local_path).write_bytes(source.read_bytes())
+
+        async def shell_exec(self, command: str):
+            events.append(f"shell:{command}")
+            if "bridge.mjs" not in command:
+                return {"success": True, "stdout": "", "stderr": ""}
+            payload = self.payloads[-1]
+            project_root_payload = str(payload["projectRoot"])
+            graph_root_payload = str(payload["graphRoot"])
+            runtime_paths.append((project_root_payload, graph_root_payload))
+            assert str(project_root) not in project_root_payload
+            assert str(graph_root) not in graph_root_payload
+            graph = sandbox_root / graph_root_payload
+            graph.mkdir(parents=True, exist_ok=True)
+            if "preflight_inventory" in command:
+                response = {
+                    "ok": True,
+                    "artifacts": [],
+                    "observations": [],
+                    "warnings": [],
+                }
+            elif "validate_outputs" in command:
+                _write_validation_sidecars(graph)
+                (graph / "fingerprints.json").write_text(
+                    json.dumps(_sample_fingerprints("abc")),
+                    encoding="utf-8",
+                )
+                response = {
+                    "ok": True,
+                    "artifacts": [
+                        "knowledge-graph.json",
+                        "meta.json",
+                        "source-inventory.json",
+                        "fingerprints.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            elif "compile_domain_ir" in command:
+                (graph / "domain-graph.json").write_text(
+                    json.dumps({"nodes": [], "edges": []}),
+                    encoding="utf-8",
+                )
+                (graph / "quality-report.json").write_text("{}", encoding="utf-8")
+                response = {
+                    "ok": True,
+                    "artifacts": [
+                        "intermediate/domain-analysis.json",
+                        "domain-graph.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            else:
+                raise AssertionError(f"Unexpected command: {command}")
+            return {"success": True, "stdout": json.dumps(response), "stderr": ""}
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            events.append("runtime:ready")
+
+        async def run_action(self, action: str, payload: dict[str, object]):
+            raise AssertionError("host runtime must not run for sandbox actions")
+
+    class DummyDispatcher:
+        async def run_with_local_tools(self, **kwargs):
+            marker = "UA graph output root:\n"
+            prompt = str(kwargs["prompt"])
+            runtime_graph = Path(prompt.split(marker, 1)[1].split("\n\n", 1)[0])
+            assert str(graph_root) not in str(runtime_graph)
+            graph = sandbox_root / runtime_graph
+            graph.mkdir(parents=True, exist_ok=True)
+            if "`/understand-domain`" in prompt:
+                intermediate = graph / "intermediate"
+                intermediate.mkdir(parents=True, exist_ok=True)
+                (intermediate / "domain-analysis.json").write_text(
+                    json.dumps({"version": "1.0.0", "domains": []}),
+                    encoding="utf-8",
+                )
+                return "domain complete"
+            (graph / "knowledge-graph.json").write_text(
+                json.dumps(
+                    {
+                        "project": {"name": "Sandbox Demo", "gitCommitHash": "abc"},
+                        "nodes": [],
+                        "edges": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (graph / "meta.json").write_text(
+                json.dumps({"gitCommitHash": "abc"}),
+                encoding="utf-8",
+            )
+            return "analysis complete"
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    graph_root = project_root / ".understand-anything"
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "sandbox"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+
+    async def fake_transport(_event, _workspace):
+        return FakeTransport()
+
+    runner._execution_workspace_transport = fake_transport  # type: ignore[method-assign]
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+            "locale": "zh-CN",
+        },
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FINISHED
+    stages = {observation.stage for observation in snapshot.observations}
+    assert {"bundle", "staging", "analysis", "artifact-sync"} <= stages
+    assert json.loads((graph_root / "knowledge-graph.json").read_text())["project"][
+        "name"
+    ] == "Sandbox Demo"
+    assert (graph_root / "domain-graph.json").is_file()
+    assert runtime_paths
+    assert all("ua-workspaces/" in graph for _project, graph in runtime_paths)
+    assert any(event.startswith("download:") for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runner_sandbox_github_job_completes_from_prepared_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    events: list[str] = []
+    runtime_paths: list[tuple[str, str]] = []
+    project_uploads: list[list[str]] = []
+    manager = _FakeGitHubRepoManager(
+        tmp_path / "github-cache",
+        create_subpath="packages/app",
+        create_files={
+            "README.md": "# demo\n",
+            "packages/app/src/app.py": "print('sandbox github')\n",
+        },
+    )
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        async def upload_file(self, local_path: str, remote_path: str) -> None:
+            events.append(f"upload:{remote_path}")
+            assert Path(local_path).is_file()
+            if remote_path.endswith(".zip"):
+                with zipfile.ZipFile(local_path) as zf:
+                    names = sorted(zf.namelist())
+                if remote_path.endswith("/project.zip") or remote_path.endswith(
+                    "project.zip"
+                ):
+                    project_uploads.append(names)
+                return
+            if remote_path.endswith(".json"):
+                self.payloads.append(
+                    json.loads(Path(local_path).read_text(encoding="utf-8"))
+                )
+
+        async def download_file(self, remote_path: str, local_path: str) -> None:
+            events.append(f"download:{remote_path}")
+            source = sandbox_root / remote_path
+            if not source.exists():
+                raise FileNotFoundError(remote_path)
+            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(local_path).write_bytes(source.read_bytes())
+
+        async def shell_exec(self, command: str):
+            events.append(f"shell:{command}")
+            if "bridge.mjs" not in command:
+                return {"success": True, "stdout": "", "stderr": ""}
+            payload = self.payloads[-1]
+            project_root_payload = str(payload["projectRoot"])
+            graph_root_payload = str(payload["graphRoot"])
+            runtime_paths.append((project_root_payload, graph_root_payload))
+            assert "github-cache" not in project_root_payload
+            assert "github-artifacts" not in graph_root_payload
+            graph = sandbox_root / graph_root_payload
+            graph.mkdir(parents=True, exist_ok=True)
+            if "preflight_inventory" in command:
+                response = {
+                    "ok": True,
+                    "artifacts": [],
+                    "observations": [],
+                    "warnings": [],
+                }
+            elif "validate_outputs" in command:
+                _write_validation_sidecars(graph)
+                (graph / "fingerprints.json").write_text(
+                    json.dumps(_sample_fingerprints("abc")),
+                    encoding="utf-8",
+                )
+                response = {
+                    "ok": True,
+                    "artifacts": [
+                        "knowledge-graph.json",
+                        "meta.json",
+                        "source-inventory.json",
+                        "fingerprints.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            elif "compile_domain_ir" in command:
+                (graph / "domain-graph.json").write_text(
+                    json.dumps({"nodes": [], "edges": []}),
+                    encoding="utf-8",
+                )
+                (graph / "quality-report.json").write_text("{}", encoding="utf-8")
+                response = {
+                    "ok": True,
+                    "artifacts": [
+                        "intermediate/domain-analysis.json",
+                        "domain-graph.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            else:
+                raise AssertionError(f"Unexpected command: {command}")
+            return {"success": True, "stdout": json.dumps(response), "stderr": ""}
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            events.append("runtime:ready")
+
+        async def run_action(self, action: str, payload: dict[str, object]):
+            raise AssertionError("host runtime must not run for sandbox actions")
+
+    class DummyDispatcher:
+        async def run_with_local_tools(self, **kwargs):
+            marker = "UA graph output root:\n"
+            prompt = str(kwargs["prompt"])
+            runtime_graph = Path(prompt.split(marker, 1)[1].split("\n\n", 1)[0])
+            assert "github-cache" not in prompt
+            assert "github-artifacts" not in prompt
+            graph = sandbox_root / runtime_graph
+            graph.mkdir(parents=True, exist_ok=True)
+            if "`/understand-domain`" in prompt:
+                intermediate = graph / "intermediate"
+                intermediate.mkdir(parents=True, exist_ok=True)
+                (intermediate / "domain-analysis.json").write_text(
+                    json.dumps({"version": "1.0.0", "domains": []}),
+                    encoding="utf-8",
+                )
+                return "domain complete"
+            (graph / "knowledge-graph.json").write_text(
+                json.dumps(
+                    {
+                        "project": {"name": "GitHub Sandbox", "gitCommitHash": "abc"},
+                        "nodes": [],
+                        "edges": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (graph / "meta.json").write_text(
+                json.dumps({"gitCommitHash": "abc"}),
+                encoding="utf-8",
+            )
+            return "analysis complete"
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "sandbox"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.github = manager
+    runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+
+    async def fake_transport(_event, _workspace):
+        return FakeTransport()
+
+    runner._execution_workspace_transport = fake_transport  # type: ignore[method-assign]
+    job = await runner.start_skill_job(
+        skill_name="understand",
+        repo_url="https://github.com/AstralSolipsism/demo/tree/main/packages/app",
+        start_task=False,
+        locale="zh-CN",
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FINISHED
+    assert snapshot.args["source"]["type"] == "github"  # type: ignore[index]
+    assert snapshot.project_root.name == "app"
+    assert project_uploads
+    assert "src/app.py" in project_uploads[0]
+    assert "README.md" not in project_uploads[0]
+    graph_root = Path(snapshot.args["graph_root"])
+    assert json.loads((graph_root / "knowledge-graph.json").read_text())["project"][
+        "name"
+    ] == "GitHub Sandbox"
+    assert (graph_root / "domain-graph.json").is_file()
+    assert runtime_paths
+    assert all("ua-workspaces/" in graph for _project, graph in runtime_paths)
+    assert any(event.startswith("download:") for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runner_sandbox_runtime_action_executes_in_sandbox_transport(
+    tmp_path: Path,
+) -> None:
+    class HostRuntimeMustNotRun:
+        async def run_action(self, *_args, **_kwargs):
+            raise AssertionError("host runtime must not run for sandbox actions")
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.uploaded_payloads: dict[str, dict[str, object]] = {}
+            self.commands: list[str] = []
+
+        async def upload_file(self, local_path: str, remote_path: str) -> None:
+            self.uploaded_payloads[remote_path] = json.loads(
+                Path(local_path).read_text(encoding="utf-8")
+            )
+
+        async def shell_exec(self, command: str):
+            self.commands.append(command)
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "ok": True,
+                        "artifacts": ["source-inventory.json"],
+                        "observations": [],
+                        "warnings": [],
+                    }
+                ),
+                "stderr": "",
+            }
+
+    project_root = tmp_path / "project"
+    graph_root = project_root / ".understand-anything"
+    project_root.mkdir()
+    graph_root.mkdir()
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "sandbox"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.runtime = HostRuntimeMustNotRun()  # type: ignore[assignment]
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+        },
+    )
+    workspace = runner._execution_workspace_for_job(job)
+    job.args["execution_workspace"] = workspace.to_payload()
+    transport = FakeTransport()
+
+    result = await runner._run_runtime_validation_action(
+        job,
+        "preflight_inventory",
+        workspace_transport=transport,
+    )
+
+    assert result["ok"] is True
+    assert list(transport.uploaded_payloads)
+    remote_payload = next(iter(transport.uploaded_payloads))
+    assert remote_payload.startswith(f"ua-workspaces/{job.job_id}/runtime-actions/")
+    assert transport.uploaded_payloads[remote_payload]["graphRoot"] == workspace.runtime_graph_root
+    command = next(command for command in transport.commands if "bridge.mjs" in command)
+    assert "ua-bundles/current/astrbot_adapter/node/bridge.mjs" in command
+    assert "ua-bundles/current/understand-anything" in command
+    assert "preflight_inventory" in command
+
+
+def test_llm_dispatcher_uses_sandbox_python_tool_for_sandbox_runtime() -> None:
+    class RecordingToolManager:
+        def __init__(self) -> None:
+            self.requested: list[str] = []
+
+        def get_builtin_tool(self, tool_cls):
+            self.requested.append(tool_cls.__name__)
+            return SimpleNamespace(name=getattr(tool_cls(), "name", tool_cls.__name__))
+
+    class Context:
+        def __init__(self) -> None:
+            self.tool_manager = RecordingToolManager()
+            self.config = _DummyConfig(
+                {"provider_settings": {"computer_use_runtime": "sandbox"}},
+            )
+
+        def get_llm_tool_manager(self):
+            return self.tool_manager
+
+        def get_config(self, umo=None):
+            return self.config
+
+    context = Context()
+    event = SimpleNamespace(unified_msg_origin="platform:friend:sandbox")
+
+    LLMDispatcher(context).tool_set_for_event(event)  # type: ignore[arg-type]
+
+    assert "PythonTool" in context.tool_manager.requested
+    assert "LocalPythonTool" not in context.tool_manager.requested
+    assert "FileUploadTool" in context.tool_manager.requested
+    assert "FileDownloadTool" in context.tool_manager.requested
 
 
 @pytest.mark.asyncio
@@ -3793,7 +5268,10 @@ async def test_runner_runs_runtime_validation_around_agent_workflow(
             assert payload["projectRoot"] == str(project_root)
             assert payload["graphRoot"] == str(graph_root)
             assert payload["jobId"] == job.job_id
-            assert payload["jobKind"] == "understand"
+            expected_kind = (
+                "understand-domain" if action == "compile_domain_ir" else "understand"
+            )
+            assert payload["jobKind"] == expected_kind
             assert payload["locale"] == "zh-CN"
             assert payload["strictVisibleLanguage"] == "auto"
             if action == "preflight_inventory":
@@ -3846,12 +5324,41 @@ async def test_runner_runs_runtime_validation_around_agent_workflow(
                     ],
                     "warnings": [],
                 }
+            if action == "compile_domain_ir":
+                (graph_root / "domain-graph.json").write_text(
+                    json.dumps({"nodes": [], "edges": []}),
+                    encoding="utf-8",
+                )
+                (graph_root / "quality-report.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                return {
+                    "ok": True,
+                    "artifacts": [
+                        "intermediate/domain-analysis.json",
+                        "domain-graph.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
             raise AssertionError(f"Unexpected action: {action}")
 
     class DummyDispatcher:
-        async def run_with_local_tools(self, **_kwargs):
-            events.append("agent")
+        async def run_with_local_tools(self, **kwargs):
+            prompt = str(kwargs["prompt"])
             graph_root.mkdir(parents=True, exist_ok=True)
+            if "`/understand-domain`" in prompt:
+                events.append("agent:domain")
+                intermediate = graph_root / "intermediate"
+                intermediate.mkdir(parents=True, exist_ok=True)
+                (intermediate / "domain-analysis.json").write_text(
+                    json.dumps({"version": "1.0.0", "domains": []}),
+                    encoding="utf-8",
+                )
+                return "domain complete"
+            events.append("agent")
             (graph_root / "knowledge-graph.json").write_text(
                 json.dumps(
                     {
@@ -3902,7 +5409,7 @@ async def test_runner_runs_runtime_validation_around_agent_workflow(
     )
     runner = UnderstandAnythingRunner(
         context=context,  # type: ignore[arg-type]
-        config={},
+        config={"run_domain_by_default": False, "runDomainByDefault": False},
         registry_path=tmp_path / "projects.json",
     )
     runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
@@ -3943,6 +5450,8 @@ async def test_runner_runs_runtime_validation_around_agent_workflow(
         ),
         "agent",
         "runtime:validate_outputs",
+        "agent:domain",
+        "runtime:compile_domain_ir",
     ]
     assert [item.kind for item in snapshot.observations].count("quality") == 1
     assert project is not None
@@ -3950,6 +5459,174 @@ async def test_runner_runs_runtime_validation_around_agent_workflow(
     assert project.current_job_id is None
     assert project.node_count == 0
     assert project.edge_count == 0
+
+
+@pytest.mark.asyncio
+async def test_runner_runs_domain_phase_by_default_for_understand_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actions: list[tuple[str, str]] = []
+    prompts: list[str] = []
+
+    class DummyRuntime:
+        async def ensure_ready(self):
+            return None
+
+        async def run_action(self, action: str, payload: dict[str, object]):
+            actions.append((action, str(payload["jobKind"])))
+            assert payload["projectRoot"] == str(project_root)
+            assert payload["graphRoot"] == str(graph_root)
+            assert payload["jobId"] == job.job_id
+            assert payload["locale"] == "zh-CN"
+            if action == "preflight_inventory":
+                assert payload["jobKind"] == "understand"
+                return {"ok": True, "artifacts": [], "observations": [], "warnings": []}
+            if action == "validate_outputs":
+                assert payload["jobKind"] == "understand"
+                _write_validation_sidecars(graph_root)
+                (graph_root / "fingerprints.json").write_text(
+                    json.dumps(_sample_fingerprints("abc")),
+                    encoding="utf-8",
+                )
+                return {
+                    "ok": True,
+                    "artifacts": [
+                        "knowledge-graph.json",
+                        "meta.json",
+                        "source-inventory.json",
+                        "fingerprints.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            if action == "compile_domain_ir":
+                assert payload["jobKind"] == "understand-domain"
+                (graph_root / "domain-graph.json").write_text(
+                    json.dumps({"nodes": [], "edges": []}),
+                    encoding="utf-8",
+                )
+                (graph_root / "quality-report.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                return {
+                    "ok": True,
+                    "artifacts": [
+                        "intermediate/domain-analysis.json",
+                        "domain-graph.json",
+                        "quality-report.json",
+                    ],
+                    "observations": [],
+                    "warnings": [],
+                }
+            raise AssertionError(f"Unexpected action: {action}")
+
+    class DummyDispatcher:
+        async def run_with_local_tools(self, **kwargs):
+            prompt = str(kwargs["prompt"])
+            prompts.append(prompt)
+            graph_root.mkdir(parents=True, exist_ok=True)
+            if "`/understand-domain`" in prompt:
+                intermediate = graph_root / "intermediate"
+                intermediate.mkdir(parents=True, exist_ok=True)
+                (intermediate / "domain-analysis.json").write_text(
+                    json.dumps({"version": "1.0.0", "domains": []}),
+                    encoding="utf-8",
+                )
+                return "domain complete"
+            assert "`/understand`" in prompt
+            (graph_root / "knowledge-graph.json").write_text(
+                json.dumps(
+                    {
+                        "project": {"name": "Demo", "gitCommitHash": "abc"},
+                        "nodes": [],
+                        "edges": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (graph_root / "meta.json").write_text(
+                json.dumps({"gitCommitHash": "abc"}),
+                encoding="utf-8",
+            )
+            return "analysis complete"
+
+    class DummySubAgentRegistry:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def status_payload(self):
+            return {"ready": True}
+
+    class DummySubAgentDispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_ready(self):
+            return None
+
+        def tool_set(self):
+            return []
+
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentRegistry",
+        DummySubAgentRegistry,
+    )
+    monkeypatch.setattr(
+        "astrbot_adapter.runner.UnderstandAnythingSubAgentDispatcher",
+        DummySubAgentDispatcher,
+    )
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    graph_root = project_root / ".understand-anything"
+    context = _RegistryContext(
+        _DummyConfig({"provider_settings": {"computer_use_runtime": "local"}}),
+    )
+    runner = UnderstandAnythingRunner(
+        context=context,  # type: ignore[arg-type]
+        config={"run_domain_by_default": False, "runDomainByDefault": False},
+        registry_path=tmp_path / "projects.json",
+    )
+    runner.dispatcher = DummyDispatcher()  # type: ignore[assignment]
+    runner.runtime = DummyRuntime()  # type: ignore[assignment]
+    project_id = ProjectRegistry.project_id_for(project_root)
+    job = runner.jobs.create(
+        "understand",
+        project_root,
+        {
+            "raw_args": str(project_root),
+            "project_path": str(project_root),
+            "project_id": project_id,
+            "graph_root": str(graph_root),
+            "source": {"type": "local"},
+            "locale": "zh-CN",
+        },
+    )
+    runner.registry.register(
+        project_root,
+        job_id=job.job_id,
+        graph_root=graph_root,
+        status=ProjectStatus.ANALYZING,
+    )
+
+    await runner._run_skill_job(job, event=None)
+
+    snapshot = runner.jobs.get(job.job_id)
+    assert snapshot is not None
+    assert snapshot.status is JobStatus.FINISHED
+    assert actions == [
+        ("preflight_inventory", "understand"),
+        ("validate_outputs", "understand"),
+        ("compile_domain_ir", "understand-domain"),
+    ]
+    assert len(prompts) == 2
+    assert "`/understand`" in prompts[0]
+    assert "`/understand-domain`" in prompts[1]
+    assert (graph_root / "domain-graph.json").is_file()
+    assert any("Default domain analysis phase" in line for line in snapshot.logs)
 
 
 @pytest.mark.asyncio
@@ -5141,6 +6818,30 @@ def test_subagent_registry_registers_from_empty_orchestrator() -> None:
         persona["folder_id"] == "folder-1"
         for persona in context.persona_manager.personas.values()
     )
+
+
+def test_subagent_registry_uses_sandbox_tools_for_sandbox_runtime() -> None:
+    config = _DummyConfig(
+        {"provider_settings": {"computer_use_runtime": "sandbox"}},
+    )
+    context = _RegistryContext(config)
+    registry = UnderstandAnythingSubAgentRegistry(context, {})
+
+    asyncio.run(registry.register_required_subagents())
+
+    agents = config["subagent_orchestrator"]["agents"]
+    for agent in agents:
+        tools = agent["tools"]
+        assert "astrbot_execute_ipython" in tools
+        assert "astrbot_upload_file" in tools
+        assert "astrbot_download_file" in tools
+        assert "astrbot_execute_python" not in tools
+    for persona in context.persona_manager.personas.values():
+        tools = persona["tools"]
+        assert "astrbot_execute_ipython" in tools
+        assert "astrbot_upload_file" in tools
+        assert "astrbot_download_file" in tools
+        assert "astrbot_execute_python" not in tools
 
 
 def test_subagent_registry_preserves_non_ua_agents_and_hides_provider() -> None:
