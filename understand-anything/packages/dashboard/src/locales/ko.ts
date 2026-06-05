@@ -103,6 +103,7 @@ export const ko = {
   },
   domainView: {
     backToDomains: "도메인으로 돌아가기",
+    missingGraph: "도메인 보기가 없습니다. 프로젝트를 다시 분석해 전체 분석을 완료하세요.",
   },
   detailLevel: {
     filesTitle: "파일만 — 아키텍처 레벨 의존성 (빠름)",

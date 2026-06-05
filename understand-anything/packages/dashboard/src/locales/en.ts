@@ -103,6 +103,7 @@ export const en = {
   },
   domainView: {
     backToDomains: "Back to domains",
+    missingGraph: "Domain view is missing. Reanalyze the project to complete analysis.",
   },
   detailLevel: {
     filesTitle: "Files only — architecture-level dependencies (fast)",

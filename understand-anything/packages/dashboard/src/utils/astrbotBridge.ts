@@ -23,6 +23,7 @@ export interface ProjectRefParams {
   project_name?: string;
   project_path?: string;
   project?: string;
+  view?: "domain" | "structural" | "knowledge";
 }
 
 export interface ProjectSummary {
@@ -51,6 +52,8 @@ export interface ProjectSummary {
   autoUpdate?: boolean;
   graph_ready?: boolean;
   graphReady?: boolean;
+  domain_graph_ready?: boolean;
+  domainGraphReady?: boolean;
   current_job?: JobSnapshot | null;
   currentJob?: JobSnapshot | null;
   recent_job?: JobSnapshot | null;
@@ -333,6 +336,10 @@ export function projectParamsFromSearch(search: string): ProjectRefParams | unde
     const value = params.get(key);
     if (value) projectParams[key] = value;
   }
+  const view = params.get("view");
+  if (view === "domain" || view === "structural" || view === "knowledge") {
+    projectParams.view = view;
+  }
   const legacyPath = params.get("path");
   if (legacyPath && !projectParams.project_path) {
     projectParams.project_path = legacyPath;
@@ -375,6 +382,7 @@ export function searchFromProjectParams(params: ProjectRefParams): string {
     const value = params[key];
     if (value) query.set(key, value);
   }
+  if (params.view) query.set("view", params.view);
   const search = query.toString();
   return search ? `?${search}` : "";
 }

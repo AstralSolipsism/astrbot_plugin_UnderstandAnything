@@ -103,6 +103,7 @@ export const zhTW = {
   },
   domainView: {
     backToDomains: "返回領域列表",
+    missingGraph: "缺少領域視圖。請重新分析專案，完成完整專案分析。",
   },
   detailLevel: {
     filesTitle: "僅檔案 — 架構級依賴（快速）",

@@ -226,7 +226,7 @@ function DomainGraphViewInner() {
   if (!domainGraph) {
     return (
       <div className="h-full flex items-center justify-center text-text-muted text-sm">
-        暂无领域图谱，请先运行领域分析。
+        {t.domainView.missingGraph}
       </div>
     );
   }

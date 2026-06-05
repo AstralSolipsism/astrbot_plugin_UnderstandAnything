@@ -103,6 +103,8 @@ export const ja = {
   },
   domainView: {
     backToDomains: "ドメインに戻る",
+    missingGraph:
+      "ドメインビューがありません。プロジェクトを再分析して分析を完了してください。",
   },
   detailLevel: {
     filesTitle: "ファイルのみ — アーキテクチャレベルの依存関係（高速）",

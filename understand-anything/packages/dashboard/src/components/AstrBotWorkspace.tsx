@@ -119,6 +119,10 @@ function graphReady(project: ProjectSummary): boolean {
   );
 }
 
+function domainGraphReady(project: ProjectSummary): boolean {
+  return Boolean(project.domain_graph_ready ?? project.domainGraphReady);
+}
+
 function projectCount(
   project: ProjectSummary,
   snakeKey: "node_count" | "edge_count",
@@ -876,6 +880,34 @@ export default function AstrBotWorkspace({
     }
   };
 
+  const startDomainAnalysis = async (project: ProjectSummary) => {
+    const target = projectAnalysisTarget(project);
+    const blocker = analysisBlockerForTarget(target);
+    if (blocker) {
+      setError(blocker);
+      return;
+    }
+    setProjectActionKey(`${project.project_id}:domain`);
+    setError(null);
+    try {
+      const job = await pluginPost<JobSnapshot>(
+        bridge,
+        "jobs/start",
+        {
+          action: "understand",
+          project_id: project.project_id,
+          locale,
+        },
+      );
+      recordStartedJob(job);
+      await loadWorkspace();
+    } catch (domainError) {
+      setError(errorMessage(domainError));
+    } finally {
+      setProjectActionKey(null);
+    }
+  };
+
   const retryFailedJob = async (job: JobSnapshot) => {
     setProjectActionKey(`${job.job_id}:retry`);
     setError(null);
@@ -1035,8 +1067,11 @@ export default function AstrBotWorkspace({
   const readyRuntimeItemCount = runtimeItems.filter(([, , exists]) => Boolean(exists)).length;
   const enabledComputerUseCount = computerUseConfigs.filter((config) => config.enabled).length;
   const openProjectGraph = useCallback(
-    (project: ProjectSummary) => {
-      onOpenProject(projectParamsFromProject(project));
+    (project: ProjectSummary, view?: ProjectRefParams["view"]) => {
+      onOpenProject({
+        ...projectParamsFromProject(project),
+        ...(view ? { view } : {}),
+      });
     },
     [onOpenProject],
   );
@@ -1385,6 +1420,9 @@ export default function AstrBotWorkspace({
                           const analyzeBusy =
                             starting ||
                             projectActionKey === `${selectedProject.project_id}:analyze`;
+                          const domainReady = domainGraphReady(selectedProject);
+                          const domainBusy =
+                            projectActionKey === `${selectedProject.project_id}:domain`;
                           const retryBusy = focusedJob
                             ? projectActionKey === `${focusedJob.job_id}:retry`
                             : false;
@@ -1396,6 +1434,7 @@ export default function AstrBotWorkspace({
                             label: string;
                             description: string;
                             onClick: () => void;
+                            disabled?: boolean;
                           }> = [
                             {
                               key: "graph",
@@ -1405,6 +1444,27 @@ export default function AstrBotWorkspace({
                                 "Inspect files, symbols, dependencies, domains, and knowledge links.",
                               ),
                               onClick: () => openProjectGraph(selectedProject),
+                            },
+                            {
+                              key: "domain",
+                              label: domainReady
+                                ? t("workspace.capabilityDomain", "Domain view")
+                                : domainBusy
+                                  ? t("workspace.generatingDomainView", "Generating domain view")
+                                  : t("workspace.generateDomainView", "Reanalyze project"),
+                              description: domainReady
+                                ? t(
+                                    "workspace.capabilityDomainDescription",
+                                    "Open domains, flows, steps, and cross-domain relationships.",
+                                  )
+                                : t(
+                                    "workspace.generateDomainViewDescription",
+                                    "Run the full project analysis again to produce the required domain view.",
+                                  ),
+                              onClick: domainReady
+                                ? () => openProjectGraph(selectedProject, "domain")
+                                : () => void startDomainAnalysis(selectedProject),
+                              disabled: !domainReady && (domainBusy || activeJob || projectBlocker !== null),
                             },
                             {
                               key: "chat",
@@ -1618,7 +1678,8 @@ export default function AstrBotWorkspace({
                                         type="button"
                                         key={action.key}
                                         onClick={action.onClick}
-                                        className="rounded-md border border-border-subtle bg-elevated px-3 py-2 text-left transition-colors hover:border-border-medium hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                        disabled={action.disabled}
+                                        className="rounded-md border border-border-subtle bg-elevated px-3 py-2 text-left transition-colors hover:border-border-medium hover:bg-surface disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                                       >
                                         <span className="block text-sm font-semibold text-text-primary">
                                           {action.label}

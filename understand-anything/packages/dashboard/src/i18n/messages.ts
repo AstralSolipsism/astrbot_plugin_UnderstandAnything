@@ -97,6 +97,8 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             loadProjectFailed: "Failed to load project {project}: {error}",
             graphMissing:
               "This project has not generated a graph yet. Start an Understand Anything analysis or rerun the project from this workspace.",
+            domainGraphMissing:
+              "Domain view is missing. Reanalyze the project to complete analysis.",
             noProjectsRegistered:
               "No Understand Anything projects are registered. Add a project path below and start an analysis.",
             multipleProjectsRegistered: "Select a project from the workspace before opening the graph.",
@@ -242,6 +244,13 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             capabilityGraph: "Graph explorer",
             capabilityGraphDescription:
               "Inspect files, symbols, dependencies, domains, and knowledge links.",
+            capabilityDomain: "Domain view",
+            capabilityDomainDescription:
+              "Open domains, flows, steps, and cross-domain relationships.",
+            generateDomainView: "Reanalyze project",
+            generatingDomainView: "Reanalyzing project",
+            generateDomainViewDescription:
+              "Run the full project analysis again to produce the required domain view.",
             capabilityChat: "Ask graph",
             capabilityChatDescription:
               "Ask what a module does or how code pieces relate.",
@@ -804,6 +813,7 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             failedLoadGraph: "图谱加载失败：{error}",
             loadProjectFailed: "加载项目 {project} 失败：{error}",
             graphMissing: "该项目尚未生成图谱。请启动 Understand Anything 分析，或在此工作区重新运行项目。",
+            domainGraphMissing: "缺少领域视图。请重新分析项目，完成完整项目分析。",
             noProjectsRegistered: "还没有注册 Understand Anything 项目。请在下方添加项目路径并启动分析。",
             multipleProjectsRegistered: "打开图谱前请先从工作区选择项目。",
             pressShortcut: "按 ? 查看快捷键",
@@ -943,6 +953,11 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
               "基于已生成图谱继续工作，并保持当前项目上下文。",
             capabilityGraph: "图谱探索",
             capabilityGraphDescription: "查看文件、符号、依赖、领域和知识关系。",
+            capabilityDomain: "领域视图",
+            capabilityDomainDescription: "打开领域、流程、步骤和跨领域关系视图。",
+            generateDomainView: "重新分析项目",
+            generatingDomainView: "正在重新分析项目",
+            generateDomainViewDescription: "重新执行完整项目分析，生成必需的领域视图。",
             capabilityChat: "图谱问答",
             capabilityChatDescription: "询问模块做什么，或代码片段之间有什么关系。",
             capabilityExplain: "解释代码",
@@ -1497,6 +1512,8 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             loadProjectFailed: "Не удалось загрузить проект {project}: {error}",
             graphMissing:
               "Этот проект еще не сгенерировал граф. Запустите анализ Understand Anything или повторно запустите проект из этой рабочей области.",
+            domainGraphMissing:
+              "Доменное представление отсутствует. Повторно проанализируйте проект, чтобы завершить анализ.",
             noProjectsRegistered:
               "Проекты Understand Anything не зарегистрированы. Добавьте путь проекта ниже и запустите анализ.",
             multipleProjectsRegistered: "Выберите проект в рабочей области перед открытием графа.",
@@ -1642,6 +1659,13 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             capabilityGraph: "Graph explorer",
             capabilityGraphDescription:
               "Inspect files, symbols, dependencies, domains, and knowledge links.",
+            capabilityDomain: "Доменный вид",
+            capabilityDomainDescription:
+              "Открыть домены, процессы, шаги и междоменные связи.",
+            generateDomainView: "Повторно проанализировать проект",
+            generatingDomainView: "Повторный анализ проекта",
+            generateDomainViewDescription:
+              "Повторно запустить полный анализ проекта, чтобы создать обязательное доменное представление.",
             capabilityChat: "Ask graph",
             capabilityChatDescription:
               "Ask what a module does or how code pieces relate.",

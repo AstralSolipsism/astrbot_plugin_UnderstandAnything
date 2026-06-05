@@ -93,7 +93,7 @@ async function loadDataFile(
 
 function replaceProjectSearch(projectParams: ProjectRefParams | undefined): void {
   const params = new URLSearchParams(window.location.search);
-  for (const key of ["project_id", "project_name", "project_path", "project", "path"]) {
+  for (const key of ["project_id", "project_name", "project_path", "project", "path", "view"]) {
     params.delete(key);
   }
   if (projectParams) {
@@ -101,6 +101,7 @@ function replaceProjectSearch(projectParams: ProjectRefParams | undefined): void
       const value = projectParams[key];
       if (value) params.set(key, value);
     }
+    if (projectParams.view) params.set("view", projectParams.view);
   }
   const search = params.toString();
   const nextUrl =
@@ -515,14 +516,17 @@ function Dashboard({
         const result = validateGraph(data);
         if (result.success && result.data) {
           setDomainGraph(result.data);
+          if (projectParams?.view === "domain") {
+            setViewMode("domain");
+          }
         } else if (result.fatal) {
           console.warn(`[domain-graph] validation failed: ${result.fatal}`);
         }
       })
       .catch(() => {
-        // Silently ignore — domain graph is optional
+        // Keep the graph view usable; project/workspace status surfaces incomplete analysis.
       });
-  }, [accessToken, projectParams, setDomainGraph]);
+  }, [accessToken, projectParams, setDomainGraph, setViewMode]);
 
   // Determine sidebar content
   // NodeInfo always takes priority when a node is selected.

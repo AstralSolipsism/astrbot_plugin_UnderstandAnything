@@ -103,6 +103,7 @@ export const zh = {
   },
   domainView: {
     backToDomains: "返回领域列表",
+    missingGraph: "缺少领域视图。请重新分析项目，完成完整项目分析。",
   },
   detailLevel: {
     filesTitle: "仅文件 — 架构级依赖（快速）",
