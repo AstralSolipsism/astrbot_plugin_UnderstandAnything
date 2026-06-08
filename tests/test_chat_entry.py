@@ -1039,6 +1039,62 @@ def test_tool_retrieve_context_uses_project_hint_without_switching_default(
     assert context["project_ref"]["project_name"] == "ProjectA"
 
 
+def test_retrieve_project_context_errors_with_multiple_projects_and_no_hint(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [
+            _Project(tmp_path, project_id="p1", name="Alpha"),
+            _Project(tmp_path, project_id="p2", name="Beta"),
+        ],
+    )
+    runner.project_store = lambda **kwargs: (_ for _ in ()).throw(
+        ValueError("Multiple Understand Anything projects are registered."),
+    )
+
+    payload = json.loads(
+        ToolResultPresenter(runner).retrieve_project_context("入口在哪里？"),
+    )
+
+    assert payload["status"] == "project_selection_required"
+    assert payload["project_candidates"][0]["project_name"] == "Alpha"
+    assert payload["project_candidates"][1]["project_name"] == "Beta"
+
+
+def test_retrieve_project_context_uses_explicit_project_hint(
+    tmp_path: Path,
+) -> None:
+    graph = {
+        "project": {"name": "Alpha"},
+        "nodes": [
+            {
+                "id": "file:src/main.py",
+                "type": "file",
+                "name": "main.py",
+                "filePath": "src/main.py",
+                "summary": "Entry point",
+            },
+        ],
+        "edges": [],
+    }
+
+    class Runner(_DummyRunner):
+        def project_store(self, **kwargs):
+            assert kwargs["project_ref"] == "Alpha"
+            return _GraphStore({"knowledge-graph.json": graph})
+
+    payload = json.loads(
+        ToolResultPresenter(Runner(tmp_path)).retrieve_project_context(
+            "入口",
+            project_hint="Alpha",
+        ),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["graph"]["project"]["name"] == "Alpha"
+
+
 def test_tool_retrieve_context_reads_domain_graph_for_domain_mode(
     tmp_path: Path,
 ) -> None:

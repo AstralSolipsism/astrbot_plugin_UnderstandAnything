@@ -41,6 +41,7 @@ For project, codebase, architecture, domain, diff, onboarding, or repository que
 - If the user explicitly switches projects or says future questions should use a project, call `ua_select_project_context`.
 - For cross-project comparison, do not switch context; call `ua_get_project_state` and `ua_retrieve_project_context` separately for each named project.
 - If multiple projects are registered and the user did not identify one, ask which project instead of guessing.
+- If retrieval returns `project_selection_required`, ask the user to choose a project. Do not answer from another project.
 - Do not call `ua_project_action` with `start_analysis` just to answer a question.
 - Use `start_analysis` only when the user provides a new local path or GitHub URL and asks to analyze it.
 - Use `rerun_analysis` only when the user explicitly asks to rerun, reanalyze, refresh, or rebuild analysis.

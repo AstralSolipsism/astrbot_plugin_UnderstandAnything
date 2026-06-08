@@ -862,7 +862,38 @@ class ToolResultPresenter:
                 )
             return _json({"status": "error", "error": str(exc), "llm_used": False})
         except Exception as exc:
-            return _json({"status": "error", "error": str(exc), "llm_used": False})
+            message = str(exc)
+            if "Multiple Understand Anything projects are registered" in message:
+                return _json(
+                    {
+                        "status": "project_selection_required",
+                        "message": (
+                            "多个项目已登记，当前问题没有明确项目。请让用户选择一个项目，"
+                            "或在本轮检索中传入 project_hint。"
+                        ),
+                        "project_candidates": _project_candidate_payloads(self.runner),
+                        "query": query,
+                        "target": target,
+                        "mode": mode or "ask",
+                        "llm_used": False,
+                    },
+                )
+            if (
+                "Unknown Understand Anything project" in message
+                and _project_records(self.runner)
+            ):
+                return _json(
+                    {
+                        "status": "project_selection_required",
+                        "message": message,
+                        "project_candidates": _project_candidate_payloads(self.runner),
+                        "query": query,
+                        "target": target,
+                        "mode": mode or "ask",
+                        "llm_used": False,
+                    },
+                )
+            return _json({"status": "error", "error": message, "llm_used": False})
         nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
         refs = _matching_graph_refs(nodes, query=query, target=target)
         if context_kind == "domain" and not refs and isinstance(nodes, list):
