@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import time
@@ -60,11 +61,32 @@ def username_from_webchat_umo(umo: str) -> str | None:
     return username
 
 
+def context_key_from_umo(umo: str) -> str | None:
+    webchat_session_id = session_id_from_webchat_umo(umo)
+    if webchat_session_id:
+        return webchat_session_id
+    raw = str(umo or "").strip()
+    if not raw:
+        return None
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"umo:{digest}"
+
+
+def username_from_umo(umo: str) -> str | None:
+    webchat_username = username_from_webchat_umo(umo)
+    if webchat_username:
+        return webchat_username
+    raw = str(umo or "").strip()
+    if not raw:
+        return None
+    return raw.split(":", 1)[0] or "chat"
+
+
 class WebChatSessionContextStore:
-    """Stores UA routing context for native AstrBot WebChat sessions.
+    """Stores UA routing context for AstrBot chat sessions.
 
     This is intentionally not a conversation store. Chat messages stay in
-    AstrBot's PlatformMessageHistory; this file only maps a WebChat session to
+    AstrBot's PlatformMessageHistory; this file only maps a chat session to
     the UA project/context the dashboard selected.
     """
 
@@ -110,10 +132,10 @@ class WebChatSessionContextStore:
         return dict(project_ref) if isinstance(project_ref, dict) else None
 
     def project_ref_for_umo(self, umo: str) -> dict[str, Any] | None:
-        session_id = session_id_from_webchat_umo(umo)
-        if not session_id:
+        session_key = context_key_from_umo(umo)
+        if not session_key:
             return None
-        return self.project_ref_for_session(session_id)
+        return self.project_ref_for_session(session_key)
 
     def update_for_umo(
         self,
@@ -122,22 +144,22 @@ class WebChatSessionContextStore:
         project_ref: dict[str, Any] | None = None,
         context_items: list[Any] | None = None,
     ) -> dict[str, Any] | None:
-        session_id = session_id_from_webchat_umo(umo)
-        username = username_from_webchat_umo(umo)
-        if not session_id or not username:
+        session_key = context_key_from_umo(umo)
+        username = username_from_umo(umo)
+        if not session_key or not username:
             return None
         return self.update(
-            session_id=session_id,
+            session_id=session_key,
             username=username,
             project_ref=project_ref,
             context_items=context_items,
         )
 
     def context_for_umo(self, umo: str) -> dict[str, Any] | None:
-        session_id = session_id_from_webchat_umo(umo)
-        if not session_id:
+        session_key = context_key_from_umo(umo)
+        if not session_key:
             return None
-        return self.context_for_session(session_id)
+        return self.context_for_session(session_key)
 
     def _read(self) -> dict[str, Any]:
         try:

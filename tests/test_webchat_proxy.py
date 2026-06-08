@@ -244,6 +244,41 @@ def test_context_store_maps_webchat_umo_to_ua_project_context(tmp_path: Path) ->
     ]
 
 
+def test_context_store_maps_non_webchat_umo_to_ua_project_context(
+    tmp_path: Path,
+) -> None:
+    store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    umo = "telegram:FriendMessage:telegram!alice!chat-1"
+
+    updated = store.update_for_umo(
+        umo,
+        project_ref={"project_id": "p1", "project_name": "Demo"},
+    )
+
+    assert updated is not None
+    assert updated["username"] == "telegram"
+    assert updated["project_ref"] == {
+        "project_id": "p1",
+        "project_name": "Demo",
+    }
+    assert store.project_ref_for_umo(umo) == {
+        "project_id": "p1",
+        "project_name": "Demo",
+    }
+    assert store.context_for_umo(umo)["project_ref"]["project_id"] == "p1"
+
+
+def test_context_store_keeps_webchat_session_id_compatibility(
+    tmp_path: Path,
+) -> None:
+    store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    umo = build_webchat_unified_msg_origin("alice", "s1")
+
+    store.update_for_umo(umo, project_ref={"project_id": "p1"})
+
+    assert store.project_ref_for_session("s1") == {"project_id": "p1"}
+
+
 def test_proxy_constructor_lazily_loads_astrbot_runtime_singletons(monkeypatch) -> None:
     original_import = builtins.__import__
 
