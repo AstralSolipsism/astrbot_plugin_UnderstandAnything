@@ -313,13 +313,11 @@ class ChatStateResolver:
         event: Any = None,
     ) -> ChatState:
         active = _latest_active_job(self.runner)
-        if active is not None:
-            phase = str(active.progress.phase or "")
-            return ChatState(
-                name="source_preparing" if phase == "source" else "analysis_running",
-                running_job=_job_payload(active),
-                available_actions=["status", "stop_job", "open_dashboard"],
-            )
+        if active is not None and _active_job_blocks_all_projects(
+            intent,
+            project_hint,
+        ):
+            return _active_job_state(active)
         if intent is not None and intent.intent in START_INTENTS:
             blocker = _start_blocker_state(self.runner, intent, event)
             if blocker is not None:
@@ -335,6 +333,12 @@ class ChatStateResolver:
             selection_hint,
             allow_default=allow_default_project,
         )
+        if active is not None and _active_job_blocks_selected_project(
+            active,
+            intent,
+            selected,
+        ):
+            return _active_job_state(active)
         if selected == "ambiguous":
             return ChatState(
                 name="ambiguous_project",
@@ -761,6 +765,7 @@ class ToolResultPresenter:
         user_explicit_rerun: bool = False,
         project_kwargs: dict[str, Any] | None = None,
     ) -> str:
+        project_kwargs = dict(project_kwargs or {})
         normalized_action = _normalize_tool_action(action)
         if normalized_action not in TOOL_ACTION_INTENTS:
             if normalized_action in CONTENT_INTENTS:
@@ -789,6 +794,10 @@ class ToolResultPresenter:
             source=source,
             options=_options_from_text(options),
         )
+        effective_project_ref = _effective_project_ref_for_action(
+            intent,
+            project_kwargs,
+        )
         executor = ChatActionExecutor(
             self.runner,
             context_store=self.context_store,
@@ -809,7 +818,7 @@ class ToolResultPresenter:
                 }
             )
         state_before = ChatStateResolver(self.runner).resolve(
-            project_hint,
+            effective_project_ref,
             intent=intent,
             event=event,
         )
@@ -865,9 +874,9 @@ class ToolResultPresenter:
         message = await executor.execute(
             intent,
             event=event,
-            project_kwargs=project_kwargs or {},
+            project_kwargs=project_kwargs,
         )
-        state_after = ChatStateResolver(self.runner).resolve(project_hint)
+        state_after = ChatStateResolver(self.runner).resolve(effective_project_ref)
         return _json(
             {
                 "status": "ok",
@@ -1168,6 +1177,38 @@ def _latest_failed_job(runner: Any) -> JobSnapshot | None:
     return next((job for job in jobs if job.status is JobStatus.FAILED), None)
 
 
+def _active_job_state(job: JobSnapshot) -> ChatState:
+    phase = str(job.progress.phase or "")
+    return ChatState(
+        name="source_preparing" if phase == "source" else "analysis_running",
+        running_job=_job_payload(job),
+        available_actions=["status", "stop_job", "open_dashboard"],
+    )
+
+
+def _active_job_blocks_all_projects(
+    intent: ChatIntent | None,
+    project_hint: str,
+) -> bool:
+    if intent is None:
+        return not str(project_hint or "").strip()
+    return intent.intent in {"status", "stop_job"} or intent.intent in JOB_START_INTENTS
+
+
+def _active_job_blocks_selected_project(
+    active: JobSnapshot,
+    intent: ChatIntent | None,
+    selected: Any,
+) -> bool:
+    if selected is None or selected == "ambiguous":
+        return False
+    if intent is None:
+        return _job_matches_project(active, selected)
+    if intent.intent in CONTENT_INTENTS or intent.intent in DOMAIN_JOB_INTENTS:
+        return _job_matches_project(active, selected)
+    return False
+
+
 def _project_records(runner: Any) -> list[Any]:
     registry = getattr(runner, "registry", None)
     list_projects = getattr(registry, "list", None)
@@ -1353,6 +1394,15 @@ def _project_ref_from_kwargs(project_kwargs: dict[str, Any]) -> str:
     return ""
 
 
+def _effective_project_ref_for_action(
+    intent: ChatIntent,
+    project_kwargs: dict[str, Any],
+) -> str:
+    if intent.intent == "start_analysis" and intent.source:
+        return ""
+    return intent.project_hint or _project_ref_from_kwargs(project_kwargs)
+
+
 def _content_project_kwargs(
     project_kwargs: dict[str, Any],
     intent: ChatIntent,
@@ -1418,6 +1468,39 @@ def _project_ref_display_name(project_ref: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return "未选择"
+
+
+def _job_matches_project(job: JobSnapshot, project: Any) -> bool:
+    ref = _project_ref_payload(project)
+    args = getattr(job, "args", None)
+    job_args = args if isinstance(args, dict) else {}
+    project_id = ref.get("project_id")
+    if project_id and str(job_args.get("project_id") or "") == project_id:
+        return True
+    project_path = ref.get("project_path")
+    if project_path and _paths_equal(getattr(job, "project_root", ""), project_path):
+        return True
+    graph_root = str(getattr(project, "graph_root", "") or "").strip()
+    if graph_root and str(job_args.get("graph_root") or "").strip() == graph_root:
+        return True
+    project_names = {
+        str(ref.get(key) or "").casefold()
+        for key in ("project_name", "project_ref", "project_id")
+        if str(ref.get(key) or "").strip()
+    }
+    job_names = {
+        str(job_args.get(key) or "").casefold()
+        for key in ("status_ref", "project_display_name")
+        if str(job_args.get(key) or "").strip()
+    }
+    return bool(project_names & job_names)
+
+
+def _paths_equal(left: Any, right: Any) -> bool:
+    try:
+        return Path(str(left)).resolve() == Path(str(right)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return str(left).strip().casefold() == str(right).strip().casefold()
 
 
 def _assistant_result_text(result: Any) -> str:

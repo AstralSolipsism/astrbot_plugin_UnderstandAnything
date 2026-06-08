@@ -132,6 +132,20 @@ class _GraphStore:
         return self.graphs[name]
 
 
+def _mark_project_running(runner: _DummyRunner, project: _Project):
+    job = runner.jobs.create(
+        "understand",
+        Path(project.path),
+        {
+            "project_display_name": project.name,
+            "status_ref": project.name,
+            "project_id": project.project_id,
+        },
+    )
+    runner.jobs.mark_running(job.job_id)
+    return job
+
+
 def test_chat_command_parser_handles_operations_without_lightweight_llm() -> None:
     parser = ChatCommandParser()
 
@@ -740,6 +754,34 @@ def test_project_state_reports_stale_graph_with_update_action(
     assert "rerun_analysis" in payload["available_actions"]
 
 
+def test_chat_entry_answers_selected_ready_project_while_other_project_runs(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project_a = _Project(
+        tmp_path,
+        project_id="p1",
+        name="ProjectA",
+        status=ProjectStatus.ANALYZING,
+    )
+    project_b = _Project(tmp_path, project_id="p2", name="ProjectB")
+    runner.registry = SimpleNamespace(list=lambda: [project_a, project_b])
+    _mark_project_running(runner, project_a)
+    entry = UnderstandAnythingChatEntry(runner)
+
+    message = asyncio.run(
+        entry.execute_text(
+            "入口在哪里？",
+            event=SimpleNamespace(),
+            project_kwargs={"project_ref": "ProjectB"},
+        )
+    )
+
+    assert message == "图谱回答"
+    assert runner.calls[-1]["method"] == "chat"
+    assert runner.calls[-1]["project_ref"] == "ProjectB"
+
+
 def test_tool_project_action_returns_structured_action_contract(
     tmp_path: Path,
 ) -> None:
@@ -885,6 +927,61 @@ def test_tool_project_action_updates_ready_project_without_full_reanalysis(
     assert runner.calls[-1].get("flags", []) == []
     assert runner.calls[-1]["project_ref"] == "Demo"
     assert payload["llm_used"] is False
+
+
+def test_tool_project_action_uses_project_kwargs_context_when_hint_is_missing(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project_a = _Project(tmp_path, project_id="p1", name="ProjectA")
+    project_b = _Project(tmp_path, project_id="p2", name="ProjectB")
+    runner.registry = SimpleNamespace(list=lambda: [project_a, project_b])
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "update_analysis",
+                event=SimpleNamespace(),
+                project_kwargs={"project_ref": "ProjectA"},
+            )
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["action"] == "update_analysis"
+    assert runner.calls[-1]["method"] == "start_skill_job"
+    assert runner.calls[-1].get("flags", []) == []
+    assert runner.calls[-1]["project_ref"] == "ProjectA"
+    assert payload["llm_used"] is False
+
+
+def test_tool_project_action_blocks_update_while_other_project_runs(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project_a = _Project(
+        tmp_path,
+        project_id="p1",
+        name="ProjectA",
+        status=ProjectStatus.ANALYZING,
+    )
+    project_b = _Project(tmp_path, project_id="p2", name="ProjectB")
+    runner.registry = SimpleNamespace(list=lambda: [project_a, project_b])
+    _mark_project_running(runner, project_a)
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "update_analysis",
+                event=SimpleNamespace(),
+                project_hint="ProjectB",
+            )
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert "已经有分析任务" in payload["message"]
+    assert runner.calls == []
 
 
 def test_tool_project_action_explicit_rerun_uses_full_reanalysis_flag(
