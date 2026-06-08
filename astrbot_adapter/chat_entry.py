@@ -290,7 +290,16 @@ class ChatStateResolver:
             if blocker is not None:
                 return blocker
         projects = _project_records(self.runner)
-        selected = _select_project(projects, project_hint)
+        selection_hint = project_hint
+        allow_default_project = True
+        if intent is not None and intent.intent == "start_analysis" and intent.source:
+            selection_hint = intent.source
+            allow_default_project = False
+        selected = _select_project(
+            projects,
+            selection_hint,
+            allow_default=allow_default_project,
+        )
         if selected == "ambiguous":
             return ChatState(
                 name="ambiguous_project",
@@ -352,6 +361,11 @@ class ChatStateMachine:
                 "；".join(item for item in state.blockers if item) or "当前环境未就绪"
             )
             return ChatValidation(False, reason)
+        if state.name == "graph_ready" and intent.intent == "start_analysis":
+            return ChatValidation(
+                False,
+                "这个项目已经有可用图谱。回答项目问题请使用图谱检索；只有用户明确要求重新分析时才重跑。",
+            )
         if state.name == "analysis_running" and intent.intent in JOB_START_INTENTS:
             return ChatValidation(
                 False, "已经有分析任务在运行，请先查看状态或停止当前任务。"
@@ -572,6 +586,11 @@ class ToolResultPresenter:
                 "running_job": state.running_job,
                 "blockers": [item for item in state.blockers if item],
                 "available_actions": state.available_actions,
+                "tool_guidance": {
+                    "project_questions": "Call ua_retrieve_project_context when state is graph_ready.",
+                    "start_analysis": "Use only for a new local path or GitHub URL; never for an already analyzed project.",
+                    "rerun_analysis": "Use only when the user explicitly asks to rerun, reanalyze, refresh, or rebuild analysis.",
+                },
                 "dashboard_url": _dashboard_url(),
                 "llm_used": False,
             }
@@ -585,6 +604,7 @@ class ToolResultPresenter:
         project_hint: str = "",
         source: str = "",
         options: str = "",
+        user_explicit_rerun: bool = False,
         project_kwargs: dict[str, Any] | None = None,
     ) -> str:
         normalized_action = _normalize_tool_action(action)
@@ -639,6 +659,38 @@ class ToolResultPresenter:
             intent=intent,
             event=event,
         )
+        if intent.intent == "start_analysis" and state_before.name == "graph_ready":
+            return _json(
+                {
+                    "status": "already_analyzed",
+                    "action": intent.intent,
+                    "message": (
+                        "这个项目已经有可用图谱。不要重新启动分析；"
+                        "请调用 ua_retrieve_project_context 检索图谱上下文后回答用户。"
+                    ),
+                    "job": state_before.running_job,
+                    "project": state_before.project,
+                    "next_actions": ["retrieve_project_context", "open_dashboard"],
+                    "dashboard_url": _dashboard_url(),
+                    "llm_used": False,
+                }
+            )
+        if intent.intent == "rerun_analysis" and not user_explicit_rerun:
+            return _json(
+                {
+                    "status": "confirmation_required",
+                    "action": intent.intent,
+                    "message": (
+                        "重新分析会消耗大量 token。只有用户明确要求重新分析、重跑、刷新或重建分析时，"
+                        "才能以 user_explicit_rerun=true 再调用此 action。"
+                    ),
+                    "job": state_before.running_job,
+                    "project": state_before.project,
+                    "next_actions": ["get_project_state", "retrieve_project_context"],
+                    "dashboard_url": _dashboard_url(),
+                    "llm_used": False,
+                }
+            )
         validation = ChatStateMachine().validate(
             state_before,
             intent,
@@ -719,10 +771,10 @@ class ToolResultPresenter:
                         },
                         "graph": {"node_count": 0, "edge_count": 0},
                         "domain_graph_ready": False,
-                        "next_actions": ["rerun_analysis", "open_dashboard"],
+                        "next_actions": ["ask_user_to_reanalyze", "open_dashboard"],
                         "message": (
                             "当前项目缺少领域视图，项目分析不完整；"
-                            "请重新分析项目后再检索领域上下文。"
+                            "请先告知用户需要明确发起重新分析，不能自动重跑项目。"
                         ),
                         "error": str(exc),
                         "llm_used": False,
@@ -913,7 +965,12 @@ def _project_records(runner: Any) -> list[Any]:
     return list(list_projects())
 
 
-def _select_project(projects: list[Any], project_hint: str) -> Any:
+def _select_project(
+    projects: list[Any],
+    project_hint: str,
+    *,
+    allow_default: bool = True,
+) -> Any:
     if project_hint:
         normalized = project_hint.casefold()
         matches = [
@@ -937,9 +994,9 @@ def _select_project(projects: list[Any], project_hint: str) -> Any:
         if len(matches) > 1:
             return "ambiguous"
         return None
-    if len(projects) == 1:
+    if allow_default and len(projects) == 1:
         return projects[0]
-    if len(projects) > 1:
+    if allow_default and len(projects) > 1:
         return "ambiguous"
     return None
 

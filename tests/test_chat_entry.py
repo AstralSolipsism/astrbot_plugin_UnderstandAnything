@@ -587,6 +587,104 @@ def test_tool_project_action_returns_structured_action_contract(
     assert payload["llm_used"] is False
 
 
+def test_tool_project_action_does_not_start_analysis_for_ready_project(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project = _Project(tmp_path, name="Demo", status=ProjectStatus.READY)
+    runner.registry = SimpleNamespace(list=lambda: [project])
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "start_analysis",
+                event=SimpleNamespace(),
+                project_hint="Demo",
+            )
+        )
+    )
+
+    assert payload["status"] == "already_analyzed"
+    assert payload["action"] == "start_analysis"
+    assert payload["project"]["project_id"] == "p1"
+    assert "ua_retrieve_project_context" in payload["message"]
+    assert "retrieve_project_context" in payload["next_actions"]
+    assert "start_analysis" not in payload["next_actions"]
+    assert "rerun_analysis" not in payload["next_actions"]
+    assert runner.calls == []
+    assert payload["llm_used"] is False
+
+
+def test_tool_project_action_does_not_restart_ready_project_by_source_path(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project = _Project(tmp_path, name="Demo", status=ProjectStatus.READY)
+    runner.registry = SimpleNamespace(list=lambda: [project])
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "start_analysis",
+                event=SimpleNamespace(),
+                source=project.path,
+            )
+        )
+    )
+
+    assert payload["status"] == "already_analyzed"
+    assert runner.calls == []
+
+
+def test_tool_project_action_allows_new_source_when_other_project_is_ready(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [_Project(tmp_path, name="Existing", status=ProjectStatus.READY)]
+    )
+    new_source = str(tmp_path / "NewProject")
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "start_analysis",
+                event=SimpleNamespace(),
+                source=new_source,
+            )
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert runner.calls[-1]["method"] == "start_skill_job"
+    assert runner.calls[-1]["project_path"] == new_source
+
+
+def test_tool_project_action_requires_explicit_rerun_confirmation(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [_Project(tmp_path, name="Demo", status=ProjectStatus.READY)]
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "rerun_analysis",
+                event=SimpleNamespace(),
+                project_hint="Demo",
+            )
+        )
+    )
+
+    assert payload["status"] == "confirmation_required"
+    assert payload["action"] == "rerun_analysis"
+    assert "用户明确要求" in payload["message"]
+    assert runner.calls == []
+    assert payload["llm_used"] is False
+
+
 def test_tool_project_action_select_project_writes_webchat_context(
     tmp_path: Path,
 ) -> None:
@@ -866,6 +964,7 @@ def test_tool_retrieve_context_reports_missing_domain_graph(
     assert payload["status"] == "analysis_incomplete"
     assert payload["mode"] == "domain"
     assert payload["domain_graph_ready"] is False
-    assert "rerun_analysis" in payload["next_actions"]
+    assert "rerun_analysis" not in payload["next_actions"]
+    assert "ask_user_to_reanalyze" in payload["next_actions"]
     assert "generate_domain" not in payload["next_actions"]
     assert payload["llm_used"] is False
