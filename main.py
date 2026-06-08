@@ -26,6 +26,7 @@ UNDERSTAND_GROUP_SUBCOMMANDS = (
 )
 UA_OUTER_LLM_TOOLS = {
     "ua_get_project_state",
+    "ua_select_project_context",
     "ua_project_action",
     "ua_retrieve_project_context",
 }
@@ -37,6 +38,9 @@ UA_TOOL_ROUTING_PROMPT = """
 For project, codebase, architecture, domain, diff, onboarding, or repository questions:
 - First call `ua_get_project_state` to check whether an Understand Anything graph already exists.
 - If state is `graph_ready`, call `ua_retrieve_project_context` and answer from the returned graph context.
+- If the user explicitly switches projects or says future questions should use a project, call `ua_select_project_context`.
+- For cross-project comparison, do not switch context; call `ua_get_project_state` and `ua_retrieve_project_context` separately for each named project.
+- If multiple projects are registered and the user did not identify one, ask which project instead of guessing.
 - Do not call `ua_project_action` with `start_analysis` just to answer a question.
 - Use `start_analysis` only when the user provides a new local path or GitHub URL and asks to analyze it.
 - Use `rerun_analysis` only when the user explicitly asks to rerun, reanalyze, refresh, or rebuild analysis.
@@ -155,6 +159,27 @@ class UnderstandAnythingPlugin(Star):
         """
         hint = project_hint or self._effective_status_project_ref(event)
         return self.chat_entry.tools.project_state(hint or "")
+
+    @filter.llm_tool(name="ua_select_project_context")
+    async def ua_select_project_context(
+        self,
+        event: AstrMessageEvent,
+        project_hint: str,
+    ):
+        """Switch the current chat session to a clearly named project.
+
+        Use this only when the user explicitly says to switch projects, use a
+        project for future questions, or names one unique project in the
+        current question. Do not use it for cross-project comparison; retrieve
+        each named project temporarily instead.
+
+        Args:
+            project_hint(string): Project name, id, alias, path, or GitHub repo.
+        """
+        return self.chat_entry.tools.select_project_context(
+            project_hint,
+            event=event,
+        )
 
     @filter.llm_tool(name="ua_project_action")
     async def ua_project_action(

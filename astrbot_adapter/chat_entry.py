@@ -516,7 +516,7 @@ class ChatActionExecutor:
                 "status": "blocked",
                 "message": (
                     f"已找到项目：{project_ref.get('project_name') or intent.project_hint}，"
-                    "但当前入口无法写入 WebChat 会话上下文。"
+                    "但当前入口无法写入聊天会话上下文。"
                 ),
                 "project": project_ref,
             }
@@ -526,7 +526,7 @@ class ChatActionExecutor:
                 "status": "blocked",
                 "message": (
                     f"已找到项目：{project_ref.get('project_name') or intent.project_hint}，"
-                    "但当前会话不是可接管的 AstrBot WebChat 会话。"
+                    "但当前会话不是可接管的 AstrBot 会话。"
                 ),
                 "project": project_ref,
             }
@@ -733,6 +733,32 @@ class ToolResultPresenter:
                 "dashboard_url": _dashboard_url(),
                 "llm_used": False,
             }
+        )
+
+    def select_project_context(
+        self,
+        project_hint: str,
+        *,
+        event: Any,
+    ) -> str:
+        intent = ChatIntent(intent="select_project", project_hint=project_hint)
+        executor = ChatActionExecutor(
+            self.runner,
+            context_store=self.context_store,
+        )
+        result = executor.select_project_context(intent, event)
+        state_after = ChatStateResolver(self.runner).resolve(project_hint)
+        return _json(
+            {
+                "status": result["status"],
+                "action": "select_project_context",
+                "message": result["message"],
+                "project": result.get("project") or state_after.project,
+                "project_candidates": _project_candidate_payloads(self.runner),
+                "next_actions": state_after.available_actions,
+                "dashboard_url": _dashboard_url(),
+                "llm_used": False,
+            },
         )
 
     def retrieve_project_context(

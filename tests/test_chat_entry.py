@@ -794,6 +794,61 @@ def test_tool_project_action_select_project_writes_generic_chat_context(
     assert payload["llm_used"] is False
 
 
+def test_tool_select_project_context_updates_generic_chat_context(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    project = _Project(tmp_path, project_id="p1", name="Demo")
+    runner.registry = SimpleNamespace(list=lambda: [project])
+    context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
+    presenter = ToolResultPresenter(runner, context_store=context_store)
+    event = SimpleNamespace(
+        unified_msg_origin="telegram:FriendMessage:telegram!alice!chat-1",
+    )
+
+    payload = json.loads(
+        presenter.select_project_context(
+            "Demo",
+            event=event,
+        ),
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["project"]["project_id"] == "p1"
+    assert context_store.project_ref_for_umo(event.unified_msg_origin) == {
+        "project_id": "p1",
+        "project_name": "Demo",
+        "project_path": project.path,
+        "project_ref": "Demo",
+    }
+
+
+def test_tool_select_project_context_blocks_ambiguous_project(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [
+            _Project(tmp_path, project_id="p1", name="Demo"),
+            _Project(tmp_path, project_id="p2", name="Demo"),
+        ],
+    )
+    presenter = ToolResultPresenter(
+        runner,
+        context_store=WebChatSessionContextStore(tmp_path / "contexts.json"),
+    )
+
+    payload = json.loads(
+        presenter.select_project_context(
+            "Demo",
+            event=SimpleNamespace(unified_msg_origin="telegram:chat"),
+        ),
+    )
+
+    assert payload["status"] == "blocked"
+    assert "多个项目" in payload["message"]
+
+
 @pytest.mark.parametrize(
     "action",
     ["generate_domain", "generate_domain_view", "refresh_domain"],

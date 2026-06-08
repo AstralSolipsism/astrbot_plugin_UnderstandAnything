@@ -147,6 +147,7 @@ def test_main_plugin_llm_tools_are_structured_and_not_legacy() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
     assert '@filter.llm_tool(name="ua_get_project_state")' in source
+    assert '@filter.llm_tool(name="ua_select_project_context")' in source
     assert '@filter.llm_tool(name="ua_project_action")' in source
     assert '@filter.llm_tool(name="ua_retrieve_project_context")' in source
     for suffix in (
@@ -195,7 +196,11 @@ def test_main_plugin_appends_static_ua_tool_routing_prompt() -> None:
 
     class ToolSet:
         def names(self):
-            return ["ua_get_project_state", "ua_retrieve_project_context"]
+            return [
+                "ua_get_project_state",
+                "ua_select_project_context",
+                "ua_retrieve_project_context",
+            ]
 
     req = SimpleNamespace(system_prompt="BASE", func_tool=ToolSet())
 
@@ -210,6 +215,8 @@ def test_main_plugin_appends_static_ua_tool_routing_prompt() -> None:
     appended = req.system_prompt[len("BASE") :]
     assert appended.startswith("\n")
     assert "Understand Anything Tool Routing" in appended
+    assert "ua_select_project_context" in appended
+    assert "cross-project comparison" in appended
     assert "project_candidates" not in appended
     assert "当前项目：" not in appended
     first = req.system_prompt
