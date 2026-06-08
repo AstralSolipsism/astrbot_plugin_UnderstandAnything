@@ -23,24 +23,40 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 
 ## 命令
 
-聊天侧只暴露一个自然语言入口：
+聊天侧主要暴露一个强确认入口：
 
 - `/understand <任务>`
 
-常见用法：
+这个入口最适合启动分析、重新分析、停止任务、切换项目、打开面板和修复运行依赖。项目问答不要求加 `/understand`：普通聊天中询问项目、代码、架构、diff 或 onboarding 时，LLM 会先通过 Understand Anything 工具确认项目状态，再检索图谱回答。
+
+如果用户已经用 `/understand` 提出内容问题，插件会兼容处理；项目明确且图谱就绪时直接回答，项目不明确时会先让用户选择项目。
+
+管理用法：
 
 - `/understand 分析 D:\AboutDEV\AstrBot`
 - `/understand 分析 https://github.com/owner/repo`
 - `/understand 状态`
+- `/understand 项目`
+- `/understand 项目 AstrBot`
 - `/understand 停止当前分析`
 - `/understand 打开面板`
 - `/understand 诊断`
 - `/understand 修复插件运行依赖`
 - `/understand 重新分析 AstrBot，忽略 tests dist node_modules`
+
+普通聊天示例：
+
+- `AstrBot 的 WebChat 代理是怎么接上的？`
+- `解释 AstrBot 项目的 webchat_proxy.py 职责`
+- `对比项目 A 和项目 B 的 WebChat 接入实现`
+- `分析 AstrBot 这次 git diff 的风险`
+- `给 AstrBot 生成新手上手说明`
+
+兼容输入示例：
+
 - `/understand AstrBot 的 WebChat 代理是怎么接上的？`
 - `/understand 解释 webchat_proxy.py 的职责`
 - `/understand 分析这次 git diff 的风险`
-- `/understand 给这个项目生成新手上手说明`
 
 旧的多子命令入口已经移除。聊天入口会先用规则和状态机处理明确操作；
 只有模糊意图解析才会使用一次轻量 LLM。状态、停止、打开面板、诊断、
@@ -59,11 +75,10 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 聊天、解释、diff 和 onboarding 会按以下顺序解析项目：
 
 1. 自然语言中明确提到的项目名、别名或路径。
-2. WebChat/Dashboard 当前上下文中的项目引用。
+2. 当前聊天会话中的项目引用。
 3. 只有一个已登记项目时使用该项目。
 
-如果已经登记多个项目且用户没有说明项目名、别名或路径，插件会拒绝执行并返回可用项目列表，
-避免跨会话误用上一次分析的项目。
+多项目场景下，如果用户没有明确项目且当前会话也没有项目上下文，插件不会猜测。它会返回候选项目并要求用户选择。用户可以通过 `/understand 项目 <项目名>` 切换当前会话项目，也可以在普通聊天里说“之后都看 <项目名>”。跨项目对比不会自动切换当前项目。
 
 Dashboard API 同样支持 `project_id`、`project_name`、`project_path`，供页面列出项目。
 
