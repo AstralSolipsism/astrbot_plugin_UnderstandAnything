@@ -23,13 +23,11 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 
 ## 命令
 
-聊天侧主要暴露一个强确认入口：
+聊天侧保留一个强确认指令组：
 
-- `/understand <任务>`
+- `/understand <子指令> [参数]`
 
-这个入口最适合启动分析、检查更新、更新图谱、完整重新分析、停止任务、切换项目、打开面板和修复运行依赖。项目问答不要求加 `/understand`：普通聊天中询问项目、代码、架构、diff 或 onboarding 时，LLM 会先通过 Understand Anything 工具确认项目状态，再检索图谱回答。
-
-如果用户已经用 `/understand` 提出内容问题，插件会兼容处理；项目明确且图谱就绪时直接回答，项目不明确时会先让用户选择项目。
+这个指令组只承接显式管理动作：启动分析、检查更新、更新图谱、完整重新分析、停止任务、切换项目、打开面板和修复运行依赖。项目问答不需要通过 `/understand <自然语言任务>` 发起：普通聊天中询问项目、代码、架构、diff 或 onboarding 时，LLM 会先通过 Understand Anything 工具确认项目状态，再检索图谱回答。
 
 管理用法：
 
@@ -40,10 +38,10 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 - `/understand 状态`
 - `/understand 项目`
 - `/understand 项目 AstrBot`
-- `/understand 停止当前分析`
-- `/understand 打开面板`
+- `/understand 停止`
+- `/understand 面板`
 - `/understand 诊断`
-- `/understand 修复插件运行依赖`
+- `/understand 修复`
 - `/understand 重新分析 AstrBot，忽略 tests dist node_modules`
 
 已有项目的三种后续动作语义不同：
@@ -60,13 +58,7 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 - `分析 AstrBot 这次 git diff 的风险`
 - `给 AstrBot 生成新手上手说明`
 
-兼容输入示例：
-
-- `/understand AstrBot 的 WebChat 代理是怎么接上的？`
-- `/understand 解释 webchat_proxy.py 的职责`
-- `/understand 分析这次 git diff 的风险`
-
-旧的多子命令入口已经移除。聊天入口会先用规则和状态机处理明确操作；
+旧的英文/分散指令入口和同名根指令已经移除。普通聊天和指令组入口会先用规则和状态机处理明确操作；
 只有模糊意图解析才会使用一次轻量 LLM。状态、停止、打开面板、诊断、
 修复、明确路径分析、GitHub URL 分析、检查更新、更新图谱和重新分析不会调用 LLM。
 
@@ -78,7 +70,7 @@ Dashboard 首页会展示运行环境检查结果，并提供“修复插件运�
 登记记录包含 `project_id`、`name`、`aliases`、`path`、`graph_root`、
 `last_job_id`、`last_analyzed_at` 和 `auto_update`。项目名优先取图谱里的
 `project.name`，缺失时使用目录名；聊天状态和问答会使用项目名、别名或路径，
-例如 `/understand 状态 AstrBot` 或 `/understand AstrBot 的入口在哪里？`。
+例如 `/understand 状态 AstrBot`，或在普通聊天里直接问“AstrBot 的入口在哪里？”。
 
 聊天、解释、diff 和 onboarding 会按以下顺序解析项目：
 
@@ -130,7 +122,7 @@ Dashboard 保留参考项目 React 体验，只调整数据访问层：
 - `cleanup_github_cache_after_analysis`
 
 本地项目路径不需要预先写入插件配置页。用户在 Dashboard 的“项目目标”输入框或
-`/understand <path>` 命令中直接指定要分析的目录；插件会校验该路径必须存在且是目录。
+`/understand 分析 <path>` 命令中直接指定要分析的目录；插件会校验该路径必须存在且是目录。
 公开 GitHub 仓库 URL 会自动克隆到插件数据目录
 `data/plugin_data/astrbot_plugin_UnderstandAnything/repos/github/`。粘贴 GitHub
 `/tree/<branch-or-tag>/<sub/path>` 地址时，插件会自动解析分支或标签，并只分析该子目录。

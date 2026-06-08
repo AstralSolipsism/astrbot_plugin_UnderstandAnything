@@ -159,12 +159,6 @@ class UnderstandAnythingPlugin(Star):
         """打开 Dashboard。"""
         yield await self._run_understand_text(event, "面板")
 
-    @filter.command("understand")
-    async def understand(self, event: AstrMessageEvent, task: GreedyStr = ""):
-        """Understand Anything natural language entry."""
-        text = str(task or "").strip() or self._args(event, "understand")
-        yield await self._run_understand_text(event, text)
-
     @filter.on_llm_request()
     async def append_understand_anything_tool_routing(
         self,
@@ -289,17 +283,6 @@ class UnderstandAnythingPlugin(Star):
             project_kwargs=self._effective_project_kwargs(event, project_hint),
         )
 
-    @staticmethod
-    def _args(event: AstrMessageEvent, *command_names: str) -> str:
-        message = event.get_message_str().strip()
-        for command_name in command_names:
-            for prefix in (command_name, f"/{command_name}"):
-                if message == prefix:
-                    return ""
-                if message.startswith(f"{prefix} "):
-                    return message[len(prefix) :].strip()
-        return event.message_str.strip()
-
     async def _run_understand_text(self, event: AstrMessageEvent, text: str):
         message = await self.chat_entry.execute_text(
             str(text or "").strip(),
@@ -313,12 +296,6 @@ class UnderstandAnythingPlugin(Star):
     def _command_text(command: str, payload: str = "") -> str:
         payload_text = str(payload or "").strip()
         return f"{command} {payload_text}".strip()
-
-    def _first_path_arg(
-        self, event: AstrMessageEvent, *command_names: str
-    ) -> str | None:
-        raw_args = self._args(event, *command_names)
-        return self._first_path_token(raw_args)
 
     def _effective_project_kwargs(
         self,

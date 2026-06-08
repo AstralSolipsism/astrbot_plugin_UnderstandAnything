@@ -104,7 +104,9 @@ def test_main_plugin_exposes_understand_command_group_without_legacy_commands() 
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 
     assert '@filter.command_group("understand")' in source
-    assert '@filter.command("understand")' in source
+    assert '@filter.command("understand")' not in source
+    assert "@filter.command('understand')" not in source
+    assert "async def understand(" not in source
     assert '@filter.command("understand-' not in source
     assert 'alias={"understand_' not in source
     assert 'self._args(event, "understand-' not in source
