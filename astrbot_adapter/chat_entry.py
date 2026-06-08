@@ -578,16 +578,24 @@ class ToolResultPresenter:
 
     def project_state(self, project_hint: str = "") -> str:
         state = self.state_resolver.resolve(project_hint)
+        project_candidates = _project_candidate_payloads(self.runner)
+        requires_project_selection = state.name == "ambiguous_project"
         return _json(
             {
                 "state": state.name,
                 "project": state.project,
+                "project_candidates": project_candidates,
+                "requires_project_selection": requires_project_selection,
                 "active_job": state.running_job,
                 "running_job": state.running_job,
                 "blockers": [item for item in state.blockers if item],
                 "available_actions": state.available_actions,
                 "tool_guidance": {
                     "project_questions": "Call ua_retrieve_project_context when state is graph_ready.",
+                    "project_selection": (
+                        "If requires_project_selection is true, ask the user to choose a project "
+                        "or call ua_select_project_context only when the user names one candidate explicitly."
+                    ),
                     "start_analysis": "Use only for a new local path or GitHub URL; never for an already analyzed project.",
                     "rerun_analysis": "Use only when the user explicitly asks to rerun, reanalyze, refresh, or rebuild analysis.",
                 },
@@ -1123,6 +1131,15 @@ def _project_candidates(runner: Any) -> list[str]:
         str(getattr(project, "name", "") or getattr(project, "project_id", ""))
         for project in _project_records(runner)
     ]
+
+
+def _project_candidate_payloads(runner: Any) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for project in _project_records(runner):
+        ref = _project_ref_payload(project)
+        if ref:
+            candidates.append(ref)
+    return candidates
 
 
 def _project_ref_from_kwargs(project_kwargs: dict[str, Any]) -> str:

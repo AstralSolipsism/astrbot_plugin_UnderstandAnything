@@ -565,6 +565,52 @@ def test_tool_result_presenter_returns_structured_state_without_llm(
     assert payload["llm_used"] is False
 
 
+def test_project_state_lists_candidates_when_project_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [
+            _Project(tmp_path, project_id="p1", name="Alpha"),
+            _Project(tmp_path, project_id="p2", name="Beta"),
+        ],
+    )
+
+    payload = json.loads(ToolResultPresenter(runner).project_state(""))
+
+    assert payload["state"] == "ambiguous_project"
+    assert payload["requires_project_selection"] is True
+    assert payload["project_candidates"] == [
+        {
+            "project_id": "p1",
+            "project_name": "Alpha",
+            "project_ref": "Alpha",
+            "project_path": str(tmp_path / "Alpha"),
+        },
+        {
+            "project_id": "p2",
+            "project_name": "Beta",
+            "project_ref": "Beta",
+            "project_path": str(tmp_path / "Beta"),
+        },
+    ]
+
+
+def test_project_state_does_not_require_selection_for_single_ready_project(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [_Project(tmp_path, project_id="p1", name="Demo")],
+    )
+
+    payload = json.loads(ToolResultPresenter(runner).project_state(""))
+
+    assert payload["state"] == "graph_ready"
+    assert payload["requires_project_selection"] is False
+    assert payload["project"]["name"] == "Demo"
+
+
 def test_tool_project_action_returns_structured_action_contract(
     tmp_path: Path,
 ) -> None:
@@ -716,30 +762,35 @@ def test_tool_project_action_select_project_writes_webchat_context(
     assert payload["llm_used"] is False
 
 
-def test_tool_project_action_blocks_select_project_outside_webchat(
+def test_tool_project_action_select_project_writes_generic_chat_context(
     tmp_path: Path,
 ) -> None:
     runner = _DummyRunner(tmp_path)
     project = _Project(tmp_path)
     runner.registry = SimpleNamespace(list=lambda: [project])
+    context_store = WebChatSessionContextStore(tmp_path / "contexts.json")
     presenter = ToolResultPresenter(
         runner,
-        context_store=WebChatSessionContextStore(tmp_path / "contexts.json"),
+        context_store=context_store,
     )
+    umo = "telegram:FriendMessage:s1"
 
     payload = json.loads(
         asyncio.run(
             presenter.project_action(
                 "select_project",
-                event=SimpleNamespace(unified_msg_origin="telegram:FriendMessage:s1"),
+                event=SimpleNamespace(unified_msg_origin=umo),
                 project_hint="Demo",
             )
         )
     )
 
-    assert payload["status"] == "blocked"
+    context = context_store.context_for_umo(umo)
+    assert payload["status"] == "ok"
     assert payload["action"] == "select_project"
-    assert "WebChat" in payload["message"]
+    assert payload["project"]["project_id"] == "p1"
+    assert context is not None
+    assert context["project_ref"]["project_name"] == "Demo"
     assert payload["llm_used"] is False
 
 
