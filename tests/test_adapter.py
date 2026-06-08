@@ -186,6 +186,67 @@ def test_main_plugin_tools_do_not_generate_final_answers_directly() -> None:
     assert "return await self.runner.onboard(" not in tool_source
 
 
+def test_main_plugin_appends_static_ua_tool_routing_prompt() -> None:
+    sys.path.insert(0, str(PLUGIN_ROOT.parent))
+    plugin_module = importlib.import_module(f"{PLUGIN_ROOT.name}.main")
+    plugin = plugin_module.UnderstandAnythingPlugin.__new__(
+        plugin_module.UnderstandAnythingPlugin,
+    )
+
+    class ToolSet:
+        def names(self):
+            return ["ua_get_project_state", "ua_retrieve_project_context"]
+
+    req = SimpleNamespace(system_prompt="BASE", func_tool=ToolSet())
+
+    asyncio.run(
+        plugin.append_understand_anything_tool_routing(
+            SimpleNamespace(),
+            req,
+        )
+    )
+
+    assert req.system_prompt.startswith("BASE")
+    appended = req.system_prompt[len("BASE") :]
+    assert appended.startswith("\n")
+    assert "Understand Anything Tool Routing" in appended
+    assert "project_candidates" not in appended
+    assert "当前项目：" not in appended
+    first = req.system_prompt
+
+    asyncio.run(
+        plugin.append_understand_anything_tool_routing(
+            SimpleNamespace(),
+            req,
+        )
+    )
+
+    assert req.system_prompt == first
+
+
+def test_main_plugin_does_not_inject_ua_routing_without_ua_tools() -> None:
+    sys.path.insert(0, str(PLUGIN_ROOT.parent))
+    plugin_module = importlib.import_module(f"{PLUGIN_ROOT.name}.main")
+    plugin = plugin_module.UnderstandAnythingPlugin.__new__(
+        plugin_module.UnderstandAnythingPlugin,
+    )
+
+    class ToolSet:
+        def names(self):
+            return ["other_tool"]
+
+    req = SimpleNamespace(system_prompt="BASE", func_tool=ToolSet())
+
+    asyncio.run(
+        plugin.append_understand_anything_tool_routing(
+            SimpleNamespace(),
+            req,
+        )
+    )
+
+    assert req.system_prompt == "BASE"
+
+
 def test_main_natural_command_uses_chat_entry_executor() -> None:
     source = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
 

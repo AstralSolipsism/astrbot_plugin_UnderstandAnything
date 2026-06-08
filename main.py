@@ -24,6 +24,24 @@ UNDERSTAND_GROUP_SUBCOMMANDS = (
     "修复",
     "面板",
 )
+UA_OUTER_LLM_TOOLS = {
+    "ua_get_project_state",
+    "ua_project_action",
+    "ua_retrieve_project_context",
+}
+UA_TOOL_ROUTING_PROMPT_MARKER = "# Understand Anything Tool Routing"
+UA_TOOL_ROUTING_PROMPT = """
+
+# Understand Anything Tool Routing
+
+For project, codebase, architecture, domain, diff, onboarding, or repository questions:
+- First call `ua_get_project_state` to check whether an Understand Anything graph already exists.
+- If state is `graph_ready`, call `ua_retrieve_project_context` and answer from the returned graph context.
+- Do not call `ua_project_action` with `start_analysis` just to answer a question.
+- Use `start_analysis` only when the user provides a new local path or GitHub URL and asks to analyze it.
+- Use `rerun_analysis` only when the user explicitly asks to rerun, reanalyze, refresh, or rebuild analysis.
+- If a tool reports `already_analyzed`, do not start analysis; retrieve context instead.
+"""
 
 
 class UnderstandAnythingPlugin(Star):
@@ -105,13 +123,32 @@ class UnderstandAnythingPlugin(Star):
         text = str(task or "").strip() or self._args(event, "understand")
         yield await self._run_understand_text(event, text)
 
+    @filter.on_llm_request()
+    async def append_understand_anything_tool_routing(
+        self,
+        event: AstrMessageEvent,
+        req: Any,
+    ) -> None:
+        """Append stable UA tool routing rules to LLM requests with UA tools."""
+        if not _request_has_outer_ua_tools(req):
+            return
+        system_prompt = str(getattr(req, "system_prompt", "") or "")
+        if UA_TOOL_ROUTING_PROMPT_MARKER in system_prompt:
+            return
+        req.system_prompt = f"{system_prompt}{UA_TOOL_ROUTING_PROMPT}"
+
     @filter.llm_tool(name="ua_get_project_state")
     async def ua_get_project_state(
         self,
         event: AstrMessageEvent,
         project_hint: str = "",
     ):
-        """Read Understand Anything project state for the outer AstrBot LLM.
+        """Always call this first for project/codebase questions.
+
+        It is a cheap, read-only state check. Use it before answering project
+        questions, before retrieving graph context, and before considering any
+        analysis action. If it returns graph_ready, retrieve context instead of
+        starting analysis.
 
         Args:
             project_hint(string): Optional project name, id, alias, or path.
@@ -127,8 +164,16 @@ class UnderstandAnythingPlugin(Star):
         project_hint: str = "",
         source: str = "",
         options: str = "",
+        user_explicit_rerun: bool = False,
     ):
-        """Execute a deterministic Understand Anything project action.
+        """Project management only; not for answering code questions.
+
+        High-cost actions are guarded. Do not use start_analysis for a project
+        that already has graph_ready state. Do not use rerun_analysis unless
+        the user explicitly asked to rerun, reanalyze, refresh, or rebuild the
+        project analysis; set user_explicit_rerun true only in that case.
+        For normal questions, call ua_get_project_state first and then
+        ua_retrieve_project_context.
 
         Args:
             action(string): One of status, start_analysis, start_github_analysis,
@@ -136,6 +181,8 @@ class UnderstandAnythingPlugin(Star):
             project_hint(string): Optional project name, id, alias, or path.
             source(string): Optional local project path or GitHub URL.
             options(string): Optional action options such as ignored paths.
+            user_explicit_rerun(boolean): True only when the user explicitly
+                requested rerun/reanalysis/refresh/rebuild in the current turn.
         """
         return await self.chat_entry.tools.project_action(
             action,
@@ -143,6 +190,7 @@ class UnderstandAnythingPlugin(Star):
             project_hint=project_hint,
             source=source,
             options=options,
+            user_explicit_rerun=bool(user_explicit_rerun),
             project_kwargs=self._effective_project_kwargs(event, project_hint),
         )
 
@@ -155,7 +203,11 @@ class UnderstandAnythingPlugin(Star):
         target: str = "",
         mode: str = "ask",
     ):
-        """Retrieve graph context for the outer AstrBot LLM.
+        """Primary tool for answering project/codebase questions.
+
+        Use after ua_get_project_state reports graph_ready. This is read-only
+        and must be preferred over starting analysis when the project was
+        already analyzed in Dashboard or WebChat.
 
         Args:
             query(string): User question or retrieval query.
@@ -309,3 +361,15 @@ class UnderstandAnythingPlugin(Star):
         except ValueError:
             tokens = raw_args.split()
         return [token.strip("\"'") for token in tokens if token.strip("\"'")]
+
+
+def _request_has_outer_ua_tools(req: Any) -> bool:
+    tool_set = getattr(req, "func_tool", None)
+    names_fn = getattr(tool_set, "names", None)
+    if not callable(names_fn):
+        return False
+    try:
+        names = names_fn()
+    except Exception:
+        return False
+    return any(str(name) in UA_OUTER_LLM_TOOLS for name in names or [])
