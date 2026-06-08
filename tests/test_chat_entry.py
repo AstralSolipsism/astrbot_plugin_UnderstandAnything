@@ -451,20 +451,41 @@ def test_command_executor_stops_latest_active_job(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "intent",
+    ("intent", "expected_method"),
     [
-        ChatIntent(intent="content_requires_llm", query="解释 webchat_proxy.py"),
-        ChatIntent(intent="domain", query="订单流程怎么串起来", mode="domain"),
-        ChatIntent(intent="explain", query="解释 webchat_proxy.py", target="webchat_proxy.py"),
-        ChatIntent(intent="diff", query="当前改动"),
-        ChatIntent(intent="onboard", query="项目导览"),
+        (
+            ChatIntent(
+                intent="content_requires_llm",
+                query="这个接入怎么做的？",
+                mode="ask",
+            ),
+            "chat",
+        ),
+        (
+            ChatIntent(
+                intent="content_requires_llm",
+                query="解释 webchat_proxy.py",
+                target="webchat_proxy.py",
+                mode="explain",
+            ),
+            "explain",
+        ),
+        (ChatIntent(intent="content_requires_llm", query="当前改动", mode="diff"), "diff"),
+        (
+            ChatIntent(intent="content_requires_llm", query="项目导览", mode="onboard"),
+            "onboard",
+        ),
+        (ChatIntent(intent="domain", query="订单流程怎么串起来", mode="domain"), "chat"),
     ],
 )
-def test_command_executor_does_not_answer_content_requests_from_commands(
+def test_command_executor_answers_content_requests_when_graph_ready(
     tmp_path: Path,
     intent: ChatIntent,
+    expected_method: str,
 ) -> None:
     runner = _DummyRunner(tmp_path)
+    project = _Project(tmp_path, project_id="p1", name="Demo")
+    runner.registry = SimpleNamespace(list=lambda: [project])
     executor = ChatActionExecutor(runner)
 
     message = asyncio.run(
@@ -475,7 +496,30 @@ def test_command_executor_does_not_answer_content_requests_from_commands(
         )
     )
 
-    assert "请直接用普通聊天提问" in message
+    assert runner.calls[-1]["method"] == expected_method
+    assert message in {"图谱回答", "组件解释", "改动分析", "项目导览"}
+
+
+def test_understand_content_request_asks_project_when_ambiguous(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [
+            _Project(tmp_path, project_id="p1", name="Alpha"),
+            _Project(tmp_path, project_id="p2", name="Beta"),
+        ],
+    )
+    entry = UnderstandAnythingChatEntry(runner)
+
+    message = asyncio.run(
+        entry.execute_text(
+            "解释 webchat_proxy.py",
+            event=SimpleNamespace(),
+        ),
+    )
+
+    assert "当前匹配到多个项目" in message
     assert runner.calls == []
 
 

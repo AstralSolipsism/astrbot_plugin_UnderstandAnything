@@ -21,7 +21,14 @@ ACTIVE_JOB_STATUSES = {
     JobStatus.RUNNING,
     JobStatus.WAITING_CONFIRMATION,
 }
-CONTENT_INTENTS = {"ask", "explain", "diff", "onboard", "domain"}
+CONTENT_INTENTS = {
+    "content_requires_llm",
+    "ask",
+    "explain",
+    "diff",
+    "onboard",
+    "domain",
+}
 DOMAIN_JOB_INTENTS: set[str] = set()
 START_INTENTS = {"start_analysis", "rerun_analysis"}
 JOB_START_INTENTS = START_INTENTS | DOMAIN_JOB_INTENTS
@@ -438,13 +445,52 @@ class ChatActionExecutor:
             "onboard",
             "domain",
         }:
-            return _content_requires_llm_message()
+            return await self._answer_content_request(intent, event, project_kwargs)
         if intent.intent == "legacy_removed":
             return (
                 "旧子指令入口已移除。请直接用自然语言描述任务，例如："
                 "`/understand 状态`、`/understand 分析 <项目路径或 GitHub 地址>`。"
             )
         return "我没有识别这个管理操作。你可以说：状态、项目、分析、停止、面板、诊断或修复。"
+
+    async def _answer_content_request(
+        self,
+        intent: ChatIntent,
+        event: Any,
+        project_kwargs: dict[str, Any],
+    ) -> str:
+        kwargs = _content_project_kwargs(project_kwargs, intent)
+        context_items = kwargs.pop("context_items", None)
+        mode = intent.mode or intent.intent or "ask"
+        if mode == "explain" and intent.target:
+            result = await self.runner.explain(
+                target=intent.target,
+                event=event,
+                context_items=context_items,
+                **_project_store_kwargs(kwargs),
+            )
+            return _assistant_result_text(result)
+        if mode == "diff":
+            result = await self.runner.diff(
+                event=event,
+                context_items=context_items,
+                **_project_store_kwargs(kwargs),
+            )
+            return _assistant_result_text(result)
+        if mode == "onboard":
+            result = await self.runner.onboard(
+                event=event,
+                context_items=context_items,
+                **_project_store_kwargs(kwargs),
+            )
+            return _assistant_result_text(result)
+        result = await self.runner.chat(
+            query=intent.query or intent.target,
+            event=event,
+            context_items=context_items,
+            **_project_store_kwargs(kwargs),
+        )
+        return _assistant_result_text(result)
 
     async def _start_analysis(
         self,
@@ -1241,6 +1287,16 @@ def _project_ref_display_name(project_ref: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return "未选择"
+
+
+def _assistant_result_text(result: Any) -> str:
+    if isinstance(result, dict):
+        for key in ("answer", "markdown", "message"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return json.dumps(result, ensure_ascii=False)
+    return str(result or "").strip()
 
 
 def _content_requires_llm_message() -> str:
