@@ -2605,6 +2605,13 @@ class UnderstandAnythingRunner:
                 en="knowledge analysis",
                 ru="анализ базы знаний",
             )
+        if normalized == "check-updates":
+            return self._localized(
+                locale,
+                zh="检查更新",
+                en="update check",
+                ru="проверка обновлений",
+            )
         return self._localized(
             locale,
             zh="分析",

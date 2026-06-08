@@ -119,6 +119,17 @@ function graphReady(project: ProjectSummary): boolean {
   );
 }
 
+function projectStatusLabel(
+  project: ProjectSummary,
+  ready: boolean,
+  t: Translate,
+): string {
+  if (project.status === "stale") return t("workspace.graphStale", "Update available");
+  if (project.status === "failed") return t("workspace.graphFailed", "Failed");
+  if (ready) return t("workspace.graphReady", "Ready");
+  return t("workspace.notAnalyzed", "Not analyzed");
+}
+
 function domainGraphReady(project: ProjectSummary): boolean {
   return Boolean(project.domain_graph_ready ?? project.domainGraphReady);
 }
@@ -871,6 +882,14 @@ export default function AstrBotWorkspace({
     }
   };
 
+  const updateProjectGraph = async (project: ProjectSummary) => {
+    await restartProject(project, false);
+  };
+
+  const fullReanalyzeProject = async (project: ProjectSummary) => {
+    await restartProject(project, true);
+  };
+
   const checkProjectUpdates = async (project: ProjectSummary) => {
     setProjectActionKey(`${project.project_id}:check`);
     setError(null);
@@ -1347,6 +1366,7 @@ export default function AstrBotWorkspace({
                         const projectJobStatus = projectJob?.status;
                         const selected = selectedProject?.project_id === project.project_id;
                         const ready = graphReady(project);
+                        const projectStale = project.status === "stale";
                         return (
                           <button
                             type="button"
@@ -1378,14 +1398,14 @@ export default function AstrBotWorkspace({
                                     ? "bg-accent/10 text-accent"
                                     : projectJobStatus === "failed"
                                       ? "bg-red-900/40 text-red-200"
-                                      : "bg-root text-text-muted"
+                                      : projectStale
+                                        ? "bg-amber-500/10 text-amber-200"
+                                        : "bg-root text-text-muted"
                                 }`}
                               >
                                 {projectJobStatus
                                   ? jobStatusLabel(projectJobStatus, t)
-                                  : ready
-                                    ? t("workspace.graphReady", "Ready")
-                                    : t("workspace.notAnalyzed", "Not analyzed")}
+                                  : projectStatusLabel(project, ready, t)}
                               </span>
                             </div>
                             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-muted">
@@ -1526,12 +1546,8 @@ export default function AstrBotWorkspace({
                                   </div>
                                 </div>
                                 <StatusPill
-                                  ready={ready}
-                                  label={
-                                    ready
-                                      ? t("workspace.graphReady", "Ready")
-                                      : t("workspace.notAnalyzed", "Not analyzed")
-                                  }
+                                  ready={ready && selectedProject.status !== "stale"}
+                                  label={projectStatusLabel(selectedProject, ready, t)}
                                 />
                               </div>
 
@@ -1615,22 +1631,28 @@ export default function AstrBotWorkspace({
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => void restartProject(selectedProject, !ready)}
+                                  onClick={() =>
+                                    void (ready
+                                      ? updateProjectGraph(selectedProject)
+                                      : fullReanalyzeProject(selectedProject))
+                                  }
                                   disabled={analyzeBusy || activeJob || projectBlocker !== null}
                                   className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                                 >
                                   {ready
-                                    ? t("workspace.pullAndIncrementalUpdate", "Pull and update")
+                                    ? t("workspace.updateProjectGraph", "Update graph")
                                     : t("workspace.pullAndFullAnalysis", "Run full analysis")}
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void restartProject(selectedProject, true)}
-                                  disabled={analyzeBusy || activeJob || projectBlocker !== null}
-                                  className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                                >
-                                  {t("workspace.reanalyzeProject", "Reanalyze")}
-                                </button>
+                                {ready && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void fullReanalyzeProject(selectedProject)}
+                                    disabled={analyzeBusy || activeJob || projectBlocker !== null}
+                                    className="rounded-md border border-border-medium bg-root px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                  >
+                                    {t("workspace.fullReanalysis", "Full reanalysis")}
+                                  </button>
+                                )}
                                 {focusedJob && canRetryJob(focusedJob) && (
                                   <button
                                     type="button"

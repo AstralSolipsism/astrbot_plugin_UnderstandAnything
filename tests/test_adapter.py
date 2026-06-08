@@ -112,7 +112,10 @@ def test_main_plugin_exposes_understand_command_group_without_legacy_commands() 
     for subcommand in (
         "状态",
         "项目",
+        "检查更新",
         "分析",
+        "更新",
+        "更新图谱",
         "重新分析",
         "停止",
         "诊断",
@@ -217,6 +220,10 @@ def test_main_plugin_appends_static_ua_tool_routing_prompt() -> None:
     assert "Understand Anything Tool Routing" in appended
     assert "ua_select_project_context" in appended
     assert "cross-project comparison" in appended
+    assert "check_updates" in appended
+    assert "update_analysis" in appended
+    assert "full reanalysis" in appended
+    assert "rerun, reanalyze, refresh, or rebuild" not in appended
     assert "project_candidates" not in appended
     assert "当前项目：" not in appended
     first = req.system_prompt
@@ -229,6 +236,15 @@ def test_main_plugin_appends_static_ua_tool_routing_prompt() -> None:
     )
 
     assert req.system_prompt == first
+
+
+def test_runner_labels_update_check_without_analysis_wording() -> None:
+    source = (PLUGIN_ROOT / "astrbot_adapter" / "runner.py").read_text(encoding="utf-8")
+    label_source = source[source.index("def _job_label(") :]
+
+    assert 'normalized == "check-updates"' in label_source
+    assert 'zh="检查更新"' in label_source
+    assert 'en="update check"' in label_source
 
 
 def test_main_plugin_does_not_inject_ua_routing_without_ua_tools() -> None:

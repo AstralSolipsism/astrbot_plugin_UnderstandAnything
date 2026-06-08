@@ -57,7 +57,22 @@ class _DummyRunner:
         )
         return job
 
+    async def start_project_update_check_job(self, **kwargs):
+        self.calls.append({"method": "start_project_update_check_job", **kwargs})
+        job = self.jobs.create(
+            "check-updates",
+            self.tmp_path / "project",
+            {
+                "project_display_name": "Demo",
+                "status_ref": "Demo",
+                "started_notification_sent": False,
+            },
+        )
+        return job
+
     def format_job_source_started_message(self, job, job_label: str = "analysis"):
+        if job_label == "check-updates":
+            return f"已开始检查更新：{job.args.get('project_display_name')}"
         return f"已开始分析：{job.args.get('project_display_name')}"
 
     def format_job_status(self, project_ref=None):
@@ -147,6 +162,15 @@ def test_chat_command_parser_handles_operations_without_lightweight_llm() -> Non
     assert rerun_project.intent == "rerun_analysis"
     assert rerun_project.project_hint == "AstrBot"
     assert rerun_project.options["ignore"] == ["tests", "dist"]
+
+    update_project = parser.parse("更新图谱 AstrBot，忽略 docs tmp")
+    assert update_project.intent == "update_analysis"
+    assert update_project.project_hint == "AstrBot"
+    assert update_project.options["ignore"] == ["docs", "tmp"]
+
+    check_updates = parser.parse("检查更新 AstrBot")
+    assert check_updates.intent == "check_updates"
+    assert check_updates.project_hint == "AstrBot"
 
     local_with_ignore = parser.parse(r"分析 D:\AboutDEV\demo，忽略 tests dist")
     assert local_with_ignore.intent == "start_analysis"
@@ -523,7 +547,27 @@ def test_understand_content_request_asks_project_when_ambiguous(
     assert runner.calls == []
 
 
-def test_command_executor_refreshes_domain_graph_by_rerunning_full_analysis(
+def test_command_executor_updates_existing_graph_without_full_reanalysis(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    executor = ChatActionExecutor(runner)
+
+    message = asyncio.run(
+        executor.execute(
+            ChatIntent(intent="update_analysis", project_hint="Demo"),
+            event=SimpleNamespace(),
+        )
+    )
+
+    assert runner.calls[-1]["method"] == "start_skill_job"
+    assert runner.calls[-1]["skill_name"] == "understand"
+    assert runner.calls[-1]["project_ref"] == "Demo"
+    assert runner.calls[-1].get("flags", []) == []
+    assert "已开始分析" in message
+
+
+def test_command_executor_reruns_existing_graph_with_full_reanalysis_flag(
     tmp_path: Path,
 ) -> None:
     runner = _DummyRunner(tmp_path)
@@ -539,7 +583,28 @@ def test_command_executor_refreshes_domain_graph_by_rerunning_full_analysis(
     assert runner.calls[-1]["method"] == "start_skill_job"
     assert runner.calls[-1]["skill_name"] == "understand"
     assert runner.calls[-1]["project_ref"] == "Demo"
+    assert runner.calls[-1]["flags"] == ["--full"]
     assert "已开始分析" in message
+
+
+def test_command_executor_checks_updates_without_starting_analysis(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(list=lambda: [_Project(tmp_path)])
+    executor = ChatActionExecutor(runner)
+
+    message = asyncio.run(
+        executor.execute(
+            ChatIntent(intent="check_updates", project_hint="Demo"),
+            event=SimpleNamespace(),
+        )
+    )
+
+    assert runner.calls[-1]["method"] == "start_project_update_check_job"
+    assert runner.calls[-1]["project_id"] == "p1"
+    assert "检查更新" in message
+    assert "分析" not in message
 
 
 def test_chat_entry_select_project_writes_webchat_context(tmp_path: Path) -> None:
@@ -653,6 +718,26 @@ def test_project_state_does_not_require_selection_for_single_ready_project(
     assert payload["state"] == "graph_ready"
     assert payload["requires_project_selection"] is False
     assert payload["project"]["name"] == "Demo"
+    assert "update_analysis" in payload["available_actions"]
+    assert payload["tool_guidance"]["update_analysis"]
+
+
+def test_project_state_reports_stale_graph_with_update_action(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [
+            _Project(tmp_path, project_id="p1", name="Demo", status=ProjectStatus.STALE)
+        ],
+    )
+
+    payload = json.loads(ToolResultPresenter(runner).project_state(""))
+
+    assert payload["state"] == "graph_stale"
+    assert payload["requires_project_selection"] is False
+    assert "update_analysis" in payload["available_actions"]
+    assert "rerun_analysis" in payload["available_actions"]
 
 
 def test_tool_project_action_returns_structured_action_contract(
@@ -771,8 +856,111 @@ def test_tool_project_action_requires_explicit_rerun_confirmation(
     assert payload["status"] == "confirmation_required"
     assert payload["action"] == "rerun_analysis"
     assert "用户明确要求" in payload["message"]
+    assert "刷新" not in payload["message"]
     assert runner.calls == []
     assert payload["llm_used"] is False
+
+
+def test_tool_project_action_updates_ready_project_without_full_reanalysis(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [_Project(tmp_path, name="Demo", status=ProjectStatus.READY)]
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "update_analysis",
+                event=SimpleNamespace(),
+                project_hint="Demo",
+            )
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["action"] == "update_analysis"
+    assert runner.calls[-1]["method"] == "start_skill_job"
+    assert runner.calls[-1].get("flags", []) == []
+    assert runner.calls[-1]["project_ref"] == "Demo"
+    assert payload["llm_used"] is False
+
+
+def test_tool_project_action_explicit_rerun_uses_full_reanalysis_flag(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [_Project(tmp_path, name="Demo", status=ProjectStatus.READY)]
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "rerun_analysis",
+                event=SimpleNamespace(),
+                project_hint="Demo",
+                user_explicit_rerun=True,
+            )
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["action"] == "rerun_analysis"
+    assert runner.calls[-1]["method"] == "start_skill_job"
+    assert runner.calls[-1]["flags"] == ["--full"]
+    assert runner.calls[-1]["project_ref"] == "Demo"
+    assert payload["llm_used"] is False
+
+
+def test_tool_project_action_checks_updates_without_starting_analysis(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [_Project(tmp_path, name="Demo", status=ProjectStatus.READY)]
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "check_updates",
+                event=SimpleNamespace(),
+                project_hint="Demo",
+            )
+        )
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["action"] == "check_updates"
+    assert runner.calls[-1]["method"] == "start_project_update_check_job"
+    assert runner.calls[-1]["project_id"] == "p1"
+    assert not any(call["method"] == "start_skill_job" for call in runner.calls)
+    assert payload["llm_used"] is False
+
+
+def test_tool_project_action_blocks_update_without_existing_graph(
+    tmp_path: Path,
+) -> None:
+    runner = _DummyRunner(tmp_path)
+    runner.registry = SimpleNamespace(
+        list=lambda: [_Project(tmp_path, name="Demo", status=ProjectStatus.EMPTY)]
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            ToolResultPresenter(runner).project_action(
+                "update_analysis",
+                event=SimpleNamespace(),
+                project_hint="Demo",
+            )
+        )
+    )
+
+    assert payload["status"] == "blocked"
+    assert "还没有可更新的图谱" in payload["message"]
+    assert runner.calls == []
 
 
 def test_tool_project_action_select_project_writes_webchat_context(

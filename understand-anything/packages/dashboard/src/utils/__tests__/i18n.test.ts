@@ -94,6 +94,21 @@ describe("dashboard i18n", () => {
     );
   });
 
+  it("localizes update and full reanalysis as separate project actions", () => {
+    expect(translateLocal("zh-CN", "workspace.updateProjectGraph", "")).toBe(
+      "更新图谱"
+    );
+    expect(translateLocal("zh-CN", "workspace.fullReanalysis", "")).toBe(
+      "完整重新分析"
+    );
+    expect(translateLocal("en-US", "workspace.updateProjectGraph", "")).toBe(
+      "Update graph"
+    );
+    expect(translateLocal("en-US", "workspace.fullReanalysis", "")).toBe(
+      "Full reanalysis"
+    );
+  });
+
   it("uses soft wording for job refresh degradation", () => {
     expect(translateLocal("zh-CN", "workspace.jobEventInterrupted", "")).not.toContain(
       "中断"

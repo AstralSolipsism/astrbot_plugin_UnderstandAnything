@@ -30,11 +30,14 @@ CONTENT_INTENTS = {
     "domain",
 }
 DOMAIN_JOB_INTENTS: set[str] = set()
-START_INTENTS = {"start_analysis", "rerun_analysis"}
-JOB_START_INTENTS = START_INTENTS | DOMAIN_JOB_INTENTS
+START_INTENTS = {"start_analysis", "update_analysis", "rerun_analysis"}
+CHECK_UPDATE_INTENTS = {"check_updates"}
+JOB_START_INTENTS = START_INTENTS | DOMAIN_JOB_INTENTS | CHECK_UPDATE_INTENTS
 TOOL_ACTION_INTENTS = {
     "status",
+    "check_updates",
     "start_analysis",
+    "update_analysis",
     "rerun_analysis",
     "stop_job",
     "select_project",
@@ -59,10 +62,12 @@ PUBLIC_STATES = (
     "analysis_running",
     "analysis_failed",
     "graph_ready",
+    "graph_stale",
     "blocked_runtime",
     "blocked_subagents",
     "blocked_computer_use",
 )
+GRAPH_AVAILABLE_STATES = {"graph_ready", "graph_stale"}
 
 
 @dataclass(slots=True)
@@ -110,6 +115,13 @@ class ChatCommandParser:
                 intent="status",
                 project_hint=_text_without_options(status_match.group(1) or ""),
             )
+        check_updates_match = re.match(r"^检查更新(?:[，,\s]*(.*))?$", raw)
+        if check_updates_match:
+            check_payload = check_updates_match.group(1) or ""
+            return ChatIntent(
+                intent="check_updates",
+                project_hint=_text_without_options(check_payload),
+            )
         if normalized in {"停止", "取消", "停止分析", "取消分析"}:
             return ChatIntent(intent="stop_job")
         if normalized in {"打开面板", "打开 dashboard", "打开 Dashboard", "面板"}:
@@ -127,6 +139,18 @@ class ChatCommandParser:
             return ChatIntent(
                 intent="select_project",
                 project_hint=project_match.group(1).strip(),
+            )
+
+        update_match = re.match(
+            r"^(?:更新图谱|更新项目|更新分析|更新)(?:[，,\s]*(.*))?$",
+            raw,
+        )
+        if update_match:
+            update_payload = update_match.group(1) or ""
+            return ChatIntent(
+                intent="update_analysis",
+                project_hint=_text_without_options(update_payload),
+                options=_options_from_text(update_payload),
             )
 
         domain_generate_hint = _domain_generation_project_hint(raw)
@@ -215,7 +239,9 @@ class LightweightIntentParser:
             "current_state": state.name,
             "available_intents": [
                 "status",
+                "check_updates",
                 "start_analysis",
+                "update_analysis",
                 "rerun_analysis",
                 "stop_job",
                 "open_dashboard",
@@ -244,7 +270,9 @@ class LightweightIntentParser:
         intent = str(data.get("intent") or "unknown").strip()
         if intent not in {
             "status",
+            "check_updates",
             "start_analysis",
+            "update_analysis",
             "rerun_analysis",
             "stop_job",
             "open_dashboard",
@@ -268,7 +296,7 @@ class LightweightIntentParser:
 
     @staticmethod
     def _fallback(text: str, state: ChatState) -> ChatIntent:
-        if state.name == "graph_ready":
+        if state.name in GRAPH_AVAILABLE_STATES:
             return ChatIntent(intent="ask", query=str(text or "").strip(), mode="ask")
         return ChatIntent(intent="unknown", query=str(text or "").strip())
 
@@ -313,6 +341,7 @@ class ChatStateResolver:
                 available_actions=[
                     "select_project",
                     "start_analysis",
+                    "check_updates",
                     "open_dashboard",
                 ],
             )
@@ -322,7 +351,12 @@ class ChatStateResolver:
                 return ChatState(
                     name="analysis_failed",
                     running_job=_job_payload(failed),
-                    available_actions=["status", "rerun_analysis", "open_dashboard"],
+                    available_actions=[
+                        "status",
+                        "check_updates",
+                        "rerun_analysis",
+                        "open_dashboard",
+                    ],
                 )
             return ChatState(
                 name="no_project",
@@ -341,6 +375,25 @@ class ChatStateResolver:
                     "diff",
                     "onboard",
                     "domain",
+                    "check_updates",
+                    "update_analysis",
+                    "rerun_analysis",
+                    "open_dashboard",
+                ],
+            )
+        if status == ProjectStatus.STALE.value:
+            return ChatState(
+                name="graph_stale",
+                project=project,
+                available_actions=[
+                    "status",
+                    "ask",
+                    "explain",
+                    "diff",
+                    "onboard",
+                    "domain",
+                    "check_updates",
+                    "update_analysis",
                     "rerun_analysis",
                     "open_dashboard",
                 ],
@@ -350,12 +403,17 @@ class ChatStateResolver:
                 name="analysis_failed",
                 project=project,
                 blockers=[str(project.get("last_error") or "").strip()],
-                available_actions=["status", "rerun_analysis", "open_dashboard"],
+                available_actions=[
+                    "status",
+                    "check_updates",
+                    "rerun_analysis",
+                    "open_dashboard",
+                ],
             )
         return ChatState(
             name="project_selected_no_graph",
             project=project,
-            available_actions=["start_analysis", "open_dashboard"],
+            available_actions=["status", "check_updates", "start_analysis", "open_dashboard"],
         )
 
 
@@ -368,10 +426,10 @@ class ChatStateMachine:
                 "；".join(item for item in state.blockers if item) or "当前环境未就绪"
             )
             return ChatValidation(False, reason)
-        if state.name == "graph_ready" and intent.intent == "start_analysis":
+        if state.name in GRAPH_AVAILABLE_STATES and intent.intent == "start_analysis":
             return ChatValidation(
                 False,
-                "这个项目已经有可用图谱。回答项目问题请使用图谱检索；只有用户明确要求重新分析时才重跑。",
+                "这个项目已经有可用图谱。回答项目问题请使用图谱检索；需要追到最新源码时使用更新图谱，只有用户明确要求完整重新分析时才重跑。",
             )
         if state.name == "analysis_running" and intent.intent in JOB_START_INTENTS:
             return ChatValidation(
@@ -389,10 +447,22 @@ class ChatStateMachine:
                 "还没有可用项目，请先发送 `/understand 分析 <项目路径或 GitHub 地址>`。",
             )
         if state.name == "ambiguous_project" and (
-            intent.intent in CONTENT_INTENTS or intent.intent in DOMAIN_JOB_INTENTS
+            intent.intent in CONTENT_INTENTS
+            or intent.intent in DOMAIN_JOB_INTENTS
+            or intent.intent in {"check_updates", "update_analysis", "rerun_analysis"}
         ):
             return ChatValidation(False, "当前匹配到多个项目，请先说明要使用哪个项目。")
-        if state.name != "graph_ready" and (
+        if state.name == "no_project" and intent.intent in {
+            "check_updates",
+            "update_analysis",
+        }:
+            return ChatValidation(False, "还没有可用项目，请先分析或选择一个项目。")
+        if intent.intent == "update_analysis" and state.name not in GRAPH_AVAILABLE_STATES:
+            return ChatValidation(
+                False,
+                "当前项目还没有可更新的图谱；请先完成项目分析，或使用重新分析创建完整图谱。",
+            )
+        if state.name not in GRAPH_AVAILABLE_STATES and (
             intent.intent in CONTENT_INTENTS or intent.intent in DOMAIN_JOB_INTENTS
         ):
             return ChatValidation(False, "当前项目图谱还未就绪，请先完成项目分析。")
@@ -429,6 +499,12 @@ class ChatActionExecutor:
             )
         if intent.intent == "stop_job":
             return self._stop_latest_active_job()
+        if intent.intent == "check_updates":
+            job = await self._check_updates(intent, project_kwargs)
+            return self.runner.format_job_source_started_message(
+                job,
+                job_label="check-updates",
+            )
         if intent.intent in START_INTENTS:
             await self._apply_ignore_options(intent, project_kwargs)
             job = await self._start_analysis(intent, event, project_kwargs)
@@ -451,7 +527,10 @@ class ChatActionExecutor:
                 "旧子指令入口已移除。请直接用自然语言描述任务，例如："
                 "`/understand 状态`、`/understand 分析 <项目路径或 GitHub 地址>`。"
             )
-        return "我没有识别这个管理操作。你可以说：状态、项目、分析、停止、面板、诊断或修复。"
+        return (
+            "我没有识别这个管理操作。你可以说：状态、项目、检查更新、更新图谱、"
+            "分析、重新分析、停止、面板、诊断或修复。"
+        )
 
     async def _answer_content_request(
         self,
@@ -507,7 +586,23 @@ class ChatActionExecutor:
                 kwargs["project_path"] = source
         else:
             kwargs.update(_content_project_kwargs(project_kwargs, intent))
+        flags: list[str] = []
+        if intent.intent == "rerun_analysis":
+            flags.append("--full")
+        if flags:
+            kwargs["flags"] = flags
         return await self.runner.start_skill_job(**kwargs)
+
+    async def _check_updates(
+        self,
+        intent: ChatIntent,
+        project_kwargs: dict[str, Any],
+    ) -> JobSnapshot:
+        project = _project_record_for_action(self.runner, intent, project_kwargs)
+        project_id = _project_ref_payload(project).get("project_id")
+        if not project_id:
+            raise ValueError("无法检查更新：当前项目缺少 project_id。")
+        return await self.runner.start_project_update_check_job(project_id=project_id)
 
     async def _apply_ignore_options(
         self,
@@ -637,13 +732,18 @@ class ToolResultPresenter:
                 "blockers": [item for item in state.blockers if item],
                 "available_actions": state.available_actions,
                 "tool_guidance": {
-                    "project_questions": "Call ua_retrieve_project_context when state is graph_ready.",
+                    "project_questions": "Call ua_retrieve_project_context when state is graph_ready or graph_stale.",
+                    "project_freshness": (
+                        "check_updates only checks freshness and does not mutate graph artifacts; "
+                        "update_analysis starts the normal graph update for an already analyzed project."
+                    ),
                     "project_selection": (
                         "If requires_project_selection is true, ask the user to choose a project "
                         "or call ua_select_project_context only when the user names one candidate explicitly."
                     ),
                     "start_analysis": "Use only for a new local path or GitHub URL; never for an already analyzed project.",
-                    "rerun_analysis": "Use only when the user explicitly asks to rerun, reanalyze, refresh, or rebuild analysis.",
+                    "update_analysis": "Use when the user asks to update an existing project graph to current source state.",
+                    "rerun_analysis": "Use only when the user explicitly asks for full reanalysis, rerun, or rebuild; this is not the normal update action.",
                 },
                 "dashboard_url": _dashboard_url(),
                 "llm_used": False,
@@ -679,7 +779,7 @@ class ToolResultPresenter:
                 {
                     "status": "error",
                     "action": str(action or "").strip(),
-                    "message": "不支持这个项目管理 action。请改用 status、start_analysis、rerun_analysis、stop_job、select_project、diagnose、repair_runtime 或 open_dashboard。",
+                    "message": "不支持这个项目管理 action。请改用 status、check_updates、start_analysis、update_analysis、rerun_analysis、stop_job、select_project、diagnose、repair_runtime 或 open_dashboard。",
                     "llm_used": False,
                 }
             )
@@ -735,7 +835,7 @@ class ToolResultPresenter:
                     "status": "confirmation_required",
                     "action": intent.intent,
                     "message": (
-                        "重新分析会消耗大量 token。只有用户明确要求重新分析、重跑、刷新或重建分析时，"
+                        "重新分析会消耗大量 token。只有用户明确要求重新分析、完整重新分析、重跑或重建分析时，"
                         "才能以 user_explicit_rerun=true 再调用此 action。"
                     ),
                     "job": state_before.running_job,
@@ -1342,9 +1442,18 @@ def _normalize_tool_action(action: str) -> str:
     return {
         "status": "status",
         "refresh_status": "status",
+        "check": "check_updates",
+        "check_updates": "check_updates",
+        "check_project_updates": "check_updates",
+        "检查更新": "check_updates",
         "start": "start_analysis",
         "start_analysis": "start_analysis",
         "start_github_analysis": "start_analysis",
+        "update": "update_analysis",
+        "update_analysis": "update_analysis",
+        "update_graph": "update_analysis",
+        "更新": "update_analysis",
+        "更新图谱": "update_analysis",
         "rerun": "rerun_analysis",
         "rerun_analysis": "rerun_analysis",
         "stop": "stop_job",
@@ -1377,6 +1486,20 @@ def _graph_root_for_options(
         if graph_root:
             return Path(str(graph_root))
     return None
+
+
+def _project_record_for_action(
+    runner: Any,
+    intent: ChatIntent,
+    project_kwargs: dict[str, Any],
+) -> Any:
+    ref = intent.project_hint or _project_ref_from_kwargs(project_kwargs)
+    selected = _select_project(_project_records(runner), ref)
+    if selected == "ambiguous":
+        raise ValueError("当前匹配到多个项目，请先说明要使用哪个项目。")
+    if selected is None:
+        raise ValueError("没有找到可操作的项目。")
+    return selected
 
 
 def _wants_domain_context(*, mode: str, query: str, target: str) -> bool:

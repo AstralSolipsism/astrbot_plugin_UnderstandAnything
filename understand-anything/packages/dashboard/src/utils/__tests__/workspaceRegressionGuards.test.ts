@@ -139,6 +139,24 @@ describe("AstrBot workspace regression guards", () => {
     expect(workspaceSource).not.toContain(["fetch(\"", "api", ""].join("/"));
   });
 
+  it("keeps update checks, graph updates, and full reanalysis as separate project actions", () => {
+    const workspaceSource = readFileSync(
+      new URL("../../components/AstrBotWorkspace.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(workspaceSource).toContain("const checkProjectUpdates = async");
+    expect(workspaceSource).toContain('"projects/check-updates"');
+    expect(workspaceSource).toContain("const updateProjectGraph = async");
+    expect(workspaceSource).toContain("restartProject(project, false)");
+    expect(workspaceSource).toContain("const fullReanalyzeProject = async");
+    expect(workspaceSource).toContain("restartProject(project, true)");
+    expect(workspaceSource).toContain("workspace.updateProjectGraph");
+    expect(workspaceSource).toContain("workspace.fullReanalysis");
+    expect(workspaceSource).toContain("projectStatusLabel(selectedProject, ready, t)");
+    expect(workspaceSource).toContain('project.status === "stale"');
+  });
+
   it("blocks analysis with the user-facing setup reason before calling jobs/start", () => {
     expect(analyzeStartBlocker({ ...readyInput, target: "" })).toBe(
       "请选择项目路径或 GitHub 仓库。",
