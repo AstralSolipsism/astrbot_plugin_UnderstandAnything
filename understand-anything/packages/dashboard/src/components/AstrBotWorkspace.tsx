@@ -592,11 +592,19 @@ export default function AstrBotWorkspace({
 
   const runtimeItems = useMemo(() => {
     if (!status) return [];
-    return ASTRBOT_RUNTIME_DEPENDENCY_ITEMS.map(({ key, fallback, statusKey }) => [
+    return ASTRBOT_RUNTIME_DEPENDENCY_ITEMS.map(({
       key,
       fallback,
-      status.runtime[statusKey]?.exists,
-    ] as const);
+      descriptionKey,
+      descriptionFallback,
+      statusKey,
+    }) => ({
+      key,
+      fallback,
+      descriptionKey,
+      descriptionFallback,
+      exists: status.runtime[statusKey]?.exists,
+    }));
   }, [status]);
   const runtimeToolItems = useMemo(() => {
     if (!status) return [];
@@ -1064,7 +1072,7 @@ export default function AstrBotWorkspace({
     analysisBlockerForTarget(projectTarget) === null;
   const showCreateProjectForm = createProjectOpen;
   const readyRuntimeToolCount = runtimeToolItems.filter(({ tool }) => tool.supported).length;
-  const readyRuntimeItemCount = runtimeItems.filter(([, , exists]) => Boolean(exists)).length;
+  const readyRuntimeItemCount = runtimeItems.filter(({ exists }) => Boolean(exists)).length;
   const enabledComputerUseCount = computerUseConfigs.filter((config) => config.enabled).length;
   const openProjectGraph = useCallback(
     (project: ProjectSummary, view?: ProjectRefParams["view"]) => {
@@ -2296,7 +2304,7 @@ export default function AstrBotWorkspace({
                   <div className="rounded-md border border-border-subtle bg-elevated px-3 py-2">
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-sm font-semibold text-text-primary">
-                        {t("workspace.runtimeFiles", "Runtime files")}
+                        {t("workspace.runtimeFiles", "Runtime dependencies")}
                       </span>
                       <span className="text-xs font-semibold text-text-secondary">
                         {t("workspace.availableOfTotal", "{ready}/{total} ready", {
@@ -2380,22 +2388,35 @@ export default function AstrBotWorkspace({
 
                     <div>
                       <div className="mb-2 text-[11px] uppercase tracking-wider text-text-muted">
-                        {t("workspace.runtimeFiles", "Runtime files")}
+                        {t("workspace.runtimeFiles", "Runtime dependencies")}
                       </div>
                       <div className="space-y-2">
-                        {runtimeItems.map(([key, fallback, exists]) => (
+                        {runtimeItems.map(({
+                          key,
+                          fallback,
+                          descriptionKey,
+                          descriptionFallback,
+                          exists,
+                        }) => (
                           <div
                             key={key}
-                            className="flex items-center justify-between gap-3 rounded-md bg-elevated px-3 py-2"
+                            className="rounded-md bg-elevated px-3 py-2"
                           >
-                            <span className="text-sm text-text-secondary">{t(key, fallback)}</span>
-                            <span
-                              className={`text-xs font-semibold ${
-                                exists ? "text-green-400" : "text-amber-400"
-                              }`}
-                            >
-                              {Boolean(exists) ? t("common.ready", "Ready") : t("common.missing", "Missing")}
-                            </span>
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-semibold text-text-secondary">
+                                {t(key, fallback)}
+                              </span>
+                              <span
+                                className={`shrink-0 text-xs font-semibold ${
+                                  exists ? "text-green-400" : "text-amber-400"
+                                }`}
+                              >
+                                {Boolean(exists) ? t("common.ready", "Ready") : t("common.missing", "Missing")}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs leading-relaxed text-text-muted">
+                              {t(descriptionKey, descriptionFallback)}
+                            </div>
                           </div>
                         ))}
                       </div>

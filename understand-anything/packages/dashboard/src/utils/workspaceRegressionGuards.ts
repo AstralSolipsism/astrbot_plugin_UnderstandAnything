@@ -23,12 +23,49 @@ export const ASTRBOT_WORKSPACE_REQUIRED_ACTIONS = [
 ] as const;
 
 export const ASTRBOT_RUNTIME_DEPENDENCY_ITEMS = [
-  { key: "runtimeItems.runtimeDist", fallback: "Runtime dist", statusKey: "runtime_dist" },
-  { key: "runtimeItems.coreDist", fallback: "Core dist", statusKey: "core_dist" },
-  { key: "runtimeItems.assistantDist", fallback: "Assistant dist", statusKey: "assistant_dist" },
-  { key: "runtimeItems.dashboardDist", fallback: "Dashboard dist", statusKey: "dashboard_dist" },
-  { key: "runtimeItems.dashboardPage", fallback: "Dashboard page", statusKey: "dashboard_page" },
-  { key: "runtimeItems.nodeModules", fallback: "Node modules", statusKey: "node_modules" },
+  {
+    key: "runtimeItems.runtimeDist",
+    fallback: "Runtime command bundle",
+    descriptionKey: "runtimeItemDescriptions.runtimeDist",
+    descriptionFallback: "Compiled runtime commands used by project analysis.",
+    statusKey: "runtime_dist",
+  },
+  {
+    key: "runtimeItems.coreDist",
+    fallback: "Core analysis bundle",
+    descriptionKey: "runtimeItemDescriptions.coreDist",
+    descriptionFallback: "Compiled graph, validation, parser, and language analysis code.",
+    statusKey: "core_dist",
+  },
+  {
+    key: "runtimeItems.assistantDist",
+    fallback: "Assistant context bundle",
+    descriptionKey: "runtimeItemDescriptions.assistantDist",
+    descriptionFallback: "Compiled context builders used when answering from project graphs.",
+    statusKey: "assistant_dist",
+  },
+  {
+    key: "runtimeItems.dashboardDist",
+    fallback: "Dashboard build",
+    descriptionKey: "runtimeItemDescriptions.dashboardDist",
+    descriptionFallback: "Built dashboard assets used by the plugin page.",
+    statusKey: "dashboard_dist",
+  },
+  {
+    key: "runtimeItems.dashboardPage",
+    fallback: "Dashboard page",
+    descriptionKey: "runtimeItemDescriptions.dashboardPage",
+    descriptionFallback: "Static plugin page entry served by AstrBot.",
+    statusKey: "dashboard_page",
+  },
+  {
+    key: "runtimeItems.runtimePackages",
+    fallback: "Runtime package set",
+    descriptionKey: "runtimeItemDescriptions.runtimePackages",
+    descriptionFallback:
+      "Plugin runtime packages installed by repair; not dependencies of the project being analyzed.",
+    statusKey: "node_modules",
+  },
 ] as const;
 
 export interface AnalyzeStartBlockerInput {

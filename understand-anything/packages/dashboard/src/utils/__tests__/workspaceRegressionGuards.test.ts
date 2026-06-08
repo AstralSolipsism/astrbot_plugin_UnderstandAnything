@@ -82,6 +82,12 @@ describe("AstrBot workspace regression guards", () => {
     ]);
     expect(statusKeys).not.toContain("github_cache_root");
     expect(statusKeys).not.toContain("github_artifact_root");
+    expect(ASTRBOT_RUNTIME_DEPENDENCY_ITEMS.map((item) => item.fallback)).not.toContain("Node modules");
+    expect(ASTRBOT_RUNTIME_DEPENDENCY_ITEMS.find((item) => item.statusKey === "node_modules")).toMatchObject({
+      key: "runtimeItems.runtimePackages",
+      fallback: "Runtime package set",
+      descriptionKey: "runtimeItemDescriptions.runtimePackages",
+    });
     expect(workspaceSource).toContain("ASTRBOT_RUNTIME_DEPENDENCY_ITEMS");
     expect(workspaceSource).not.toContain("runtimeItems.githubCacheRoot");
     expect(workspaceSource).not.toContain("runtimeItems.githubArtifactRoot");

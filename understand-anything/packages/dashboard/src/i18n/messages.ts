@@ -196,7 +196,7 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             environmentDetailsSummary:
               "Runtime health is summarized here. Open diagnostics only when setup or analysis is blocked.",
             availableOfTotal: "{ready}/{total} ready",
-            runtimeFiles: "Runtime files",
+            runtimeFiles: "Runtime dependencies",
             runtimeToolCheck: "Runtime tool check",
             runtimeToolMissing: "{tool} was not found in PATH.",
             runtimeToolUnsupported: "{tool} {version} is below {minimum}.",
@@ -404,12 +404,21 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             readyHint: "Ready for project analysis."
           },
           runtimeItems: {
-            runtimeDist: "Runtime dist",
-            coreDist: "Core dist",
-            assistantDist: "Assistant dist",
-            dashboardDist: "Dashboard dist",
+            runtimeDist: "Runtime command bundle",
+            coreDist: "Core analysis bundle",
+            assistantDist: "Assistant context bundle",
+            dashboardDist: "Dashboard build",
             dashboardPage: "Dashboard page",
-            nodeModules: "Node modules"
+            runtimePackages: "Runtime package set"
+          },
+          runtimeItemDescriptions: {
+            runtimeDist: "Compiled runtime commands used by project analysis.",
+            coreDist: "Compiled graph, validation, parser, and language analysis code.",
+            assistantDist: "Compiled context builders used when answering from project graphs.",
+            dashboardDist: "Built dashboard assets used by the plugin page.",
+            dashboardPage: "Static plugin page entry served by AstrBot.",
+            runtimePackages:
+              "Plugin runtime packages installed by repair; not dependencies of the project being analyzed."
           },
           shortcut: {
             showHelp: "Show keyboard shortcuts help",
@@ -908,7 +917,7 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             environmentDetailsSummary:
               "这里汇总运行环境健康状态。仅在配置或分析受阻时展开诊断明细。",
             availableOfTotal: "{ready}/{total} 已就绪",
-            runtimeFiles: "运行时文件",
+            runtimeFiles: "运行依赖",
             runtimeToolCheck: "运行工具检查",
             runtimeToolMissing: "未在 PATH 中找到 {tool}。",
             runtimeToolUnsupported: "{tool} {version} 低于要求的 {minimum}。",
@@ -1105,12 +1114,20 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             readyHint: "可以开始项目分析。"
           },
           runtimeItems: {
-            runtimeDist: "Runtime dist",
-            coreDist: "Core dist",
-            assistantDist: "Assistant dist",
-            dashboardDist: "Dashboard dist",
+            runtimeDist: "运行时主包",
+            coreDist: "核心分析包",
+            assistantDist: "助手上下文包",
+            dashboardDist: "Dashboard 构建",
             dashboardPage: "Dashboard 页面",
-            nodeModules: "Node modules"
+            runtimePackages: "运行依赖包"
+          },
+          runtimeItemDescriptions: {
+            runtimeDist: "项目分析调用的已编译运行命令。",
+            coreDist: "图谱、校验、解析器和语言分析能力的已编译代码。",
+            assistantDist: "基于项目图谱回答问题时使用的上下文构建能力。",
+            dashboardDist: "插件页面使用的 Dashboard 构建产物。",
+            dashboardPage: "由 AstrBot 提供服务的静态插件页面入口。",
+            runtimePackages: "由“修复插件运行依赖”安装的插件运行包，不是被分析项目的依赖。"
           },
           shortcut: {
             showHelp: "显示快捷键帮助",
@@ -1611,7 +1628,7 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             environmentDetailsSummary:
               "Runtime health is summarized here. Open diagnostics only when setup or analysis is blocked.",
             availableOfTotal: "{ready}/{total} ready",
-            runtimeFiles: "Runtime files",
+            runtimeFiles: "Runtime dependencies",
             runtimeToolCheck: "Runtime tool check",
             runtimeToolMissing: "{tool} was not found in PATH.",
             runtimeToolUnsupported: "{tool} {version} is below {minimum}.",
@@ -1801,12 +1818,21 @@ export const LOCAL_MESSAGES: Record<LocaleCode, LocaleMessages> = {
             readyHint: "Готово к анализу проекта."
           },
           runtimeItems: {
-            runtimeDist: "Runtime dist",
-            coreDist: "Core dist",
-            assistantDist: "Assistant dist",
-            dashboardDist: "Dashboard dist",
+            runtimeDist: "Runtime command bundle",
+            coreDist: "Core analysis bundle",
+            assistantDist: "Assistant context bundle",
+            dashboardDist: "Dashboard build",
             dashboardPage: "Страница Dashboard",
-            nodeModules: "Node modules"
+            runtimePackages: "Runtime package set"
+          },
+          runtimeItemDescriptions: {
+            runtimeDist: "Compiled runtime commands used by project analysis.",
+            coreDist: "Compiled graph, validation, parser, and language analysis code.",
+            assistantDist: "Compiled context builders used when answering from project graphs.",
+            dashboardDist: "Built dashboard assets used by the plugin page.",
+            dashboardPage: "Static plugin page entry served by AstrBot.",
+            runtimePackages:
+              "Plugin runtime packages installed by repair; not dependencies of the project being analyzed."
           },
           shortcut: {
             showHelp: "Показать справку по клавишам",
